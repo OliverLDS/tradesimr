@@ -2,9 +2,22 @@
 % Please edit documentation in R/sim_exchange.R
 \name{sim_exchange_place_order}
 \alias{sim_exchange_place_order}
-\title{Place a target-position order into a simulated exchange}
+\title{Place an order into a simulated exchange}
 \usage{
-sim_exchange_place_order(exchange, agent_id, timestamp, tgt_pos, tol_pos = 0)
+sim_exchange_place_order(
+  exchange,
+  agent_id,
+  timestamp,
+  tgt_pos = NULL,
+  tol_pos = 0,
+  order_type = c("market", "limit"),
+  side = c("target", "buy", "sell", "flat"),
+  qty_type = NULL,
+  qty = NULL,
+  limit_price = NA_real_,
+  time_in_force = "gtc",
+  client_order_id = NA_character_
+)
 }
 \arguments{
 \item{exchange}{A \code{tradesimr_exchange}.}
@@ -13,15 +26,30 @@ sim_exchange_place_order(exchange, agent_id, timestamp, tgt_pos, tol_pos = 0)
 
 \item{timestamp}{Order timestamp.}
 
-\item{tgt_pos}{Target exposure.}
+\item{tgt_pos}{Target exposure. Kept for compatibility with earlier
+intent-level calls.}
 
 \item{tol_pos}{Target-position tolerance.}
+
+\item{order_type}{Order type: \code{market} or \code{limit}.}
+
+\item{side}{Order side: \code{target}, \code{buy}, \code{sell}, or \code{flat}.}
+
+\item{qty_type}{Quantity semantics: \code{contracts} or \code{target_pos}.}
+
+\item{qty}{Order quantity. Meaning is controlled by \code{qty_type}.}
+
+\item{limit_price}{Optional limit price for limit orders.}
+
+\item{time_in_force}{Time-in-force label.}
+
+\item{client_order_id}{Optional client order id.}
 }
 \value{
 The generated order id.
 }
 \description{
-This is an intent-level order API for the current replay/live architecture.
-It records a desired target exposure at a timestamp and delegates accounting
-to the same backtest engine used by \code{sim_backtest()}.
+Explicit orders use \code{qty_type = "contracts"} by default for buy/sell/flat
+orders. Use \code{qty_type = "target_pos"} or \code{side = "target"} for exposure
+targets consumed by replay-style backtests.
 }

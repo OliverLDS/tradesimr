@@ -12,7 +12,7 @@ sim_exchange_step(exchange, bars)
 \item{bars}{Market bars coercible by \code{as_market_bars()}.}
 }
 \value{
-The refreshed simulation result.
+The incremental simulation snapshots.
 }
 \description{
 Step a simulated exchange with one or more bars

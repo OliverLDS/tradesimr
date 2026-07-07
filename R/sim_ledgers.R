@@ -82,7 +82,7 @@ sim_risk <- function(sim) {
 sim_export <- function(sim,
                        path,
                        format = c("csv", "fst"),
-                       tables = c("events", "orders", "fills", "positions", "cash_ledger", "account", "risk")) {
+                       tables = c("simulation", "events", "orders", "fills", "positions", "cash_ledger", "account", "risk")) {
   format <- match.arg(format)
   if (!dir.exists(path)) dir.create(path, recursive = TRUE)
   if (format == "fst" && !requireNamespace("fst", quietly = TRUE)) {
@@ -90,6 +90,7 @@ sim_export <- function(sim,
   }
 
   table_map <- list(
+    simulation = data.table::as.data.table(sim),
     events = sim_events(sim),
     orders = sim_orders(sim),
     fills = sim_fills(sim),
@@ -111,5 +112,120 @@ sim_export <- function(sim,
     }
     paths[[nm]] <- file
   }
+
+  manifest <- sim_manifest(
+    paths = paths,
+    tables = table_map,
+    format = format,
+    config = attr(sim, "sim_config", exact = TRUE) %||% list()
+  )
+  manifest_file <- file.path(path, "manifest.csv")
+  data.table::fwrite(manifest, manifest_file)
+  paths <- c(paths, manifest = manifest_file)
   invisible(paths)
+}
+
+#' Read an exported simulation table
+#'
+#' @param path Export directory or table file path.
+#' @param table Table name when `path` is a directory.
+#' @param format Optional format. Inferred from manifest or file extension when
+#'   absent.
+#' @return A data.table.
+#' @export
+sim_read_table <- function(path, table, format = NULL) {
+  file <- path
+  if (dir.exists(path)) {
+    manifest <- sim_read_manifest(path)
+    table_name <- table
+    row <- manifest[manifest[["table"]] == table_name, ]
+    if (nrow(row) == 0L) stop("Table not found in manifest: ", table, call. = FALSE)
+    file <- file.path(path, row$file[1L])
+    format <- row$format[1L]
+  }
+  if (is.null(format)) {
+    format <- sub("^.*\\.", "", basename(file))
+  }
+  if (format == "csv") {
+    data.table::fread(file)
+  } else if (format == "fst") {
+    if (!requireNamespace("fst", quietly = TRUE)) {
+      stop("Package `fst` is required to read fst exports.", call. = FALSE)
+    }
+    data.table::as.data.table(fst::read_fst(file))
+  } else {
+    stop("Unsupported table format: ", format, call. = FALSE)
+  }
+}
+
+#' Read an export manifest
+#'
+#' @param path Export directory or manifest file path.
+#' @return A data.table manifest.
+#' @export
+sim_read_manifest <- function(path) {
+  file <- if (dir.exists(path)) file.path(path, "manifest.csv") else path
+  if (!file.exists(file)) stop("Manifest file does not exist: ", file, call. = FALSE)
+  data.table::fread(file)
+}
+
+#' Import exported simulation tables
+#'
+#' @param path Export directory created by `sim_export()`.
+#' @return A named list containing `manifest`, `simulation`, and available
+#'   durable tables.
+#' @export
+sim_import <- function(path) {
+  manifest <- sim_read_manifest(path)
+  out <- list(manifest = manifest)
+  for (table in manifest$table) {
+    out[[table]] <- sim_read_table(path, table)
+  }
+  if (!is.null(out$simulation)) {
+    sim <- data.table::as.data.table(out$simulation)
+    if (!is.null(out$events)) data.table::setattr(sim, "events", sim_events(out$events))
+    if (!is.null(out$orders)) data.table::setattr(sim, "orders", out$orders)
+    data.table::setattr(sim, "import_manifest", manifest)
+    out$simulation <- sim
+  }
+  out
+}
+
+#' Read exported simulation events
+#'
+#' @param path Export directory created by `sim_export()`.
+#' @return A data.table of events.
+#' @export
+sim_read_events <- function(path) {
+  sim_events(sim_read_table(path, "events"))
+}
+
+#' Read exported account snapshots
+#'
+#' @param path Export directory created by `sim_export()`.
+#' @return A data.table of account snapshots.
+#' @export
+sim_read_account <- function(path) {
+  sim_read_table(path, "account")
+}
+
+#' Reconstruct simulation views from exported events
+#'
+#' @param path Export directory created by `sim_export()`.
+#' @return A data.table simulation result when a `simulation` table exists,
+#'   otherwise event-level account state reconstructed from events.
+#' @export
+sim_run_from_events <- function(path) {
+  imported <- sim_import(path)
+  if (!is.null(imported$simulation)) return(imported$simulation)
+  events <- sim_events(imported$events)
+  out <- events[, .SD, .SDcols = intersect(
+    c("timestamp", "equity", "cash", "state_dir", "state_ctr_unit", "avg_price", "last_px", "notional", "abs_notional", "unrealized_pnl", "maintenance_margin"),
+    names(events)
+  )]
+  if ("state_dir" %in% names(out)) data.table::setnames(out, "state_dir", "pos_dir")
+  if ("state_ctr_unit" %in% names(out)) data.table::setnames(out, "state_ctr_unit", "ctr_unit")
+  data.table::setattr(out, "events", events)
+  data.table::setattr(out, "orders", sim_orders(events))
+  out[]
 }

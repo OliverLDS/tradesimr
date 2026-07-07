@@ -60,13 +60,109 @@ test_that("schemas, adapters, export, and exchange replay work", {
   out_dir <- tempfile()
   paths <- sim_export(sim, out_dir, format = "csv")
   expect_true(all(file.exists(paths)))
+  expect_true(file.exists(file.path(out_dir, "manifest.csv")))
+  expect_true(nrow(sim_read_manifest(out_dir)) > 0)
+  expect_equal(nrow(sim_read_events(out_dir)), nrow(sim_events(sim)))
+  expect_equal(nrow(sim_read_account(out_dir)), nrow(sim_account(sim)))
+  expect_equal(nrow(sim_run_from_events(out_dir)), nrow(sim))
 
   exchange <- sim_exchange_new(list(ctr_step = 0.01, lev = 10))
   sim_exchange_add_bars(exchange, bars[, c("timestamp", "open", "high", "low", "close")])
-  order_id <- sim_exchange_place_order(exchange, "agent1", bars$timestamp[2], 1)
+  order_id <- sim_exchange_place_order(exchange, "agent1", bars$timestamp[2], side = "buy", qty = 1, client_order_id = "client-1")
   expect_match(order_id, "^ORD")
+  expect_equal(sim_exchange_orders(exchange)$client_order_id[1], "client-1")
+  expect_equal(sim_exchange_orders(exchange)$qty_type[1], "contracts")
   replay <- sim_exchange_run(exchange)
   expect_s3_class(replay, "data.table")
+  expect_equal(nrow(sim_orders(replay)), 0)
+  expect_s3_class(sim_exchange_new_events(exchange), "data.table")
   expect_s3_class(sim_exchange_account(exchange), "data.table")
   expect_s3_class(sim_exchange_positions(exchange), "data.table")
+
+  target_exchange <- sim_exchange_new(list(ctr_step = 0.01, lev = 10))
+  sim_exchange_add_bars(target_exchange, bars[, c("timestamp", "open", "high", "low", "close")])
+  sim_exchange_place_order(target_exchange, "agent1", bars$timestamp[2], side = "target", tgt_pos = 1)
+  expect_equal(sim_exchange_orders(target_exchange)$qty_type[1], "target_pos")
+  target_replay <- sim_exchange_run(target_exchange)
+  expect_gt(nrow(sim_orders(target_replay)), 0)
+
+  exchange_dir <- tempfile()
+  sim_exchange_save(exchange, exchange_dir)
+  loaded <- sim_exchange_load(exchange_dir)
+  expect_equal(nrow(sim_exchange_orders(loaded)), nrow(sim_exchange_orders(exchange)))
+  expect_s3_class(sim_exchange_account(loaded), "data.table")
+})
+
+test_that("sim_step processes one bar and carries prior state forward", {
+  state <- sim_state(cash = 10000, last_px = 100)
+  bar1 <- data.frame(
+    timestamp = as.POSIXct("2026-01-01", tz = "UTC"),
+    open = 100,
+    high = 102,
+    low = 99,
+    close = 101
+  )
+  orders <- data.frame(
+    action = "open",
+    dir = "long",
+    order_type = "market",
+    ctr_qty = 1,
+    price = NA_real_
+  )
+
+  step1 <- sim_step(state, bar1, orders, ctr_step = 0.01, lev = 10, fee_rt = 0.001)
+  expect_equal(step1$state$pos_dir, 1L)
+  expect_equal(step1$state$ctr_unit, 1)
+  expect_s3_class(step1$events, "data.table")
+  expect_equal(nrow(step1$events), 1)
+  expect_equal(step1$events$action_label[1], "open")
+
+  bar2 <- data.frame(
+    timestamp = as.POSIXct("2026-01-02", tz = "UTC"),
+    open = 101,
+    high = 103,
+    low = 100,
+    close = 102
+  )
+  step2 <- sim_step(step1$state, bar2, data.frame(), ctr_step = 0.01, lev = 10, fund_rt = 0.0001)
+  expect_equal(step2$state$pos_dir, 1L)
+  expect_true(step2$state$cash < step1$state$cash)
+  expect_true(any(step2$events$event_type_label == "funding"))
+})
+
+test_that("sim_exchange_step uses incremental step state", {
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 0.01, lev = 10))
+  bars <- data.frame(
+    timestamp = as.POSIXct("2026-01-01", tz = "UTC") + 0:1 * 86400,
+    open = c(100, 101),
+    high = c(102, 103),
+    low = c(99, 100),
+    close = c(101, 102)
+  )
+
+  sim_exchange_place_order(exchange, "agent1", bars$timestamp[1], side = "buy", qty = 1)
+  first <- sim_exchange_step(exchange, bars[1, ])
+  expect_equal(nrow(first), 1)
+  expect_equal(exchange$step_state$pos_dir, 1L)
+  expect_equal(sim_exchange_orders(exchange)$status[1], "filled")
+  expect_equal(sim_exchange_orders(exchange)$qty_type[1], "contracts")
+
+  second <- sim_exchange_step(exchange, bars[2, ])
+  expect_equal(nrow(second), 2)
+  expect_equal(exchange$step_state$pos_dir, 1L)
+  expect_equal(nrow(sim_exchange_new_events(exchange)), 0)
+  expect_gt(sim_exchange_account(exchange)$equity[1], first$equity[1])
+})
+
+test_that("order quantity semantics are explicit", {
+  exchange <- sim_exchange_new()
+  ts <- as.POSIXct("2026-01-01", tz = "UTC")
+  expect_error(
+    sim_exchange_place_order(exchange, "agent1", ts, side = "target", qty_type = "contracts", qty = 1),
+    "requires `qty_type = 'target_pos'`"
+  )
+  expect_error(
+    sim_exchange_place_order(exchange, "agent1", ts, side = "buy"),
+    "`qty` is required"
+  )
 })

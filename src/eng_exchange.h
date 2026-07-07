@@ -92,7 +92,7 @@ inline ExchangeMessage_on_funding Exchange::update_on_funding(const TradeState& 
   }
 
   const double dt = timestamp - old_timestamp;
-  out.funding_fee = s.fund_rt * dt * s.abs_notional() / (60.0 * 60.0 * 8.0);
+  out.funding_fee = s.fund_rt * dt * s.abs_notional() / (60.0 * 60.0 * s.funding_interval_hours);
   out.cash = s.cash - out.funding_fee;
 
   if (out.cash + s.unrealized_pnl() < s.mm()) {

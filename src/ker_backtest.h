@@ -21,6 +21,8 @@ inline void backtest(double* eq,
                      const double* tgt_pos,
                      const int* pos_strat,
                      const double* tol_pos,
+                     const int* order_type,
+                     const double* limit_price,
                      int strat,
                      int asset,
                      double init_cash,
@@ -28,8 +30,14 @@ inline void backtest(double* eq,
                      double ctr_step,
                      double lev,
                      double fee_rt,
+                     double maker_fee_rt,
+                     double taker_fee_rt,
                      double fund_rt,
+                     double funding_interval_hours,
                      double mmr,
+                     int fill_model,
+                     double slippage,
+                     double spread,
                      size_t len,
                      bool rec,
                      Recorder* recorder_ptr) {
@@ -42,6 +50,7 @@ inline void backtest(double* eq,
   s.lev = lev;
   s.fee_rt = fee_rt;
   s.fund_rt = fund_rt;
+  s.funding_interval_hours = funding_interval_hours;
   s.mmr = mmr;
 
   Exchange x{};
@@ -60,6 +69,29 @@ inline void backtest(double* eq,
     maintenance_margin[i] = s.liquidated ? 0.0 : s.mm();
   };
 
+  auto fill_price_with_costs = [&](const ActionDecision& a, double base_price) {
+    double side = 0.0;
+    if (a.action == TRADESIMR::ActionCode::OPEN || a.action == TRADESIMR::ActionCode::INCREASE) {
+      side = static_cast<double>(a.dir);
+    } else if (a.action == TRADESIMR::ActionCode::CLOSE || a.action == TRADESIMR::ActionCode::REDUCE) {
+      side = -static_cast<double>(s.pos_dir);
+    }
+    if (side == 0.0 || is_na(base_price)) return base_price;
+    return base_price + side * (spread / 2.0 + slippage);
+  };
+
+  auto trade_fee_rate = [&](const ActionDecision& a) {
+    if (a.type == TRADESIMR::OrderType::LIMIT) return maker_fee_rt;
+    return taker_fee_rt;
+  };
+
+  auto process_trade = [&](const ActionDecision& a, TRADESIMR::BarStage stage, double base_price) {
+    TradeState priced_state = s;
+    priced_state.fee_rt = trade_fee_rate(a);
+    double filled_price = fill_price_with_costs(a, base_price);
+    return x.update_on_trade(priced_state, a, stage, filled_price);
+  };
+
   for (size_t i = 0; i < len; ++i) {
     if (s.liquidated) {
       write_state(i);
@@ -73,7 +105,7 @@ inline void backtest(double* eq,
       for (size_t j = 0; j < s.pending.n; ++j) {
         const ActionDecision& a = s.pending.a[j];
         if (a.type == TRADESIMR::OrderType::MARKET) {
-          ExchangeMessage_on_trade trade_msg = x.update_on_trade(s, a, TRADESIMR::BarStage::OPEN, x.open);
+          ExchangeMessage_on_trade trade_msg = process_trade(a, TRADESIMR::BarStage::OPEN, x.open);
           if (trade_msg.liquidate) {
             if (rec && recorder_ptr) recorder_ptr->append_liquidation(s, trade_msg.timestamp, trade_msg.bar_stage);
             s.liquidated = true;
@@ -90,7 +122,7 @@ inline void backtest(double* eq,
 
           if (rec && recorder_ptr) recorder_ptr->append_record(s, trade_msg);
         } else if (x.limit_order_filled(a.px)) {
-          ExchangeMessage_on_trade trade_msg = x.update_on_trade(s, a, TRADESIMR::BarStage::INTRA, a.px);
+          ExchangeMessage_on_trade trade_msg = process_trade(a, TRADESIMR::BarStage::INTRA, a.px);
           if (trade_msg.liquidate) {
             if (rec && recorder_ptr) recorder_ptr->append_liquidation(s, trade_msg.timestamp, trade_msg.bar_stage);
             s.liquidated = true;
@@ -142,8 +174,42 @@ inline void backtest(double* eq,
     intent.strat = pos_strat[i];
     intent.tgt_pos = tgt_pos[i];
     intent.tol_pos = tol_pos[i];
+    intent.type = (order_type[i] == 1) ? TRADESIMR::OrderType::LIMIT : TRADESIMR::OrderType::MARKET;
+    intent.px = limit_price[i];
     s.pending = s.plan_action_mkt_ord(intent, s.action_id_now);
     s.action_id_now += s.pending.n;
+
+    if (fill_model == 1 && s.pending.n > 0) {
+      ActionPlan remaining;
+      for (size_t j = 0; j < s.pending.n; ++j) {
+        const ActionDecision& a = s.pending.a[j];
+        bool can_fill = a.type == TRADESIMR::OrderType::MARKET ||
+          (a.type == TRADESIMR::OrderType::LIMIT && x.limit_order_filled(a.px));
+        if (!can_fill) {
+          remaining.append_action(a);
+          continue;
+        }
+        double base_price = a.type == TRADESIMR::OrderType::LIMIT ? a.px : x.close;
+        ExchangeMessage_on_trade trade_msg = process_trade(
+          a,
+          a.type == TRADESIMR::OrderType::LIMIT ? TRADESIMR::BarStage::INTRA : TRADESIMR::BarStage::CLOSE,
+          base_price
+        );
+        if (trade_msg.liquidate) {
+          if (rec && recorder_ptr) recorder_ptr->append_liquidation(s, trade_msg.timestamp, trade_msg.bar_stage);
+          s.liquidated = true;
+          break;
+        }
+        if (trade_msg.status == TRADESIMR::ActionStatus::FILLED) {
+          s.cash = trade_msg.cash;
+          s.pos_dir = trade_msg.pos_dir;
+          s.ctr_unit = trade_msg.ctr_unit;
+          s.avg_price = trade_msg.avg_price;
+        }
+        if (rec && recorder_ptr) recorder_ptr->append_record(s, trade_msg);
+      }
+      s.pending = remaining;
+    }
 
     write_state(i);
   }

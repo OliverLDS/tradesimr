@@ -11,8 +11,8 @@ Rcpp::Rostream<false>& Rcpp::Rcerr = Rcpp::Rcpp_cerr_get();
 #endif
 
 // backtest_rcpp
-Rcpp::List backtest_rcpp(const Rcpp::NumericVector& timestamp, const Rcpp::NumericVector& open, const Rcpp::NumericVector& high, const Rcpp::NumericVector& low, const Rcpp::NumericVector& close, const Rcpp::NumericVector& tgt_pos, const Rcpp::IntegerVector& pos_strat, const Rcpp::NumericVector& tol_pos, int strat, int asset, double init_cash, double ctr_size, double ctr_step, double lev, double fee_rt, double fund_rt, double mmr, bool rec);
-RcppExport SEXP _tradesimr_backtest_rcpp(SEXP timestampSEXP, SEXP openSEXP, SEXP highSEXP, SEXP lowSEXP, SEXP closeSEXP, SEXP tgt_posSEXP, SEXP pos_stratSEXP, SEXP tol_posSEXP, SEXP stratSEXP, SEXP assetSEXP, SEXP init_cashSEXP, SEXP ctr_sizeSEXP, SEXP ctr_stepSEXP, SEXP levSEXP, SEXP fee_rtSEXP, SEXP fund_rtSEXP, SEXP mmrSEXP, SEXP recSEXP) {
+Rcpp::List backtest_rcpp(const Rcpp::NumericVector& timestamp, const Rcpp::NumericVector& open, const Rcpp::NumericVector& high, const Rcpp::NumericVector& low, const Rcpp::NumericVector& close, const Rcpp::NumericVector& tgt_pos, const Rcpp::IntegerVector& pos_strat, const Rcpp::NumericVector& tol_pos, const Rcpp::IntegerVector& order_type, const Rcpp::NumericVector& limit_price, int strat, int asset, double init_cash, double ctr_size, double ctr_step, double lev, double fee_rt, double maker_fee_rt, double taker_fee_rt, double fund_rt, double funding_interval_hours, double mmr, int fill_model, double slippage, double spread, bool rec);
+RcppExport SEXP _tradesimr_backtest_rcpp(SEXP timestampSEXP, SEXP openSEXP, SEXP highSEXP, SEXP lowSEXP, SEXP closeSEXP, SEXP tgt_posSEXP, SEXP pos_stratSEXP, SEXP tol_posSEXP, SEXP order_typeSEXP, SEXP limit_priceSEXP, SEXP stratSEXP, SEXP assetSEXP, SEXP init_cashSEXP, SEXP ctr_sizeSEXP, SEXP ctr_stepSEXP, SEXP levSEXP, SEXP fee_rtSEXP, SEXP maker_fee_rtSEXP, SEXP taker_fee_rtSEXP, SEXP fund_rtSEXP, SEXP funding_interval_hoursSEXP, SEXP mmrSEXP, SEXP fill_modelSEXP, SEXP slippageSEXP, SEXP spreadSEXP, SEXP recSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -24,6 +24,8 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type tgt_pos(tgt_posSEXP);
     Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type pos_strat(pos_stratSEXP);
     Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type tol_pos(tol_posSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type order_type(order_typeSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type limit_price(limit_priceSEXP);
     Rcpp::traits::input_parameter< int >::type strat(stratSEXP);
     Rcpp::traits::input_parameter< int >::type asset(assetSEXP);
     Rcpp::traits::input_parameter< double >::type init_cash(init_cashSEXP);
@@ -31,16 +33,60 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< double >::type ctr_step(ctr_stepSEXP);
     Rcpp::traits::input_parameter< double >::type lev(levSEXP);
     Rcpp::traits::input_parameter< double >::type fee_rt(fee_rtSEXP);
+    Rcpp::traits::input_parameter< double >::type maker_fee_rt(maker_fee_rtSEXP);
+    Rcpp::traits::input_parameter< double >::type taker_fee_rt(taker_fee_rtSEXP);
     Rcpp::traits::input_parameter< double >::type fund_rt(fund_rtSEXP);
+    Rcpp::traits::input_parameter< double >::type funding_interval_hours(funding_interval_hoursSEXP);
     Rcpp::traits::input_parameter< double >::type mmr(mmrSEXP);
+    Rcpp::traits::input_parameter< int >::type fill_model(fill_modelSEXP);
+    Rcpp::traits::input_parameter< double >::type slippage(slippageSEXP);
+    Rcpp::traits::input_parameter< double >::type spread(spreadSEXP);
     Rcpp::traits::input_parameter< bool >::type rec(recSEXP);
-    rcpp_result_gen = Rcpp::wrap(backtest_rcpp(timestamp, open, high, low, close, tgt_pos, pos_strat, tol_pos, strat, asset, init_cash, ctr_size, ctr_step, lev, fee_rt, fund_rt, mmr, rec));
+    rcpp_result_gen = Rcpp::wrap(backtest_rcpp(timestamp, open, high, low, close, tgt_pos, pos_strat, tol_pos, order_type, limit_price, strat, asset, init_cash, ctr_size, ctr_step, lev, fee_rt, maker_fee_rt, taker_fee_rt, fund_rt, funding_interval_hours, mmr, fill_model, slippage, spread, rec));
+    return rcpp_result_gen;
+END_RCPP
+}
+// step_rcpp
+Rcpp::List step_rcpp(const Rcpp::List& state, double timestamp, double open, double high, double low, double close, const Rcpp::IntegerVector& action, const Rcpp::IntegerVector& dir, const Rcpp::IntegerVector& order_type, const Rcpp::NumericVector& ctr_qty, const Rcpp::NumericVector& price, const Rcpp::IntegerVector& strat_id, const Rcpp::IntegerVector& action_id, int asset, double ctr_size, double ctr_step, double lev, double fee_rt, double maker_fee_rt, double taker_fee_rt, double fund_rt, double funding_interval_hours, double mmr, double old_timestamp, double slippage, double spread, bool rec);
+RcppExport SEXP _tradesimr_step_rcpp(SEXP stateSEXP, SEXP timestampSEXP, SEXP openSEXP, SEXP highSEXP, SEXP lowSEXP, SEXP closeSEXP, SEXP actionSEXP, SEXP dirSEXP, SEXP order_typeSEXP, SEXP ctr_qtySEXP, SEXP priceSEXP, SEXP strat_idSEXP, SEXP action_idSEXP, SEXP assetSEXP, SEXP ctr_sizeSEXP, SEXP ctr_stepSEXP, SEXP levSEXP, SEXP fee_rtSEXP, SEXP maker_fee_rtSEXP, SEXP taker_fee_rtSEXP, SEXP fund_rtSEXP, SEXP funding_interval_hoursSEXP, SEXP mmrSEXP, SEXP old_timestampSEXP, SEXP slippageSEXP, SEXP spreadSEXP, SEXP recSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::List& >::type state(stateSEXP);
+    Rcpp::traits::input_parameter< double >::type timestamp(timestampSEXP);
+    Rcpp::traits::input_parameter< double >::type open(openSEXP);
+    Rcpp::traits::input_parameter< double >::type high(highSEXP);
+    Rcpp::traits::input_parameter< double >::type low(lowSEXP);
+    Rcpp::traits::input_parameter< double >::type close(closeSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type action(actionSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type dir(dirSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type order_type(order_typeSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type ctr_qty(ctr_qtySEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type price(priceSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type strat_id(strat_idSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type action_id(action_idSEXP);
+    Rcpp::traits::input_parameter< int >::type asset(assetSEXP);
+    Rcpp::traits::input_parameter< double >::type ctr_size(ctr_sizeSEXP);
+    Rcpp::traits::input_parameter< double >::type ctr_step(ctr_stepSEXP);
+    Rcpp::traits::input_parameter< double >::type lev(levSEXP);
+    Rcpp::traits::input_parameter< double >::type fee_rt(fee_rtSEXP);
+    Rcpp::traits::input_parameter< double >::type maker_fee_rt(maker_fee_rtSEXP);
+    Rcpp::traits::input_parameter< double >::type taker_fee_rt(taker_fee_rtSEXP);
+    Rcpp::traits::input_parameter< double >::type fund_rt(fund_rtSEXP);
+    Rcpp::traits::input_parameter< double >::type funding_interval_hours(funding_interval_hoursSEXP);
+    Rcpp::traits::input_parameter< double >::type mmr(mmrSEXP);
+    Rcpp::traits::input_parameter< double >::type old_timestamp(old_timestampSEXP);
+    Rcpp::traits::input_parameter< double >::type slippage(slippageSEXP);
+    Rcpp::traits::input_parameter< double >::type spread(spreadSEXP);
+    Rcpp::traits::input_parameter< bool >::type rec(recSEXP);
+    rcpp_result_gen = Rcpp::wrap(step_rcpp(state, timestamp, open, high, low, close, action, dir, order_type, ctr_qty, price, strat_id, action_id, asset, ctr_size, ctr_step, lev, fee_rt, maker_fee_rt, taker_fee_rt, fund_rt, funding_interval_hours, mmr, old_timestamp, slippage, spread, rec));
     return rcpp_result_gen;
 END_RCPP
 }
 
 static const R_CallMethodDef CallEntries[] = {
-    {"_tradesimr_backtest_rcpp", (DL_FUNC) &_tradesimr_backtest_rcpp, 18},
+    {"_tradesimr_backtest_rcpp", (DL_FUNC) &_tradesimr_backtest_rcpp, 26},
+    {"_tradesimr_step_rcpp", (DL_FUNC) &_tradesimr_step_rcpp, 27},
     {NULL, NULL, 0}
 };
 

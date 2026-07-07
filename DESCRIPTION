@@ -1,6 +1,6 @@
 Package: tradesimr
-Title: Backtesting and Paper Trading Framework for Systematic Strategies
-Version: 0.2.0
+Title: Execution and Simulation Engine for Trading Strategies
+Version: 0.3.0
 Authors@R: 
     person(given = "Oliver",
            family = "Lee",
@@ -9,13 +9,14 @@ Authors@R:
 Author: Oliver Lee
 Maintainer: Oliver Lee <olee7149@gmail.com>
 Description: 
-    A modular framework for backtesting and paper trading algorithmic strategies. 
-    The package provides reusable components for simulating trades on historical data 
-    and executing strategies in real-time environments with live market data. 
-    Supports multi-asset, multi-timeframe workflows, including order simulation, 
-    position tracking, risk management, and strategy evaluation. 
-    Built for extensibility and integration with external packages such as strategyr
-    for signal generation and okxr for exchange data.
+    An R-native trading simulation package with a C++ execution core that turns
+    strategy intentions and explicit orders into simulated trades, positions,
+    cash, profit and loss, risk, and performance outputs under configurable
+    execution, margin, funding, and cost assumptions. The package provides
+    historical replay, incremental exchange stepping, durable event schemas, and
+    import/export helpers. It is designed to consume signals or target exposure
+    decisions from strategy packages such as strategyr and market data from
+    adapters such as okxr.
 Depends: 
     R (>= 4.2.0)
 Imports: 

@@ -16,6 +16,7 @@ struct TradeState {
 
   double fee_rt = 0.0005;
   double fund_rt = 0.0004;
+  double funding_interval_hours = 8.0;
 
   double ctr_unit = 0.0;
   TRADESIMR::Dir pos_dir = TRADESIMR::Dir::FLAT;

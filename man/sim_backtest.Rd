@@ -14,6 +14,8 @@ sim_backtest(
   tgt_pos_col = "tgt_pos",
   pos_strat_col = NULL,
   tol_pos_col = NULL,
+  order_type_col = NULL,
+  limit_price_col = NULL,
   strat = 0L,
   asset = 0L,
   init_cash = 10000,
@@ -21,8 +23,14 @@ sim_backtest(
   ctr_step = 1,
   lev = 10,
   fee_rt = 0,
+  maker_fee_rt = NA_real_,
+  taker_fee_rt = NA_real_,
   fund_rt = 0,
+  funding_interval_hours = 8,
   mmr = 0.02,
+  fill_model = c("next_open", "same_close"),
+  slippage = 0,
+  spread = 0,
   tol_pos = 0,
   record = TRUE
 )
@@ -39,6 +47,10 @@ names in \code{data}.}
 \item{tol_pos_col}{Optional target-position tolerance column. If absent,
 \code{tol_pos} is used.}
 
+\item{order_type_col}{Optional order type column using \code{market} or \code{limit}.}
+
+\item{limit_price_col}{Optional limit price column.}
+
 \item{strat, asset}{Integer identifiers for the simulation and asset.}
 
 \item{init_cash}{Initial account cash.}
@@ -51,9 +63,21 @@ names in \code{data}.}
 
 \item{fee_rt}{Trading fee rate on notional.}
 
+\item{maker_fee_rt, taker_fee_rt}{Optional maker/taker fee rates. Missing
+values fall back to \code{fee_rt}.}
+
 \item{fund_rt}{Funding rate per 8 hours on notional.}
 
+\item{funding_interval_hours}{Funding interval in hours.}
+
 \item{mmr}{Maintenance margin rate.}
+
+\item{fill_model}{Fill timing model: \code{next_open} or \code{same_close}.}
+
+\item{slippage}{Absolute slippage added against trade direction.}
+
+\item{spread}{Absolute bid/ask spread; half spread is added against trade
+direction.}
 
 \item{tol_pos}{Scalar default target-position tolerance used when
 \code{tol_pos_col} is absent.}

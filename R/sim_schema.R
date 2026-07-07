@@ -1,3 +1,8 @@
+#' tradesimr durable schema version
+#'
+#' @export
+TRADESIMR_SCHEMA_VERSION <- "0.3.0"
+
 #' Simulation table schemas
 #'
 #' @return A named list of empty data.tables representing durable simulation
@@ -17,6 +22,21 @@ sim_schemas <- function() {
       strat_id = integer(),
       tgt_pos = numeric(),
       tol_pos = numeric()
+    ),
+    agent_orders = data.table::data.table(
+      order_id = character(),
+      client_order_id = character(),
+      agent_id = character(),
+      timestamp = as.POSIXct(character()),
+      order_type = character(),
+      side = character(),
+      qty_type = character(),
+      qty = numeric(),
+      limit_price = numeric(),
+      time_in_force = character(),
+      tgt_pos = numeric(),
+      tol_pos = numeric(),
+      status = character()
     ),
     events = data.table::data.table(
       timestamp = as.POSIXct(character()),
@@ -79,6 +99,35 @@ sim_schemas <- function() {
       maintenance_margin = numeric(),
       margin_buffer = numeric()
     )
+  )
+}
+
+#' Get the tradesimr schema version
+#'
+#' @return A scalar character schema version.
+#' @export
+sim_schema_version <- function() {
+  TRADESIMR_SCHEMA_VERSION
+}
+
+#' Build an export manifest
+#'
+#' @param paths Named character vector of exported files.
+#' @param tables Named list of exported tables.
+#' @param format Export file format.
+#' @param config Optional simulation configuration.
+#' @return A data.table manifest.
+#' @export
+sim_manifest <- function(paths, tables, format, config = list()) {
+  data.table::data.table(
+    schema_version = TRADESIMR_SCHEMA_VERSION,
+    package_version = as.character(utils::packageVersion("tradesimr")),
+    created_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
+    format = format,
+    table = names(paths),
+    file = basename(unname(paths)),
+    rows = vapply(tables[names(paths)], nrow, integer(1)),
+    config = paste(names(config), unlist(config, use.names = FALSE), sep = "=", collapse = ";")
   )
 }
 

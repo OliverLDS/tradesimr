@@ -11,14 +11,23 @@
 #' @param pos_strat_col Optional strategy-id column. If absent, `strat` is used.
 #' @param tol_pos_col Optional target-position tolerance column. If absent,
 #'   `tol_pos` is used.
+#' @param order_type_col Optional order type column using `market` or `limit`.
+#' @param limit_price_col Optional limit price column.
 #' @param strat,asset Integer identifiers for the simulation and asset.
 #' @param init_cash Initial account cash.
 #' @param ctr_size Contract size.
 #' @param ctr_step Minimum contract increment.
 #' @param lev Leverage used for initial margin.
 #' @param fee_rt Trading fee rate on notional.
+#' @param maker_fee_rt,taker_fee_rt Optional maker/taker fee rates. Missing
+#'   values fall back to `fee_rt`.
 #' @param fund_rt Funding rate per 8 hours on notional.
+#' @param funding_interval_hours Funding interval in hours.
 #' @param mmr Maintenance margin rate.
+#' @param fill_model Fill timing model: `next_open` or `same_close`.
+#' @param slippage Absolute slippage added against trade direction.
+#' @param spread Absolute bid/ask spread; half spread is added against trade
+#'   direction.
 #' @param tol_pos Scalar default target-position tolerance used when
 #'   `tol_pos_col` is absent.
 #' @param record Whether to attach the execution recorder.
@@ -35,6 +44,8 @@ sim_backtest <- function(data,
                          tgt_pos_col = "tgt_pos",
                          pos_strat_col = NULL,
                          tol_pos_col = NULL,
+                         order_type_col = NULL,
+                         limit_price_col = NULL,
                          strat = 0L,
                          asset = 0L,
                          init_cash = 10000,
@@ -42,10 +53,17 @@ sim_backtest <- function(data,
                          ctr_step = 1,
                          lev = 10,
                          fee_rt = 0,
+                         maker_fee_rt = NA_real_,
+                         taker_fee_rt = NA_real_,
                          fund_rt = 0,
+                         funding_interval_hours = 8,
                          mmr = 0.02,
+                         fill_model = c("next_open", "same_close"),
+                         slippage = 0,
+                         spread = 0,
                          tol_pos = 0,
                          record = TRUE) {
+  fill_model <- match.arg(fill_model)
   DT <- data.table::as.data.table(data)
   required <- c(timestamp_col, open_col, high_col, low_col, close_col, tgt_pos_col)
   missing <- setdiff(required, names(DT))
@@ -70,6 +88,22 @@ sim_backtest <- function(data,
     as.numeric(DT[[tol_pos_col]])
   }
 
+  order_type <- if (is.null(order_type_col)) {
+    rep.int(0L, n)
+  } else {
+    raw_type <- tolower(as.character(DT[[order_type_col]]))
+    if (any(!raw_type %in% c("market", "limit"))) {
+      stop("Order type column must contain only `market` or `limit`.", call. = FALSE)
+    }
+    as.integer(raw_type == "limit")
+  }
+
+  limit_price <- if (is.null(limit_price_col)) {
+    rep.int(NA_real_, n)
+  } else {
+    as.numeric(DT[[limit_price_col]])
+  }
+
   engine <- backtest_rcpp(
     timestamp = timestamp,
     open = as.numeric(DT[[open_col]]),
@@ -79,6 +113,8 @@ sim_backtest <- function(data,
     tgt_pos = as.numeric(DT[[tgt_pos_col]]),
     pos_strat = pos_strat,
     tol_pos = tol_pos_vec,
+    order_type = order_type,
+    limit_price = limit_price,
     strat = as.integer(strat),
     asset = as.integer(asset),
     init_cash = as.numeric(init_cash),
@@ -86,8 +122,14 @@ sim_backtest <- function(data,
     ctr_step = as.numeric(ctr_step),
     lev = as.numeric(lev),
     fee_rt = as.numeric(fee_rt),
+    maker_fee_rt = as.numeric(maker_fee_rt),
+    taker_fee_rt = as.numeric(taker_fee_rt),
     fund_rt = as.numeric(fund_rt),
+    funding_interval_hours = as.numeric(funding_interval_hours),
     mmr = as.numeric(mmr),
+    fill_model = as.integer(match(fill_model, c("next_open", "same_close")) - 1L),
+    slippage = as.numeric(slippage),
+    spread = as.numeric(spread),
     rec = isTRUE(record)
   )
 
@@ -112,8 +154,14 @@ sim_backtest <- function(data,
     ctr_step = ctr_step,
     lev = lev,
     fee_rt = fee_rt,
+    maker_fee_rt = maker_fee_rt,
+    taker_fee_rt = taker_fee_rt,
     fund_rt = fund_rt,
+    funding_interval_hours = funding_interval_hours,
     mmr = mmr,
+    fill_model = fill_model,
+    slippage = slippage,
+    spread = spread,
     tol_pos = tol_pos
   ))
 
@@ -152,7 +200,11 @@ sim_replay <- function(data, ...) {
 #' @return A data.table of recorded simulation events.
 #' @export
 sim_events <- function(x) {
-  recorder <- if (is.data.frame(x)) attr(x, "events", exact = TRUE) else x
+  if (is.data.frame(x) && all(c("event_id", "event_type") %in% names(x))) {
+    recorder <- data.table::as.data.table(x)
+  } else {
+    recorder <- if (is.data.frame(x)) attr(x, "events", exact = TRUE) else x
+  }
   if (is.null(recorder)) return(data.table::data.table())
   if (data.table::is.data.table(recorder)) return(data.table::copy(recorder))
 
