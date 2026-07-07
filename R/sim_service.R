@@ -119,6 +119,7 @@ sim_live_service_run <- function(exchange = sim_exchange_new(), host = "127.0.0.
   list(
     account = .service_records(sim_exchange_account(exchange)),
     positions = .service_records(sim_exchange_positions(exchange)),
+    market_events = .service_records(exchange$market_events),
     agent_orders = .service_records(exchange$agent_orders),
     agent_commands = .service_records(exchange$agent_commands),
     order_requests = .service_records(exchange$order_requests),

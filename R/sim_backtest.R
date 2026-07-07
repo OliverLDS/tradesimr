@@ -135,6 +135,10 @@ sim_backtest <- function(data,
 
   out <- data.table::data.table(
     timestamp = timestamp_raw,
+    open = as.numeric(DT[[open_col]]),
+    high = as.numeric(DT[[high_col]]),
+    low = as.numeric(DT[[low_col]]),
+    close = as.numeric(DT[[close_col]]),
     equity = as.numeric(engine$equity),
     cash = as.numeric(engine$cash),
     pos_dir = as.integer(engine$pos_dir),

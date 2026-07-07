@@ -1,4 +1,5 @@
 const REQUIRED_TABLES = [
+  "market_events",
   "events",
   "account_snapshots",
   "risk_snapshots",
@@ -20,6 +21,11 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("order-form").addEventListener("submit", submitOrder);
   document.getElementById("cancel-form").addEventListener("submit", submitCancel);
   document.getElementById("refresh-state").addEventListener("click", refreshServiceState);
+  document.getElementById("feed-form").addEventListener("submit", applyFeedConfig);
+  document.getElementById("feed-refresh").addEventListener("click", refreshFeedStatus);
+  document.getElementById("feed-start").addEventListener("click", feedStart);
+  document.getElementById("feed-stop").addEventListener("click", feedStop);
+  document.getElementById("feed-step").addEventListener("click", feedStep);
   loadFromFolder();
 });
 
@@ -30,7 +36,11 @@ async function loadFromFolder() {
     const tables = {};
     for (const table of REQUIRED_TABLES) {
       const file = files[table] || `${table}.csv`;
-      tables[table] = parseCsv(await fetchText(file));
+      try {
+        tables[table] = parseCsv(await fetchText(file));
+      } catch (err) {
+        tables[table] = [];
+      }
     }
     state.manifest = manifest;
     state.tables = tables;
@@ -116,6 +126,7 @@ function parseCsv(text) {
 function render() {
   renderManifest();
   renderKpis();
+  renderCandles();
   renderEquity();
   renderRiskSummary();
   renderTimeline();
@@ -180,16 +191,115 @@ async function postService(path, payload, okMessage) {
   }
 }
 
+async function applyFeedConfig(event) {
+  event.preventDefault();
+  const data = await postFeed("/feed/config", feedConfigPayload(), "Feed config applied.");
+  if (data) applyFeedStatus(data);
+}
+
+async function refreshFeedStatus() {
+  try {
+    const response = await fetch(`${serviceBase()}/feed/status`, { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    applyFeedStatus(await response.json());
+  } catch (err) {
+    setFeedStatus(`Unable to refresh feed status: ${err.message}`);
+  }
+}
+
+async function feedStart() {
+  const data = await postFeed("/feed/start", {}, "Feed started.");
+  if (data) applyFeedStatus(data);
+}
+
+async function feedStop() {
+  const data = await postFeed("/feed/stop", {}, "Feed stopped.");
+  if (data) applyFeedStatus(data);
+}
+
+async function feedStep() {
+  const data = await postFeed("/feed/step", {}, "Feed stepped.");
+  if (!data) return;
+  if (data.state) applyServiceState(data.state);
+  applyFeedStatus(data.feed || data);
+}
+
+async function postFeed(path, payload, okMessage) {
+  try {
+    const response = await fetch(`${serviceBase()}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    setFeedStatus(okMessage);
+    return data;
+  } catch (err) {
+    setFeedStatus(`Feed request failed: ${err.message}`);
+    return null;
+  }
+}
+
 function applyServiceState(data) {
   state.tables.account_snapshots = data.account || state.tables.account_snapshots || [];
   state.tables.risk_snapshots = deriveRiskRows(data.account || []);
+  state.tables.market_events = data.market_events || state.tables.market_events || [];
   state.tables.orders = data.agent_orders || state.tables.orders || [];
   state.tables.agent_orders = data.agent_orders || [];
   state.tables.agent_commands = data.agent_commands || [];
   state.tables.order_requests = data.order_requests || [];
   state.tables.order_cancellations = data.order_cancellations || [];
   state.tables.events = data.events || state.tables.events || [];
+  if (data.feed) applyFeedStatus(data.feed);
   render();
+}
+
+function feedConfigPayload() {
+  const form = new FormData(document.getElementById("feed-form"));
+  const raw = Object.fromEntries(form.entries());
+  const randomWalk = {
+    start_price: numericOrDefault(raw.start_price, 100),
+    drift: numericOrDefault(raw.drift, 0),
+    vol: numericOrDefault(raw.vol, 0.02),
+    seed: Math.trunc(numericOrDefault(raw.seed, 1))
+  };
+  return {
+    symbol: raw.symbol || "BTC-USDT-SWAP",
+    timeframe: raw.timeframe || "4h",
+    tz: raw.tz || "UTC",
+    feed_mode: raw.feed_mode || "simulation",
+    random_walk: randomWalk
+  };
+}
+
+function applyFeedStatus(feed = {}) {
+  if (!feed || typeof feed !== "object") {
+    setFeedStatus("Feed status is unavailable.");
+    return;
+  }
+  setFeedField("symbol", feed.symbol);
+  setFeedField("timeframe", feed.timeframe);
+  setFeedField("tz", feed.tz);
+  setFeedField("feed_mode", feed.feed_mode);
+  const running = feed.running === true || feed.running === "TRUE" || feed.running === "true";
+  const details = [
+    `status=${running ? "running" : "stopped"}`,
+    `mode=${feed.feed_mode || "unknown"}`,
+    `symbol=${feed.symbol || "unknown"}`,
+    `timeframe=${feed.timeframe || "unknown"}`,
+    `tz=${feed.tz || "unknown"}`,
+    `bars=${feed.bars ?? "0"}`,
+    `last_end=${feed.last_completed_end || "none"}`,
+    `last_price=${feed.last_price ?? "n/a"}`
+  ];
+  setFeedStatus(details.join(" | "));
+}
+
+function setFeedField(name, value) {
+  if (value === undefined || value === null || value === "") return;
+  const field = document.querySelector(`#feed-form [name="${name}"]`);
+  if (field) field.value = value;
 }
 
 function deriveRiskRows(accountRows) {
@@ -215,6 +325,10 @@ function serviceBase() {
 
 function setAgentStatus(message) {
   document.getElementById("agent-status").textContent = message;
+}
+
+function setFeedStatus(message) {
+  document.getElementById("feed-status").textContent = message;
 }
 
 function renderManifest() {
@@ -247,6 +361,103 @@ function renderKpis() {
   document.getElementById("kpis").innerHTML = items.map(([label, value]) =>
     `<article class="kpi"><span>${label}</span><strong>${value}</strong></article>`
   ).join("");
+}
+
+function renderCandles() {
+  const bars = normalizeBars(state.tables.market_events || []);
+  const el = document.getElementById("candle-chart");
+  const summary = document.getElementById("candle-summary");
+  if (!bars.length) {
+    el.innerHTML = "<p class=\"empty\">No OHLC bars available. Export market_events.csv or refresh live service state.</p>";
+    summary.textContent = "No market data loaded.";
+    return;
+  }
+
+  const shown = bars.slice(-80);
+  const fills = normalizeMarkers(state.tables.fills || [], "fill");
+  const orders = normalizeMarkers(state.tables.orders || [], "order");
+  const markerRows = [...fills, ...orders].filter(marker => marker.price > 0);
+  const width = 960;
+  const height = 360;
+  const pad = { top: 24, right: 72, bottom: 44, left: 58 };
+  const plotW = width - pad.left - pad.right;
+  const plotH = height - pad.top - pad.bottom;
+  const lows = shown.map(row => row.low);
+  const highs = shown.map(row => row.high);
+  const markerPrices = markerRows.map(row => row.price);
+  const minY = Math.min(...lows, ...markerPrices);
+  const maxY = Math.max(...highs, ...markerPrices);
+  const yRange = maxY - minY || 1;
+  const step = plotW / Math.max(1, shown.length);
+  const bodyW = Math.max(3, Math.min(14, step * 0.58));
+  const xFor = i => pad.left + step * i + step / 2;
+  const yFor = price => pad.top + (maxY - price) / yRange * plotH;
+  const timeIndex = new Map(shown.map((bar, i) => [String(bar.timestamp), i]));
+
+  const candleSvg = shown.map((bar, i) => {
+    const x = xFor(i);
+    const openY = yFor(bar.open);
+    const closeY = yFor(bar.close);
+    const highY = yFor(bar.high);
+    const lowY = yFor(bar.low);
+    const top = Math.min(openY, closeY);
+    const bodyH = Math.max(1, Math.abs(openY - closeY));
+    const cls = bar.close >= bar.open ? "up" : "down";
+    return `
+      <line x1="${x.toFixed(2)}" y1="${highY.toFixed(2)}" x2="${x.toFixed(2)}" y2="${lowY.toFixed(2)}" class="candle-wick ${cls}"></line>
+      <rect x="${(x - bodyW / 2).toFixed(2)}" y="${top.toFixed(2)}" width="${bodyW.toFixed(2)}" height="${bodyH.toFixed(2)}" class="candle-body ${cls}">
+        <title>${escapeHtml(bar.timestamp)} O ${formatNumber(bar.open, 4)} H ${formatNumber(bar.high, 4)} L ${formatNumber(bar.low, 4)} C ${formatNumber(bar.close, 4)}</title>
+      </rect>`;
+  }).join("");
+
+  const markerSvg = markerRows.map(marker => {
+    const idx = timeIndex.get(String(marker.timestamp));
+    if (idx === undefined) return "";
+    const x = xFor(idx);
+    const y = yFor(marker.price);
+    const cls = marker.kind === "fill" ? "fill-marker" : "order-marker";
+    const label = `${marker.kind} ${marker.side || ""} ${marker.price}`;
+    return `<circle cx="${x.toFixed(2)}" cy="${y.toFixed(2)}" r="${marker.kind === "fill" ? 4.5 : 3.5}" class="${cls}"><title>${escapeHtml(label)}</title></circle>`;
+  }).join("");
+
+  const last = bars[bars.length - 1];
+  summary.textContent = `Bars ${bars.length}; latest ${last.timestamp}; close ${formatNumber(last.close, 4)}. Fills and orders are overlaid when timestamps match visible candles.`;
+  el.innerHTML = `
+    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="OHLC candle chart">
+      <rect x="${pad.left}" y="${pad.top}" width="${plotW}" height="${plotH}" class="plot-bg"></rect>
+      <line x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${height - pad.bottom}" class="axis"></line>
+      <line x1="${pad.left}" y1="${height - pad.bottom}" x2="${width - pad.right}" y2="${height - pad.bottom}" class="axis"></line>
+      <text x="${pad.left}" y="${pad.top - 8}" class="chart-label">${formatNumber(maxY, 4)}</text>
+      <text x="${pad.left}" y="${height - 12}" class="chart-label">${formatNumber(minY, 4)}</text>
+      <text x="${width - pad.right}" y="${pad.top - 8}" text-anchor="end" class="chart-label">last ${formatNumber(last.close, 4)}</text>
+      ${candleSvg}
+      ${markerSvg}
+    </svg>`;
+}
+
+function normalizeBars(rows) {
+  return rows.map(row => ({
+    timestamp: row.timestamp,
+    open: number(row.open),
+    high: number(row.high),
+    low: number(row.low),
+    close: number(row.close)
+  })).filter(row =>
+    row.timestamp !== undefined &&
+    Number.isFinite(row.open) &&
+    Number.isFinite(row.high) &&
+    Number.isFinite(row.low) &&
+    Number.isFinite(row.close)
+  );
+}
+
+function normalizeMarkers(rows, kind) {
+  return rows.map(row => ({
+    kind,
+    timestamp: row.timestamp,
+    side: row.side || row.dir_label || row.action_label || "",
+    price: number(row.price || row.limit_price)
+  })).filter(row => row.timestamp !== undefined && Number.isFinite(row.price));
 }
 
 function renderEquity() {
@@ -339,6 +550,11 @@ function setStatus(message) {
 function number(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : NaN;
+}
+
+function numericOrDefault(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 function formatNumber(value, digits = 2) {

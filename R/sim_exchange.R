@@ -240,6 +240,7 @@ sim_exchange_step <- function(exchange, bars) {
   exchange$new_events <- data.table::rbindlist(new_event_list, fill = TRUE)
   exchange$step_events <- data.table::rbindlist(list(exchange$step_events, exchange$new_events), fill = TRUE)
   exchange$result <- exchange$step_snapshots
+  data.table::setattr(exchange$result, "market_events", exchange$market_events)
   data.table::setattr(exchange$result, "events", exchange$step_events)
   data.table::setattr(exchange$result, "orders", sim_orders(exchange$step_events))
   exchange$last_events <- exchange$step_events

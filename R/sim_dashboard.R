@@ -1,8 +1,8 @@
 #' Export a static simulation dashboard
 #'
 #' Writes dashboard-ready CSV tables, a manifest, and static HTML/CSS/JS assets.
-#' The dashboard is a read-only consumer of durable event/account/risk tables; it
-#' does not call C++, R6, or live exchange internals.
+#' The dashboard is a read-only consumer of durable market, event, account, risk,
+#' order, and fill tables; it does not call C++, R6, or live exchange internals.
 #'
 #' @param sim A simulation result returned by `sim_backtest()` or
 #'   `sim_exchange_step()`.
@@ -13,6 +13,7 @@ sim_dashboard_export <- function(sim, path) {
   if (!dir.exists(path)) dir.create(path, recursive = TRUE)
 
   tables <- list(
+    market_events = sim_market_events(sim),
     events = sim_events(sim),
     account_snapshots = sim_account(sim),
     risk_snapshots = sim_risk(sim),

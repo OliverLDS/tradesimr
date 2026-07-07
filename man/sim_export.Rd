@@ -8,8 +8,8 @@ sim_export(
   sim,
   path,
   format = c("csv", "fst"),
-  tables = c("simulation", "events", "orders", "fills", "positions", "cash_ledger",
-    "account", "risk")
+  tables = c("simulation", "market_events", "events", "orders", "fills", "positions",
+    "cash_ledger", "account", "risk")
 )
 }
 \arguments{

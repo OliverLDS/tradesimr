@@ -52,6 +52,21 @@ sim_account <- function(sim) {
   DT[, .SD, .SDcols = intersect(cols, names(DT))]
 }
 
+#' Extract market bars from a simulation
+#'
+#' @param sim A simulation result returned by `sim_backtest()` or
+#'   `sim_exchange_step()`.
+#' @return A data.table with `timestamp`, `open`, `high`, `low`, and `close`.
+#' @export
+sim_market_events <- function(sim) {
+  attr_bars <- attr(sim, "market_events", exact = TRUE)
+  if (!is.null(attr_bars)) return(as_market_bars(attr_bars))
+  DT <- data.table::as.data.table(sim)
+  cols <- c("timestamp", "open", "high", "low", "close")
+  if (!all(cols %in% names(DT))) return(sim_schemas()$market_events[0])
+  as_market_bars(DT[, .SD, .SDcols = cols])
+}
+
 #' Extract risk snapshots from a simulation
 #'
 #' @param sim A simulation result returned by `sim_backtest()`.
@@ -82,7 +97,7 @@ sim_risk <- function(sim) {
 sim_export <- function(sim,
                        path,
                        format = c("csv", "fst"),
-                       tables = c("simulation", "events", "orders", "fills", "positions", "cash_ledger", "account", "risk")) {
+                       tables = c("simulation", "market_events", "events", "orders", "fills", "positions", "cash_ledger", "account", "risk")) {
   format <- match.arg(format)
   if (!dir.exists(path)) dir.create(path, recursive = TRUE)
   if (format == "fst" && !requireNamespace("fst", quietly = TRUE)) {
@@ -91,6 +106,7 @@ sim_export <- function(sim,
 
   table_map <- list(
     simulation = data.table::as.data.table(sim),
+    market_events = sim_market_events(sim),
     events = sim_events(sim),
     orders = sim_orders(sim),
     fills = sim_fills(sim),

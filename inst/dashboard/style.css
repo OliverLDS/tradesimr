@@ -142,7 +142,8 @@ main {
   margin-bottom: 1.25rem;
 }
 
-.agent-console {
+.agent-console,
+.feed-console {
   background:
     linear-gradient(135deg, rgba(24, 33, 31, 0.94), rgba(39, 55, 47, 0.90)),
     var(--panel);
@@ -150,7 +151,9 @@ main {
 }
 
 .agent-console h2,
-.agent-console p {
+.agent-console p,
+.feed-console h2,
+.feed-console p {
   color: #fff9ec;
 }
 
@@ -163,7 +166,9 @@ main {
 
 .service-box,
 .order-form,
-.cancel-form {
+.cancel-form,
+.feed-form,
+.feed-actions {
   display: grid;
   gap: 0.75rem;
 }
@@ -181,12 +186,22 @@ main {
   grid-template-columns: repeat(8, minmax(110px, 1fr));
 }
 
+.feed-form {
+  grid-template-columns: repeat(9, minmax(100px, 1fr));
+}
+
+.feed-actions {
+  grid-template-columns: repeat(4, auto);
+  align-items: end;
+}
+
 .cancel-form {
   grid-template-columns: minmax(180px, 1fr) minmax(140px, 0.6fr) auto;
   margin-top: 0.8rem;
 }
 
-.agent-console label {
+.agent-console label,
+.feed-console label {
   display: grid;
   gap: 0.35rem;
   color: #e8dec9;
@@ -196,7 +211,9 @@ main {
 }
 
 .agent-console input,
-.agent-console select {
+.agent-console select,
+.feed-console input,
+.feed-console select {
   width: 100%;
   border: 1px solid rgba(255, 249, 236, 0.26);
   border-radius: 0.7rem;
@@ -205,11 +222,13 @@ main {
   color: #fff9ec;
 }
 
-.agent-console option {
+.agent-console option,
+.feed-console option {
   color: var(--ink);
 }
 
-.agent-console button {
+.agent-console button,
+.feed-console button {
   align-self: end;
   border: 0;
   border-radius: 0.8rem;
@@ -220,7 +239,8 @@ main {
   font-weight: 700;
 }
 
-.agent-status {
+.agent-status,
+.feed-status {
   margin: 0.9rem 0 0;
   color: #e8dec9;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -256,9 +276,27 @@ main {
   min-width: 0;
 }
 
+.chart-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.8rem;
+}
+
+.chart-head p {
+  margin: 0.2rem 0 0;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.84rem;
+}
+
 .chart {
   width: 100%;
   min-height: 280px;
+}
+
+.candle-chart {
+  min-height: 360px;
 }
 
 svg {
@@ -277,6 +315,42 @@ svg {
   stroke: var(--accent);
   stroke-linejoin: round;
   stroke-width: 4;
+}
+
+.plot-bg {
+  fill: rgba(255, 249, 236, 0.48);
+}
+
+.candle-wick {
+  stroke-width: 1.4;
+}
+
+.candle-body {
+  stroke-width: 1;
+}
+
+.candle-wick.up,
+.candle-body.up {
+  fill: #167a55;
+  stroke: #167a55;
+}
+
+.candle-wick.down,
+.candle-body.down {
+  fill: #b13f2f;
+  stroke: #b13f2f;
+}
+
+.fill-marker {
+  fill: #111f1b;
+  stroke: #fff9ec;
+  stroke-width: 1.5;
+}
+
+.order-marker {
+  fill: var(--accent-2);
+  stroke: #111f1b;
+  stroke-width: 1.2;
 }
 
 .chart-label {
@@ -385,6 +459,8 @@ th {
   .grid,
   .order-form,
   .cancel-form,
+  .feed-form,
+  .feed-actions,
   .console-head,
   .service-box {
     grid-template-columns: 1fr;
