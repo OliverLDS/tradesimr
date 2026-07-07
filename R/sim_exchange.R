@@ -33,6 +33,7 @@ sim_exchange_new <- function(config = list()) {
   state$last_bar_count <- 0L
   state$next_order_id <- 1L
   state$next_command_id <- 1L
+  state$feed <- sim_feed_config()
   class(state) <- c("tradesimr_exchange", "environment")
   state
 }
@@ -310,6 +311,7 @@ sim_exchange_save <- function(exchange, path, format = c("csv", "fst")) {
     agent_commands = exchange$agent_commands,
     order_requests = exchange$order_requests,
     order_cancellations = exchange$order_cancellations,
+    feed_status = data.table::as.data.table(sim_feed_status(exchange)),
     exchange_event_log = exchange$event_log
   )
   for (nm in names(state_tables)) {
@@ -356,6 +358,15 @@ sim_exchange_load <- function(path) {
   if (file.exists(file.path(path, "agent_commands.csv"))) exchange$agent_commands <- data.table::fread(file.path(path, "agent_commands.csv"))
   if (file.exists(file.path(path, "order_requests.csv"))) exchange$order_requests <- data.table::fread(file.path(path, "order_requests.csv"))
   if (file.exists(file.path(path, "order_cancellations.csv"))) exchange$order_cancellations <- data.table::fread(file.path(path, "order_cancellations.csv"))
+  if (file.exists(file.path(path, "feed_status.csv"))) {
+    feed_status <- data.table::fread(file.path(path, "feed_status.csv"))
+    if (nrow(feed_status) > 0L) {
+      feed <- exchange$feed
+      for (nm in intersect(names(feed_status), names(feed))) feed[[nm]] <- feed_status[[nm]][1L]
+      if (!is.null(feed$last_completed_end)) feed$last_completed_end <- as.POSIXct(feed$last_completed_end, tz = feed$tz %||% "UTC")
+      exchange$feed <- feed
+    }
+  }
   if (file.exists(file.path(path, "exchange_event_log.csv"))) exchange$event_log <- data.table::fread(file.path(path, "exchange_event_log.csv"))
   if (nrow(exchange$agent_orders) > 0L) {
     numeric_ids <- suppressWarnings(as.integer(sub("^ORD", "", exchange$agent_orders$order_id)))

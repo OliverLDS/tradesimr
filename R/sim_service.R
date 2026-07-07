@@ -27,6 +27,36 @@ sim_live_service <- function(exchange = sim_exchange_new()) {
     .service_headers(res)
     .service_state(exchange)
   })
+  pr <- plumber_ns$pr_get(pr, "/feed/status", function(res) {
+    .service_headers(res)
+    sim_feed_status(exchange)
+  })
+  pr <- plumber_ns$pr_post(pr, "/feed/config", function(req, res) {
+    .service_headers(res)
+    body <- .service_json_body(req)
+    if (!is.null(body$random_walk)) body$random_walk <- as.list(body$random_walk)
+    sim_feed_configure(exchange, body)
+    sim_feed_status(exchange)
+  })
+  pr <- plumber_ns$pr_post(pr, "/feed/start", function(req, res) {
+    .service_headers(res)
+    body <- .service_json_body(req)
+    sim_feed_start(exchange, now = .service_timestamp(body$now %||% Sys.time()))
+  })
+  pr <- plumber_ns$pr_post(pr, "/feed/stop", function(res) {
+    .service_headers(res)
+    sim_feed_stop(exchange)
+  })
+  pr <- plumber_ns$pr_post(pr, "/feed/step", function(req, res) {
+    .service_headers(res)
+    body <- .service_json_body(req)
+    bars <- sim_feed_step(
+      exchange,
+      now = .service_timestamp(body$now %||% Sys.time()),
+      max_bars = as.numeric(body$max_bars %||% Inf)
+    )
+    list(feed = sim_feed_status(exchange), bars = .service_records(bars), state = .service_state(exchange))
+  })
   pr <- plumber_ns$pr_post(pr, "/orders", function(req, res) {
     .service_headers(res)
     body <- .service_json_body(req)
@@ -93,7 +123,8 @@ sim_live_service_run <- function(exchange = sim_exchange_new(), host = "127.0.0.
     agent_commands = .service_records(exchange$agent_commands),
     order_requests = .service_records(exchange$order_requests),
     order_cancellations = .service_records(exchange$order_cancellations),
-    events = .service_records(sim_exchange_new_events(exchange))
+    events = .service_records(sim_exchange_new_events(exchange)),
+    feed = sim_feed_status(exchange)
   )
 }
 

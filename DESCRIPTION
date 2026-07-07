@@ -1,6 +1,6 @@
 Package: tradesimr
 Title: Execution and Simulation Engine for Trading Strategies
-Version: 0.5.0
+Version: 0.6.0
 Authors@R: 
     person(given = "Oliver",
            family = "Lee",
@@ -14,11 +14,11 @@ Description:
     cash, profit and loss, risk, and performance outputs under configurable
     execution, margin, funding, and cost assumptions. The package provides
     historical replay, incremental exchange stepping, durable event schemas,
-    append-only agent command logs, local live-service APIs, import/export
-    helpers, static dashboard exports, and installed local orchestration
-    scripts. It is designed to consume signals or target exposure decisions
-    from strategy packages such as strategyr and market data from adapters such
-    as okxr.
+    append-only agent command logs, scheduled live-feed stepping, local
+    live-service APIs, import/export helpers, static dashboard exports, and
+    installed local orchestration scripts. It is designed to consume signals or
+    target exposure decisions from strategy packages such as strategyr and
+    market data from adapters such as okxr.
 Depends: 
     R (>= 4.2.0)
 Imports: 

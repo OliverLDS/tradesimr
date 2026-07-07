@@ -36,5 +36,6 @@ if (length(missing) > 0L) {
 exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 0.01, lev = 10, fee_rt = 0.0005))
 cat("Starting tradesimr live service at http://127.0.0.1:", port, "\n", sep = "")
 cat("Endpoints: GET /health, GET /state, POST /orders, POST /cancel, POST /bars\n")
+cat("Feed endpoints: GET /feed/status, POST /feed/config, POST /feed/start, POST /feed/stop, POST /feed/step\n")
 sim_live_service_run(exchange, host = "127.0.0.1", port = port)
 RSCRIPT

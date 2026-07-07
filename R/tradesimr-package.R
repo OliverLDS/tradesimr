@@ -1,8 +1,8 @@
 #' tradesimr
 #'
 #' Execution and simulation engine for trading strategies, with durable event
-#' exports, append-only agent commands, local live-service APIs, static
-#' dashboards, and local orchestration entrypoints.
+#' exports, append-only agent commands, scheduled live-feed stepping, local
+#' live-service APIs, static dashboards, and local orchestration entrypoints.
 #'
 #' @keywords internal
 #' @useDynLib tradesimr, .registration = TRUE

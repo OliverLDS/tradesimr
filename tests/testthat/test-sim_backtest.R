@@ -217,3 +217,38 @@ test_that("agent command APIs append and process order commands", {
   expect_equal(exchange$order_cancellations$status[1], "accepted")
   expect_equal(sim_exchange_orders(exchange)$status[1], "cancelled")
 })
+
+test_that("live feed steps completed bars on schedule", {
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 0.01, lev = 10))
+  sim_feed_configure(exchange, sim_feed_config(
+    timeframe = "4h",
+    tz = "UTC",
+    start_time = as.POSIXct("2026-01-01 00:00:00", tz = "UTC"),
+    random_walk = list(start_price = 100, drift = 0, vol = 0.01, seed = 42L)
+  ))
+  sim_feed_start(exchange, now = as.POSIXct("2026-01-01 00:30:00", tz = "UTC"))
+  bars <- sim_feed_step(exchange, now = as.POSIXct("2026-01-01 08:01:00", tz = "UTC"))
+  expect_equal(nrow(bars), 2)
+  expect_equal(bars$timestamp, as.POSIXct(c("2026-01-01 00:00:00", "2026-01-01 04:00:00"), tz = "UTC"))
+  expect_equal(nrow(exchange$market_events), 2)
+  expect_equal(sim_feed_status(exchange)$last_completed_end, as.POSIXct("2026-01-01 08:00:00", tz = "UTC"))
+
+  no_new_bars <- sim_feed_step(exchange, now = as.POSIXct("2026-01-01 09:00:00", tz = "UTC"))
+  expect_equal(nrow(no_new_bars), 0)
+})
+
+test_that("live feed accepts external adapter functions", {
+  exchange <- sim_exchange_new()
+  adapter <- function(symbol, timeframe, start, end, tz = "UTC") {
+    data.table::data.table(timestamp = start, open = 10, high = 11, low = 9, close = 10.5)
+  }
+  sim_feed_configure(exchange, sim_feed_config(
+    feed_mode = "external",
+    feed_adapter = adapter,
+    timeframe = "4h",
+    start_time = as.POSIXct("2026-01-01 00:00:00", tz = "UTC")
+  ))
+  bars <- sim_feed_step(exchange, now = as.POSIXct("2026-01-01 04:01:00", tz = "UTC"))
+  expect_equal(nrow(bars), 1)
+  expect_equal(bars$close[1], 10.5)
+})
