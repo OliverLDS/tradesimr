@@ -1,6 +1,7 @@
 #' tradesimr
 #'
-#' Execution and simulation engine for trading strategies.
+#' Execution and simulation engine for trading strategies, with durable event
+#' exports, static dashboards, and local orchestration entrypoints.
 #'
 #' @keywords internal
 #' @useDynLib tradesimr, .registration = TRUE

@@ -6,7 +6,8 @@
 \alias{tradesimr-package}
 \title{tradesimr}
 \description{
-Execution and simulation engine for trading strategies.
+Execution and simulation engine for trading strategies, with durable event
+exports, static dashboards, and local orchestration entrypoints.
 }
 \author{
 \strong{Maintainer}: Oliver Lee \email{olee7149@gmail.com}

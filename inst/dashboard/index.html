@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>tradesimr Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="hero">
+    <div>
+      <p class="eyebrow">tradesimr static dashboard</p>
+      <h1>Simulation Event Review</h1>
+      <p class="lede">Reads manifest.csv plus event, account, risk, order, and fill tables exported by tradesimr.</p>
+    </div>
+    <div class="loader">
+      <label for="file-picker">Load exported CSV files</label>
+      <input id="file-picker" type="file" multiple webkitdirectory>
+      <p id="load-status">Trying to load files from this folder...</p>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel manifest-panel">
+      <div>
+        <h2>Manifest</h2>
+        <p id="manifest-summary">Waiting for manifest.csv.</p>
+      </div>
+      <div id="table-counts" class="counts"></div>
+    </section>
+
+    <section class="kpis" id="kpis"></section>
+
+    <section class="grid">
+      <article class="panel wide">
+        <h2>Equity Curve</h2>
+        <div id="equity-chart" class="chart"></div>
+      </article>
+      <article class="panel">
+        <h2>Risk</h2>
+        <div id="risk-summary" class="metric-stack"></div>
+      </article>
+    </section>
+
+    <section class="panel">
+      <h2>Event Timeline</h2>
+      <div id="event-timeline" class="timeline"></div>
+    </section>
+
+    <section class="grid">
+      <article class="panel">
+        <h2>Orders</h2>
+        <div id="orders-table" class="table-wrap"></div>
+      </article>
+      <article class="panel">
+        <h2>Fills</h2>
+        <div id="fills-table" class="table-wrap"></div>
+      </article>
+    </section>
+
+    <section class="panel">
+      <h2>Risk Snapshots</h2>
+      <div id="risk-table" class="table-wrap"></div>
+    </section>
+  </main>
+
+  <script src="dashboard.js"></script>
+</body>
+</html>

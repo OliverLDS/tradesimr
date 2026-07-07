@@ -166,3 +166,28 @@ test_that("order quantity semantics are explicit", {
     "`qty` is required"
   )
 })
+
+test_that("sim_dashboard_export writes static dashboard contract", {
+  bars <- data.table::data.table(
+    timestamp = as.POSIXct("2026-01-01", tz = "UTC") + 0:3 * 86400,
+    open = c(100, 101, 102, 103),
+    high = c(101, 102, 103, 104),
+    low = c(99, 100, 101, 102),
+    close = c(101, 102, 103, 104),
+    tgt_pos = c(0, 1, 1, 0)
+  )
+  sim <- sim_backtest(bars, ctr_step = 0.01, lev = 10)
+  out_dir <- tempfile()
+  paths <- sim_dashboard_export(sim, out_dir)
+
+  expect_true(all(file.exists(paths)))
+  expect_true(all(file.exists(file.path(
+    out_dir,
+    c("index.html", "dashboard.js", "style.css", "manifest.csv", "events.csv", "account_snapshots.csv", "risk_snapshots.csv", "orders.csv", "fills.csv")
+  ))))
+  manifest <- data.table::fread(file.path(out_dir, "manifest.csv"))
+  expect_setequal(
+    manifest$table,
+    c("events", "account_snapshots", "risk_snapshots", "orders", "fills")
+  )
+})

@@ -1,6 +1,6 @@
 Package: tradesimr
 Title: Execution and Simulation Engine for Trading Strategies
-Version: 0.3.0
+Version: 0.4.0
 Authors@R: 
     person(given = "Oliver",
            family = "Lee",
@@ -13,8 +13,9 @@ Description:
     strategy intentions and explicit orders into simulated trades, positions,
     cash, profit and loss, risk, and performance outputs under configurable
     execution, margin, funding, and cost assumptions. The package provides
-    historical replay, incremental exchange stepping, durable event schemas, and
-    import/export helpers. It is designed to consume signals or target exposure
+    historical replay, incremental exchange stepping, durable event schemas,
+    import/export helpers, static dashboard exports, and installed local
+    orchestration scripts. It is designed to consume signals or target exposure
     decisions from strategy packages such as strategyr and market data from
     adapters such as okxr.
 Depends: 
