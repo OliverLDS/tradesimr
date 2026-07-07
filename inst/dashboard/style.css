@@ -142,6 +142,90 @@ main {
   margin-bottom: 1.25rem;
 }
 
+.agent-console {
+  background:
+    linear-gradient(135deg, rgba(24, 33, 31, 0.94), rgba(39, 55, 47, 0.90)),
+    var(--panel);
+  color: #fff9ec;
+}
+
+.agent-console h2,
+.agent-console p {
+  color: #fff9ec;
+}
+
+.console-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.service-box,
+.order-form,
+.cancel-form {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.service-box {
+  grid-template-columns: minmax(220px, 1fr) auto;
+  align-items: end;
+}
+
+.service-box label {
+  grid-column: 1 / -1;
+}
+
+.order-form {
+  grid-template-columns: repeat(8, minmax(110px, 1fr));
+}
+
+.cancel-form {
+  grid-template-columns: minmax(180px, 1fr) minmax(140px, 0.6fr) auto;
+  margin-top: 0.8rem;
+}
+
+.agent-console label {
+  display: grid;
+  gap: 0.35rem;
+  color: #e8dec9;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+}
+
+.agent-console input,
+.agent-console select {
+  width: 100%;
+  border: 1px solid rgba(255, 249, 236, 0.26);
+  border-radius: 0.7rem;
+  padding: 0.65rem 0.75rem;
+  background: rgba(255, 249, 236, 0.10);
+  color: #fff9ec;
+}
+
+.agent-console option {
+  color: var(--ink);
+}
+
+.agent-console button {
+  align-self: end;
+  border: 0;
+  border-radius: 0.8rem;
+  padding: 0.72rem 1rem;
+  background: var(--accent);
+  color: #fff9ec;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.agent-status {
+  margin: 0.9rem 0 0;
+  color: #e8dec9;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 .kpi {
   padding: 1rem;
 }
@@ -298,7 +382,11 @@ th {
   }
 
   .kpis,
-  .grid {
+  .grid,
+  .order-form,
+  .cancel-form,
+  .console-head,
+  .service-box {
     grid-template-columns: 1fr;
   }
 }

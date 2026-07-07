@@ -3,7 +3,11 @@ const REQUIRED_TABLES = [
   "account_snapshots",
   "risk_snapshots",
   "orders",
-  "fills"
+  "fills",
+  "agent_commands",
+  "order_requests",
+  "order_cancellations",
+  "agent_orders"
 ];
 
 const state = {
@@ -13,6 +17,9 @@ const state = {
 
 document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("file-picker").addEventListener("change", handleFilePick);
+  document.getElementById("order-form").addEventListener("submit", submitOrder);
+  document.getElementById("cancel-form").addEventListener("submit", submitCancel);
+  document.getElementById("refresh-state").addEventListener("click", refreshServiceState);
   loadFromFolder();
 });
 
@@ -112,9 +119,102 @@ function render() {
   renderEquity();
   renderRiskSummary();
   renderTimeline();
-  renderTable("orders-table", state.tables.orders, ["timestamp", "action_label", "dir_label", "ctr_qty", "price", "status_label"]);
+  renderTable("orders-table", state.tables.orders, ["timestamp", "order_id", "agent_id", "side", "qty_type", "qty", "order_type", "status", "action_label", "dir_label", "ctr_qty", "price", "status_label"]);
+  renderTable("commands-table", state.tables.agent_commands, ["timestamp", "command_id", "agent_id", "command_type", "status", "ref_id", "message"]);
+  renderTable("requests-table", state.tables.order_requests, ["timestamp", "command_id", "agent_id", "side", "qty_type", "qty", "order_type", "status", "order_id", "message"]);
   renderTable("fills-table", state.tables.fills, ["timestamp", "action_label", "dir_label", "ctr_qty", "price", "fee", "realized_pnl"]);
   renderTable("risk-table", state.tables.risk_snapshots, ["timestamp", "equity", "abs_notional", "leverage", "maintenance_margin", "margin_buffer"], 25);
+}
+
+async function submitOrder(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const payload = Object.fromEntries(form.entries());
+  for (const key of ["qty", "limit_price"]) {
+    if (payload[key] === "") delete payload[key];
+  }
+  if (payload.qty_type === "target_pos") {
+    payload.tgt_pos = payload.qty;
+  }
+  await postService("/orders", payload, "Order submitted.");
+}
+
+async function submitCancel(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const payload = Object.fromEntries(form.entries());
+  if (!payload.order_id) {
+    setAgentStatus("Order ID is required for cancellation.");
+    return;
+  }
+  await postService("/cancel", payload, "Cancel submitted.");
+}
+
+async function refreshServiceState() {
+  const base = serviceBase();
+  try {
+    const response = await fetch(`${base}/state`, { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    applyServiceState(data);
+    setAgentStatus("State refreshed from live service.");
+  } catch (err) {
+    setAgentStatus(`Unable to refresh service state: ${err.message}`);
+  }
+}
+
+async function postService(path, payload, okMessage) {
+  const base = serviceBase();
+  try {
+    const response = await fetch(`${base}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    applyServiceState(data.state || data);
+    setAgentStatus(`${okMessage} Command ${data.command_id || "processed"}.`);
+  } catch (err) {
+    setAgentStatus(`Service request failed: ${err.message}`);
+  }
+}
+
+function applyServiceState(data) {
+  state.tables.account_snapshots = data.account || state.tables.account_snapshots || [];
+  state.tables.risk_snapshots = deriveRiskRows(data.account || []);
+  state.tables.orders = data.agent_orders || state.tables.orders || [];
+  state.tables.agent_orders = data.agent_orders || [];
+  state.tables.agent_commands = data.agent_commands || [];
+  state.tables.order_requests = data.order_requests || [];
+  state.tables.order_cancellations = data.order_cancellations || [];
+  state.tables.events = data.events || state.tables.events || [];
+  render();
+}
+
+function deriveRiskRows(accountRows) {
+  if (!accountRows.length) return state.tables.risk_snapshots || [];
+  return accountRows.map(row => {
+    const equity = number(row.equity);
+    const absNotional = number(row.abs_notional);
+    const maintenance = number(row.maintenance_margin);
+    return {
+      timestamp: row.timestamp,
+      equity: row.equity,
+      abs_notional: row.abs_notional,
+      leverage: Number.isFinite(equity) && equity > 0 ? absNotional / equity : "",
+      maintenance_margin: row.maintenance_margin,
+      margin_buffer: Number.isFinite(equity) && Number.isFinite(maintenance) ? equity - maintenance : ""
+    };
+  });
+}
+
+function serviceBase() {
+  return document.getElementById("service-url").value.replace(/\/+$/, "");
+}
+
+function setAgentStatus(message) {
+  document.getElementById("agent-status").textContent = message;
 }
 
 function renderManifest() {
@@ -218,7 +318,8 @@ function renderTable(id, rows = [], preferred = [], limit = 50) {
     el.innerHTML = "<p class=\"empty\">No rows.</p>";
     return;
   }
-  const columns = preferred.filter(col => col in rows[0]);
+  let columns = preferred.filter(col => col in rows[0]);
+  if (!columns.length) columns = Object.keys(rows[0]);
   const shown = rows.slice(-limit).reverse();
   el.innerHTML = `
     <table>

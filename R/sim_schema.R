@@ -1,7 +1,7 @@
 #' tradesimr durable schema version
 #'
 #' @export
-TRADESIMR_SCHEMA_VERSION <- "0.3.0"
+TRADESIMR_SCHEMA_VERSION <- "0.4.0"
 
 #' Simulation table schemas
 #'
@@ -37,6 +37,41 @@ sim_schemas <- function() {
       tgt_pos = numeric(),
       tol_pos = numeric(),
       status = character()
+    ),
+    agent_commands = data.table::data.table(
+      command_id = character(),
+      timestamp = as.POSIXct(character()),
+      agent_id = character(),
+      command_type = character(),
+      status = character(),
+      ref_id = character(),
+      message = character()
+    ),
+    order_requests = data.table::data.table(
+      command_id = character(),
+      client_order_id = character(),
+      agent_id = character(),
+      timestamp = as.POSIXct(character()),
+      order_type = character(),
+      side = character(),
+      qty_type = character(),
+      qty = numeric(),
+      limit_price = numeric(),
+      time_in_force = character(),
+      tgt_pos = numeric(),
+      tol_pos = numeric(),
+      status = character(),
+      order_id = character(),
+      message = character()
+    ),
+    order_cancellations = data.table::data.table(
+      command_id = character(),
+      agent_id = character(),
+      timestamp = as.POSIXct(character()),
+      order_id = character(),
+      client_order_id = character(),
+      status = character(),
+      message = character()
     ),
     events = data.table::data.table(
       timestamp = as.POSIXct(character()),

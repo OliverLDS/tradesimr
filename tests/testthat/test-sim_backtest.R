@@ -191,3 +191,29 @@ test_that("sim_dashboard_export writes static dashboard contract", {
     c("events", "account_snapshots", "risk_snapshots", "orders", "fills")
   )
 })
+
+test_that("agent command APIs append and process order commands", {
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 0.01, lev = 10))
+  schemas <- sim_agent_command_schema()
+  expect_setequal(names(schemas), c("agent_commands", "order_requests", "order_cancellations"))
+
+  cmd <- sim_submit_order(exchange, "agent-a", side = "buy", qty = 1, process = FALSE)
+  expect_match(cmd, "^CMD")
+  expect_equal(exchange$agent_commands$status[1], "pending")
+  expect_equal(exchange$order_requests$status[1], "pending")
+
+  processed <- sim_exchange_process_commands(exchange)
+  expect_equal(processed$status[1], "accepted")
+  expect_equal(exchange$order_requests$status[1], "accepted")
+  expect_match(exchange$order_requests$order_id[1], "^ORD")
+  expect_equal(sim_exchange_orders(exchange)$qty_type[1], "contracts")
+
+  bad <- sim_submit_order(exchange, "agent-a", side = "buy", process = TRUE)
+  expect_match(bad, "^CMD")
+  expect_equal(exchange$order_requests$status[2], "rejected")
+
+  cancel <- sim_cancel_order(exchange, "agent-a", exchange$order_requests$order_id[1], process = TRUE)
+  expect_match(cancel, "^CMD")
+  expect_equal(exchange$order_cancellations$status[1], "accepted")
+  expect_equal(sim_exchange_orders(exchange)$status[1], "cancelled")
+})

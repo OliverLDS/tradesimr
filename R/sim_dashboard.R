@@ -73,6 +73,17 @@ sim_exchange_dashboard <- function(exchange, path) {
     stop("Exchange has no simulation result. Run `sim_exchange_run()` or `sim_exchange_step()` first.", call. = FALSE)
   }
   paths <- sim_dashboard_export(exchange$result, path)
+  command_tables <- list(
+    agent_commands = exchange$agent_commands,
+    order_requests = exchange$order_requests,
+    order_cancellations = exchange$order_cancellations,
+    agent_orders = exchange$agent_orders
+  )
+  for (nm in names(command_tables)) {
+    file <- file.path(path, paste0(nm, ".csv"))
+    data.table::fwrite(command_tables[[nm]], file)
+    paths[[nm]] <- file
+  }
   sim_dashboard_open(path)
   invisible(paths)
 }

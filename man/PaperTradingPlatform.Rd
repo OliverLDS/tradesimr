@@ -7,6 +7,23 @@
 Legacy R6 demonstration of a paper trading platform. The production
 simulation path is \code{sim_backtest()} and the C++ execution engine.
 }
+\section{Public fields}{
+  \if{html}{\out{<div class="r6-fields">}}
+  \describe{
+    \item{\code{inst_info}}{Instrument metadata used by the demo platform.}
+
+    \item{\code{bar_info}}{Latest market bar data by instrument.}
+
+    \item{\code{user_data}}{Demo user wallet and position state.}
+
+    \item{\code{exchange}}{Backing \code{tradesimr_exchange} object.}
+
+    \item{\code{order_pool}}{Demo order table.}
+
+    \item{\code{order_id_counter}}{Next demo order id counter.}
+  }
+  \if{html}{\out{</div>}}
+}
 \section{Methods}{
 \subsection{Public methods}{
   \itemize{
@@ -32,9 +49,17 @@ simulation path is \code{sim_backtest()} and the C++ execution engine.
 \if{html}{\out{<a id="method-PaperTradingPlatform-initialize"></a>}}
 \if{latex}{\out{\hypertarget{method-PaperTradingPlatform-initialize}{}}}
 \subsection{\code{PaperTradingPlatform$new()}}{
+  Create a paper trading platform demo.
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{PaperTradingPlatform$new(config = list())}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{config}}{Simulation config passed to \code{sim_exchange_new()}.}
+    }
     \if{html}{\out{</div>}}
   }
 }
@@ -43,10 +68,22 @@ simulation path is \code{sim_backtest()} and the C++ execution engine.
 \if{html}{\out{<a id="method-PaperTradingPlatform-register_user"></a>}}
 \if{latex}{\out{\hypertarget{method-PaperTradingPlatform-register_user}{}}}
 \subsection{\code{PaperTradingPlatform$register_user()}}{
+  Register a demo user and return a trader client.
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{PaperTradingPlatform$register_user(user_id, initial_balance = 10000)}
     \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{user_id}}{User identifier.}
+      \item{\code{initial_balance}}{Initial wallet balance.}
+    }
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Returns}{
+    A \code{PaperTrader} instance.
   }
 }
 
@@ -54,6 +91,7 @@ simulation path is \code{sim_backtest()} and the C++ execution engine.
 \if{html}{\out{<a id="method-PaperTradingPlatform-place_user_order"></a>}}
 \if{latex}{\out{\hypertarget{method-PaperTradingPlatform-place_user_order}{}}}
 \subsection{\code{PaperTradingPlatform$place_user_order()}}{
+  Place a demo user order.
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{PaperTradingPlatform$place_user_order(
@@ -68,15 +106,41 @@ simulation path is \code{sim_backtest()} and the C++ execution engine.
 )}
     \if{html}{\out{</div>}}
   }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{user_id}}{User identifier.}
+      \item{\code{inst_id}}{Instrument identifier.}
+      \item{\code{type}}{Order type label.}
+      \item{\code{pos}}{Position side label.}
+      \item{\code{size}}{Order size.}
+      \item{\code{price}}{Order price.}
+      \item{\code{pricing_method}}{Pricing method label.}
+      \item{\code{tag}}{Optional order tag.}
+    }
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Returns}{
+    Order id.
+  }
 }
 
 \if{html}{\out{<hr>}}
 \if{html}{\out{<a id="method-PaperTradingPlatform-cancel_user_order"></a>}}
 \if{latex}{\out{\hypertarget{method-PaperTradingPlatform-cancel_user_order}{}}}
 \subsection{\code{PaperTradingPlatform$cancel_user_order()}}{
+  Cancel a demo user order.
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{PaperTradingPlatform$cancel_user_order(user_id, order_id)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{user_id}}{User identifier.}
+      \item{\code{order_id}}{Order id.}
+    }
     \if{html}{\out{</div>}}
   }
 }
@@ -85,10 +149,21 @@ simulation path is \code{sim_backtest()} and the C++ execution engine.
 \if{html}{\out{<a id="method-PaperTradingPlatform-get_user_orders"></a>}}
 \if{latex}{\out{\hypertarget{method-PaperTradingPlatform-get_user_orders}{}}}
 \subsection{\code{PaperTradingPlatform$get_user_orders()}}{
+  Get all orders for a user.
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{PaperTradingPlatform$get_user_orders(user_id)}
     \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{user_id}}{User identifier.}
+    }
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Returns}{
+    A data.table of orders.
   }
 }
 
@@ -96,10 +171,22 @@ simulation path is \code{sim_backtest()} and the C++ execution engine.
 \if{html}{\out{<a id="method-PaperTradingPlatform-get_user_order"></a>}}
 \if{latex}{\out{\hypertarget{method-PaperTradingPlatform-get_user_order}{}}}
 \subsection{\code{PaperTradingPlatform$get_user_order()}}{
+  Get a user order.
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{PaperTradingPlatform$get_user_order(user_id, order_id)}
     \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{user_id}}{User identifier.}
+      \item{\code{order_id}}{Order id.}
+    }
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Returns}{
+    A data.table with matching order rows.
   }
 }
 
@@ -107,10 +194,14 @@ simulation path is \code{sim_backtest()} and the C++ execution engine.
 \if{html}{\out{<a id="method-PaperTradingPlatform-get_live_orders"></a>}}
 \if{latex}{\out{\hypertarget{method-PaperTradingPlatform-get_live_orders}{}}}
 \subsection{\code{PaperTradingPlatform$get_live_orders()}}{
+  Get live demo orders.
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{PaperTradingPlatform$get_live_orders()}
     \if{html}{\out{</div>}}
+  }
+  \subsection{Returns}{
+    A data.table of live orders.
   }
 }
 
@@ -118,10 +209,21 @@ simulation path is \code{sim_backtest()} and the C++ execution engine.
 \if{html}{\out{<a id="method-PaperTradingPlatform-get_order"></a>}}
 \if{latex}{\out{\hypertarget{method-PaperTradingPlatform-get_order}{}}}
 \subsection{\code{PaperTradingPlatform$get_order()}}{
+  Get an order by id.
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{PaperTradingPlatform$get_order(order_id)}
     \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{order_id}}{Order id.}
+    }
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Returns}{
+    A data.table with matching order rows.
   }
 }
 
@@ -129,9 +231,19 @@ simulation path is \code{sim_backtest()} and the C++ execution engine.
 \if{html}{\out{<a id="method-PaperTradingPlatform-update_bar"></a>}}
 \if{latex}{\out{\hypertarget{method-PaperTradingPlatform-update_bar}{}}}
 \subsection{\code{PaperTradingPlatform$update_bar()}}{
+  Update the latest market bar and append it to the exchange.
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{PaperTradingPlatform$update_bar(inst_id, timestamp, open, high, low, close)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{inst_id}}{Instrument identifier.}
+      \item{\code{timestamp}}{Bar timestamp.}
+      \item{\code{open, high, low, close}}{OHLC prices.}
+    }
     \if{html}{\out{</div>}}
   }
 }
@@ -140,9 +252,17 @@ simulation path is \code{sim_backtest()} and the C++ execution engine.
 \if{html}{\out{<a id="method-PaperTradingPlatform-process_order"></a>}}
 \if{latex}{\out{\hypertarget{method-PaperTradingPlatform-process_order}{}}}
 \subsection{\code{PaperTradingPlatform$process_order()}}{
+  Process one demo order against the latest bar.
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{PaperTradingPlatform$process_order(order)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{order}}{Order row.}
+    }
     \if{html}{\out{</div>}}
   }
 }
@@ -151,9 +271,18 @@ simulation path is \code{sim_backtest()} and the C++ execution engine.
 \if{html}{\out{<a id="method-PaperTradingPlatform-fill_order"></a>}}
 \if{latex}{\out{\hypertarget{method-PaperTradingPlatform-fill_order}{}}}
 \subsection{\code{PaperTradingPlatform$fill_order()}}{
+  Fill a demo order and pass target exposure to the exchange.
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{PaperTradingPlatform$fill_order(order_id, fill_price)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{order_id}}{Order id.}
+      \item{\code{fill_price}}{Fill price.}
+    }
     \if{html}{\out{</div>}}
   }
 }
@@ -162,10 +291,21 @@ simulation path is \code{sim_backtest()} and the C++ execution engine.
 \if{html}{\out{<a id="method-PaperTradingPlatform-get_user_wallet"></a>}}
 \if{latex}{\out{\hypertarget{method-PaperTradingPlatform-get_user_wallet}{}}}
 \subsection{\code{PaperTradingPlatform$get_user_wallet()}}{
+  Get a user's wallet balance.
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{PaperTradingPlatform$get_user_wallet(user_id)}
     \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{user_id}}{User identifier.}
+    }
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Returns}{
+    Wallet balance or account cash.
   }
 }
 
@@ -173,10 +313,21 @@ simulation path is \code{sim_backtest()} and the C++ execution engine.
 \if{html}{\out{<a id="method-PaperTradingPlatform-get_user_position"></a>}}
 \if{latex}{\out{\hypertarget{method-PaperTradingPlatform-get_user_position}{}}}
 \subsection{\code{PaperTradingPlatform$get_user_position()}}{
+  Get a user's position.
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{PaperTradingPlatform$get_user_position(user_id)}
     \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{user_id}}{User identifier.}
+    }
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Returns}{
+    A data.table of positions.
   }
 }
 
@@ -184,9 +335,18 @@ simulation path is \code{sim_backtest()} and the C++ execution engine.
 \if{html}{\out{<a id="method-PaperTradingPlatform-update_user_wallet"></a>}}
 \if{latex}{\out{\hypertarget{method-PaperTradingPlatform-update_user_wallet}{}}}
 \subsection{\code{PaperTradingPlatform$update_user_wallet()}}{
+  Update a user's demo wallet balance.
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{PaperTradingPlatform$update_user_wallet(user_id, delta_wallet_balance)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{user_id}}{User identifier.}
+      \item{\code{delta_wallet_balance}}{Wallet balance delta.}
+    }
     \if{html}{\out{</div>}}
   }
 }
@@ -195,10 +355,21 @@ simulation path is \code{sim_backtest()} and the C++ execution engine.
 \if{html}{\out{<a id="method-PaperTradingPlatform-update_user_position"></a>}}
 \if{latex}{\out{\hypertarget{method-PaperTradingPlatform-update_user_position}{}}}
 \subsection{\code{PaperTradingPlatform$update_user_position()}}{
+  Update a user's demo position after a fill.
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{PaperTradingPlatform$update_user_position(order)}
     \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{order}}{Filled order row.}
+    }
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Returns}{
+    Wallet balance delta.
   }
 }
 

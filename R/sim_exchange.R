@@ -10,6 +10,9 @@ sim_exchange_new <- function(config = list()) {
   state$market_events <- sim_schemas()$market_events[0]
   state$intents <- sim_schemas()$intents[0]
   state$agent_orders <- sim_schemas()$agent_orders[0]
+  state$agent_commands <- sim_schemas()$agent_commands[0]
+  state$order_requests <- sim_schemas()$order_requests[0]
+  state$order_cancellations <- sim_schemas()$order_cancellations[0]
   state$event_log <- data.table::data.table(
     timestamp = as.POSIXct(character()),
     source = character(),
@@ -29,6 +32,7 @@ sim_exchange_new <- function(config = list()) {
   state$step_events <- data.table::data.table()
   state$last_bar_count <- 0L
   state$next_order_id <- 1L
+  state$next_command_id <- 1L
   class(state) <- c("tradesimr_exchange", "environment")
   state
 }
@@ -303,6 +307,9 @@ sim_exchange_save <- function(exchange, path, format = c("csv", "fst")) {
   state_tables <- list(
     market_events = exchange$market_events,
     agent_orders = exchange$agent_orders,
+    agent_commands = exchange$agent_commands,
+    order_requests = exchange$order_requests,
+    order_cancellations = exchange$order_cancellations,
     exchange_event_log = exchange$event_log
   )
   for (nm in names(state_tables)) {
@@ -346,10 +353,17 @@ sim_exchange_load <- function(path) {
   }
   if (file.exists(file.path(path, "market_events.csv"))) exchange$market_events <- data.table::fread(file.path(path, "market_events.csv"))
   if (file.exists(file.path(path, "agent_orders.csv"))) exchange$agent_orders <- data.table::fread(file.path(path, "agent_orders.csv"))
+  if (file.exists(file.path(path, "agent_commands.csv"))) exchange$agent_commands <- data.table::fread(file.path(path, "agent_commands.csv"))
+  if (file.exists(file.path(path, "order_requests.csv"))) exchange$order_requests <- data.table::fread(file.path(path, "order_requests.csv"))
+  if (file.exists(file.path(path, "order_cancellations.csv"))) exchange$order_cancellations <- data.table::fread(file.path(path, "order_cancellations.csv"))
   if (file.exists(file.path(path, "exchange_event_log.csv"))) exchange$event_log <- data.table::fread(file.path(path, "exchange_event_log.csv"))
   if (nrow(exchange$agent_orders) > 0L) {
     numeric_ids <- suppressWarnings(as.integer(sub("^ORD", "", exchange$agent_orders$order_id)))
     exchange$next_order_id <- max(numeric_ids, na.rm = TRUE) + 1L
+  }
+  if (nrow(exchange$agent_commands) > 0L) {
+    numeric_command_ids <- suppressWarnings(as.integer(sub("^CMD", "", exchange$agent_commands$command_id)))
+    exchange$next_command_id <- max(numeric_command_ids, na.rm = TRUE) + 1L
   }
   exchange
 }

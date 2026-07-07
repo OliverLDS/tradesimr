@@ -31,6 +31,53 @@
 
     <section class="kpis" id="kpis"></section>
 
+    <section class="panel agent-console">
+      <div class="console-head">
+        <div>
+          <h2>Agent Console</h2>
+          <p>Optional live controls. Start `run_live_service.zsh`, then submit orders through the local HTTP service.</p>
+        </div>
+        <div class="service-box">
+          <label for="service-url">Service URL</label>
+          <input id="service-url" value="http://127.0.0.1:8080">
+          <button id="refresh-state" type="button">Refresh State</button>
+        </div>
+      </div>
+      <form id="order-form" class="order-form">
+        <label>Agent ID<input name="agent_id" value="agent-a"></label>
+        <label>Side
+          <select name="side">
+            <option value="buy">buy</option>
+            <option value="sell">sell</option>
+            <option value="flat">flat</option>
+            <option value="target">target</option>
+          </select>
+        </label>
+        <label>Qty Type
+          <select name="qty_type">
+            <option value="contracts">contracts</option>
+            <option value="target_pos">target_pos</option>
+          </select>
+        </label>
+        <label>Qty<input name="qty" type="number" step="0.0001" value="1"></label>
+        <label>Order Type
+          <select name="order_type">
+            <option value="market">market</option>
+            <option value="limit">limit</option>
+          </select>
+        </label>
+        <label>Limit Price<input name="limit_price" type="number" step="0.0001"></label>
+        <label>Client Order ID<input name="client_order_id" placeholder="optional"></label>
+        <button type="submit">Submit Order</button>
+      </form>
+      <form id="cancel-form" class="cancel-form">
+        <label>Order ID<input name="order_id" placeholder="ORD000001"></label>
+        <label>Agent ID<input name="agent_id" value="agent-a"></label>
+        <button type="submit">Cancel Order</button>
+      </form>
+      <p id="agent-status" class="agent-status">Service not contacted yet.</p>
+    </section>
+
     <section class="grid">
       <article class="panel wide">
         <h2>Equity Curve</h2>
@@ -51,6 +98,17 @@
       <article class="panel">
         <h2>Orders</h2>
         <div id="orders-table" class="table-wrap"></div>
+      </article>
+      <article class="panel">
+        <h2>Agent Commands</h2>
+        <div id="commands-table" class="table-wrap"></div>
+      </article>
+    </section>
+
+    <section class="grid">
+      <article class="panel">
+        <h2>Order Requests</h2>
+        <div id="requests-table" class="table-wrap"></div>
       </article>
       <article class="panel">
         <h2>Fills</h2>

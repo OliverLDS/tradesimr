@@ -7,6 +7,15 @@
 Legacy R6 demonstration client for \code{PaperTradingPlatform}. The production
 simulation path is \code{sim_backtest()} and the C++ execution engine.
 }
+\section{Public fields}{
+  \if{html}{\out{<div class="r6-fields">}}
+  \describe{
+    \item{\code{user_id}}{User identifier registered on the demo platform.}
+
+    \item{\code{platform}}{Reference to a \code{PaperTradingPlatform} instance.}
+  }
+  \if{html}{\out{</div>}}
+}
 \section{Methods}{
 \subsection{Public methods}{
   \itemize{
@@ -24,9 +33,18 @@ simulation path is \code{sim_backtest()} and the C++ execution engine.
 \if{html}{\out{<a id="method-PaperTrader-initialize"></a>}}
 \if{latex}{\out{\hypertarget{method-PaperTrader-initialize}{}}}
 \subsection{\code{PaperTrader$new()}}{
+  Create a paper trader demo client.
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{PaperTrader$new(user_id, platform)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{user_id}}{User identifier.}
+      \item{\code{platform}}{A \code{PaperTradingPlatform} instance.}
+    }
     \if{html}{\out{</div>}}
   }
 }
@@ -35,10 +53,27 @@ simulation path is \code{sim_backtest()} and the C++ execution engine.
 \if{html}{\out{<a id="method-PaperTrader-place_order"></a>}}
 \if{latex}{\out{\hypertarget{method-PaperTrader-place_order}{}}}
 \subsection{\code{PaperTrader$place_order()}}{
+  Place a demo order through the platform.
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{PaperTrader$place_order(inst_id, type, pos, size, price, pricing_method, tag)}
     \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{inst_id}}{Instrument identifier.}
+      \item{\code{type}}{Order type label.}
+      \item{\code{pos}}{Position side label.}
+      \item{\code{size}}{Order size.}
+      \item{\code{price}}{Order price.}
+      \item{\code{pricing_method}}{Pricing method label.}
+      \item{\code{tag}}{Optional order tag.}
+    }
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Returns}{
+    Order id.
   }
 }
 
@@ -46,10 +81,21 @@ simulation path is \code{sim_backtest()} and the C++ execution engine.
 \if{html}{\out{<a id="method-PaperTrader-cancel_order"></a>}}
 \if{latex}{\out{\hypertarget{method-PaperTrader-cancel_order}{}}}
 \subsection{\code{PaperTrader$cancel_order()}}{
+  Cancel a demo order.
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{PaperTrader$cancel_order(order_id)}
     \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{order_id}}{Order id.}
+    }
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Returns}{
+    Platform cancel result.
   }
 }
 
@@ -57,10 +103,14 @@ simulation path is \code{sim_backtest()} and the C++ execution engine.
 \if{html}{\out{<a id="method-PaperTrader-get_all_orders"></a>}}
 \if{latex}{\out{\hypertarget{method-PaperTrader-get_all_orders}{}}}
 \subsection{\code{PaperTrader$get_all_orders()}}{
+  Get all orders for this trader.
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{PaperTrader$get_all_orders()}
     \if{html}{\out{</div>}}
+  }
+  \subsection{Returns}{
+    A data.table of orders.
   }
 }
 
@@ -68,10 +118,21 @@ simulation path is \code{sim_backtest()} and the C++ execution engine.
 \if{html}{\out{<a id="method-PaperTrader-get_order"></a>}}
 \if{latex}{\out{\hypertarget{method-PaperTrader-get_order}{}}}
 \subsection{\code{PaperTrader$get_order()}}{
+  Get one order for this trader.
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{PaperTrader$get_order(order_id)}
     \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{order_id}}{Order id.}
+    }
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Returns}{
+    A data.table with matching order rows.
   }
 }
 
@@ -79,10 +140,14 @@ simulation path is \code{sim_backtest()} and the C++ execution engine.
 \if{html}{\out{<a id="method-PaperTrader-get_wallet"></a>}}
 \if{latex}{\out{\hypertarget{method-PaperTrader-get_wallet}{}}}
 \subsection{\code{PaperTrader$get_wallet()}}{
+  Get this trader's wallet balance.
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{PaperTrader$get_wallet()}
     \if{html}{\out{</div>}}
+  }
+  \subsection{Returns}{
+    Wallet balance or account cash.
   }
 }
 
@@ -90,10 +155,14 @@ simulation path is \code{sim_backtest()} and the C++ execution engine.
 \if{html}{\out{<a id="method-PaperTrader-get_position"></a>}}
 \if{latex}{\out{\hypertarget{method-PaperTrader-get_position}{}}}
 \subsection{\code{PaperTrader$get_position()}}{
+  Get this trader's position.
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{PaperTrader$get_position()}
     \if{html}{\out{</div>}}
+  }
+  \subsection{Returns}{
+    A data.table of positions.
   }
 }
 

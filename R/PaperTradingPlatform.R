@@ -3,6 +3,12 @@
 #' Legacy R6 demonstration of a paper trading platform. The production
 #' simulation path is `sim_backtest()` and the C++ execution engine.
 #'
+#' @field inst_info Instrument metadata used by the demo platform.
+#' @field bar_info Latest market bar data by instrument.
+#' @field user_data Demo user wallet and position state.
+#' @field exchange Backing `tradesimr_exchange` object.
+#' @field order_pool Demo order table.
+#' @field order_id_counter Next demo order id counter.
 #' @export
 PaperTradingPlatform <- R6::R6Class("PaperTradingPlatform",
   public = list(
@@ -39,6 +45,8 @@ PaperTradingPlatform <- R6::R6Class("PaperTradingPlatform",
     ),
     order_id_counter = 1,
 
+    #' @description Create a paper trading platform demo.
+    #' @param config Simulation config passed to `sim_exchange_new()`.
     initialize = function(config = list()) {
       self$exchange <- sim_exchange_new(config)
     },
@@ -49,6 +57,10 @@ PaperTradingPlatform <- R6::R6Class("PaperTradingPlatform",
     # },
 
     # ---- user functions ----
+    #' @description Register a demo user and return a trader client.
+    #' @param user_id User identifier.
+    #' @param initial_balance Initial wallet balance.
+    #' @return A `PaperTrader` instance.
     register_user = function(user_id, initial_balance = 10000) {
       if (!is.null(self$user_data[[user_id]])) stop("User exists")
       self$user_data[[user_id]] <- list(
@@ -65,6 +77,16 @@ PaperTradingPlatform <- R6::R6Class("PaperTradingPlatform",
     },
     
     # ---- order functions ----
+    #' @description Place a demo user order.
+    #' @param user_id User identifier.
+    #' @param inst_id Instrument identifier.
+    #' @param type Order type label.
+    #' @param pos Position side label.
+    #' @param size Order size.
+    #' @param price Order price.
+    #' @param pricing_method Pricing method label.
+    #' @param tag Optional order tag.
+    #' @return Order id.
     place_user_order = function(user_id, inst_id, type, pos, size, price, pricing_method, tag) {
       order_id <- paste0("ORD", sprintf("%06d", self$order_id_counter))
       self$order_id_counter <- self$order_id_counter + 1
@@ -93,6 +115,9 @@ PaperTradingPlatform <- R6::R6Class("PaperTradingPlatform",
       return(order_id)
     },
     
+    #' @description Cancel a demo user order.
+    #' @param user_id User identifier.
+    #' @param order_id Order id.
     cancel_user_order = function(user_id, order_id) {
       order_pool <- self$order_pool
       row_idx <- which(order_pool$user_id == user_id & order_pool$order_id == order_id)
@@ -101,22 +126,34 @@ PaperTradingPlatform <- R6::R6Class("PaperTradingPlatform",
       }
     },
 
+    #' @description Get all orders for a user.
+    #' @param user_id User identifier.
+    #' @return A data.table of orders.
     get_user_orders = function(user_id) {
       row_idx <- which(self$order_pool$user_id == user_id)
       self$order_pool[row_idx, ]
     },
     
+    #' @description Get a user order.
+    #' @param user_id User identifier.
+    #' @param order_id Order id.
+    #' @return A data.table with matching order rows.
     get_user_order = function(user_id, order_id) {
       order_pool <- self$order_pool
       row_idx <- which(order_pool$user_id == user_id & order_pool$order_id == order_id)
       self$order_pool[row_idx, ]
     },
     
+    #' @description Get live demo orders.
+    #' @return A data.table of live orders.
     get_live_orders = function() {
       row_idx <- which(self$order_pool$status == 'live')
       self$order_pool[row_idx, ]
     },
     
+    #' @description Get an order by id.
+    #' @param order_id Order id.
+    #' @return A data.table with matching order rows.
     get_order = function(order_id) {
       row_idx <- which(self$order_pool$order_id == order_id)
       self$order_pool[row_idx, ]
@@ -124,6 +161,10 @@ PaperTradingPlatform <- R6::R6Class("PaperTradingPlatform",
     
     # ---- update market bar functions ----
     
+    #' @description Update the latest market bar and append it to the exchange.
+    #' @param inst_id Instrument identifier.
+    #' @param timestamp Bar timestamp.
+    #' @param open,high,low,close OHLC prices.
     update_bar = function(inst_id, timestamp, open, high, low, close) {
       self$bar_info[[inst_id]]$timestamp <- timestamp
       self$bar_info[[inst_id]]$open <- open
@@ -139,6 +180,8 @@ PaperTradingPlatform <- R6::R6Class("PaperTradingPlatform",
       ))
     },
     
+    #' @description Process one demo order against the latest bar.
+    #' @param order Order row.
     process_order = function(order) {
       order_id <- order$order_id
       inst_id <- order$inst_id
@@ -170,6 +213,9 @@ PaperTradingPlatform <- R6::R6Class("PaperTradingPlatform",
     },
     
     # ---- position functions ----
+    #' @description Fill a demo order and pass target exposure to the exchange.
+    #' @param order_id Order id.
+    #' @param fill_price Fill price.
     fill_order = function(order_id, fill_price) {
       # update order status
       row_idx <- which(self$order_pool$order_id == order_id)
@@ -202,23 +248,35 @@ PaperTradingPlatform <- R6::R6Class("PaperTradingPlatform",
       }
     },
     
+    #' @description Get a user's wallet balance.
+    #' @param user_id User identifier.
+    #' @return Wallet balance or account cash.
     get_user_wallet = function(user_id) {
       account <- sim_exchange_account(self$exchange)
       if (nrow(account) > 0L) return(account$cash[1L])
       self$user_data[[user_id]]$wallet_balance
     },
     
+    #' @description Get a user's position.
+    #' @param user_id User identifier.
+    #' @return A data.table of positions.
     get_user_position = function(user_id) {
       position <- sim_exchange_positions(self$exchange)
       if (nrow(position) > 0L) return(position)
       self$user_data[[user_id]]$position 
     },
     
+    #' @description Update a user's demo wallet balance.
+    #' @param user_id User identifier.
+    #' @param delta_wallet_balance Wallet balance delta.
     update_user_wallet = function(user_id, delta_wallet_balance) {
       old_wallet_balance <- self$get_user_wallet(user_id)
       self$user_data[[user_id]]$wallet_balance <- old_wallet_balance + delta_wallet_balance
     },
     
+    #' @description Update a user's demo position after a fill.
+    #' @param order Filled order row.
+    #' @return Wallet balance delta.
     update_user_position = function(order) {
       user_id <- order$user_id
       inst_id <- order$inst_id

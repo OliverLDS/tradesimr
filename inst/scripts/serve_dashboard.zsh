@@ -1,7 +1,20 @@
 #!/usr/bin/env zsh
 set -euo pipefail
 
-dashboard_dir="${1:-$PWD}"
+if [[ $# -lt 1 || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  print "Usage: $0 <dashboard_dir> [port]"
+  print ""
+  print "Serve a directory produced by sim_dashboard_export() or one of:"
+  print "  run_backtest_dashboard.zsh"
+  print "  run_exchange_step_demo.zsh"
+  print "  run_replay_export.zsh"
+  print ""
+  print "Example:"
+  print "  $0 /tmp/tradesimr-backtest-dashboard 8765"
+  exit 64
+fi
+
+dashboard_dir="$1"
 port="${2:-8765}"
 
 if [[ ! -f "$dashboard_dir/index.html" ]]; then
@@ -22,4 +35,3 @@ else
   print -u2 "Python is required to serve the static dashboard."
   exit 69
 fi
-
