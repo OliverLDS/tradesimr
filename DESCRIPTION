@@ -1,0 +1,36 @@
+Package: tradesimr
+Title: Backtesting and Paper Trading Framework for Systematic Strategies
+Version: 0.1.0
+Authors@R: 
+    person(given = "Oliver",
+           family = "Lee",
+           email = "olee7149@gmail.com",
+           role = c("aut", "cre"))
+Author: Oliver Lee
+Maintainer: Oliver Lee <olee7149@gmail.com>
+Description: 
+    A modular framework for backtesting and paper trading algorithmic strategies. 
+    The package provides reusable components for simulating trades on historical data 
+    and executing strategies in real-time environments with live market data. 
+    Supports multi-asset, multi-timeframe workflows, including order simulation, 
+    position tracking, risk management, and strategy evaluation. 
+    Built for extensibility and integration with external packages such as strategyr
+    for signal generation and okxr for exchange data.
+Depends: 
+    R (>= 4.2.0)
+Imports: 
+    data.table,
+    Rcpp,
+    R6
+LinkingTo:
+    Rcpp
+Suggests: 
+    testthat,
+    ggplot2,
+    lubridate,
+    strategyr,
+    zoo
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+Config/roxygen2/version: 8.0.0

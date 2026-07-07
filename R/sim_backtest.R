@@ -1,0 +1,239 @@
+#' Run a stateful trading simulation backtest
+#'
+#' `sim_backtest()` executes target-position intentions through the package's
+#' C++ exchange/accounting engine. Orders are planned at bar close and market
+#' orders are filled on the next bar open.
+#'
+#' @param data A data frame/data.table with timestamp, open, high, low, close,
+#'   and target-position columns.
+#' @param timestamp_col,open_col,high_col,low_col,close_col,tgt_pos_col Column
+#'   names in `data`.
+#' @param pos_strat_col Optional strategy-id column. If absent, `strat` is used.
+#' @param tol_pos_col Optional target-position tolerance column. If absent,
+#'   `tol_pos` is used.
+#' @param strat,asset Integer identifiers for the simulation and asset.
+#' @param init_cash Initial account cash.
+#' @param ctr_size Contract size.
+#' @param ctr_step Minimum contract increment.
+#' @param lev Leverage used for initial margin.
+#' @param fee_rt Trading fee rate on notional.
+#' @param fund_rt Funding rate per 8 hours on notional.
+#' @param mmr Maintenance margin rate.
+#' @param tol_pos Scalar default target-position tolerance used when
+#'   `tol_pos_col` is absent.
+#' @param record Whether to attach the execution recorder.
+#'
+#' @return A data.table with timestamp and equity. If `record = TRUE`, an
+#'   execution recorder is attached as attribute `orders`.
+#' @export
+sim_backtest <- function(data,
+                         timestamp_col = "timestamp",
+                         open_col = "open",
+                         high_col = "high",
+                         low_col = "low",
+                         close_col = "close",
+                         tgt_pos_col = "tgt_pos",
+                         pos_strat_col = NULL,
+                         tol_pos_col = NULL,
+                         strat = 0L,
+                         asset = 0L,
+                         init_cash = 10000,
+                         ctr_size = 1,
+                         ctr_step = 1,
+                         lev = 10,
+                         fee_rt = 0,
+                         fund_rt = 0,
+                         mmr = 0.02,
+                         tol_pos = 0,
+                         record = TRUE) {
+  DT <- data.table::as.data.table(data)
+  required <- c(timestamp_col, open_col, high_col, low_col, close_col, tgt_pos_col)
+  missing <- setdiff(required, names(DT))
+  if (length(missing) > 0L) {
+    stop("Missing required column(s): ", paste(missing, collapse = ", "), call. = FALSE)
+  }
+
+  n <- nrow(DT)
+  timestamp_raw <- DT[[timestamp_col]]
+  timestamp <- as.numeric(timestamp_raw)
+  if (anyNA(timestamp)) stop("Timestamp column cannot contain NA values.", call. = FALSE)
+
+  pos_strat <- if (is.null(pos_strat_col)) {
+    rep.int(as.integer(strat), n)
+  } else {
+    as.integer(DT[[pos_strat_col]])
+  }
+
+  tol_pos_vec <- if (is.null(tol_pos_col)) {
+    rep.int(as.numeric(tol_pos), n)
+  } else {
+    as.numeric(DT[[tol_pos_col]])
+  }
+
+  eq <- backtest_rcpp(
+    timestamp = timestamp,
+    open = as.numeric(DT[[open_col]]),
+    high = as.numeric(DT[[high_col]]),
+    low = as.numeric(DT[[low_col]]),
+    close = as.numeric(DT[[close_col]]),
+    tgt_pos = as.numeric(DT[[tgt_pos_col]]),
+    pos_strat = pos_strat,
+    tol_pos = tol_pos_vec,
+    strat = as.integer(strat),
+    asset = as.integer(asset),
+    init_cash = as.numeric(init_cash),
+    ctr_size = as.numeric(ctr_size),
+    ctr_step = as.numeric(ctr_step),
+    lev = as.numeric(lev),
+    fee_rt = as.numeric(fee_rt),
+    fund_rt = as.numeric(fund_rt),
+    mmr = as.numeric(mmr),
+    rec = isTRUE(record)
+  )
+
+  out <- data.table::data.table(timestamp = timestamp_raw, equity = as.numeric(eq))
+  data.table::setattr(out, "sim_config", list(
+    strat = strat,
+    asset = asset,
+    init_cash = init_cash,
+    ctr_size = ctr_size,
+    ctr_step = ctr_step,
+    lev = lev,
+    fee_rt = fee_rt,
+    fund_rt = fund_rt,
+    mmr = mmr,
+    tol_pos = tol_pos
+  ))
+
+  recorder <- attr(eq, "recorder", exact = TRUE)
+  if (!is.null(recorder)) {
+    orders <- sim_orders(recorder)
+    if (inherits(timestamp_raw, "POSIXt") && nrow(orders) > 0L) {
+      data.table::set(
+        orders,
+        j = "timestamp",
+        value = as.POSIXct(orders$timestamp, origin = "1970-01-01", tz = attr(timestamp_raw, "tzone") %||% "UTC")
+      )
+    }
+    data.table::setattr(out, "orders", orders)
+  }
+
+  out
+}
+
+#' Replay historical bars through the simulation engine
+#'
+#' Alias for `sim_backtest()` reserved for replay-oriented workflows.
+#'
+#' @inheritParams sim_backtest
+#' @param ... Additional arguments passed to `sim_backtest()`.
+#' @export
+sim_replay <- function(data, ...) {
+  sim_backtest(data, ...)
+}
+
+#' Convert a simulation recorder into an order/event table
+#'
+#' @param x A simulation result returned by `sim_backtest()` or a raw recorder
+#'   list from the C++ engine.
+#' @return A data.table of recorded execution events.
+#' @export
+sim_orders <- function(x) {
+  recorder <- if (is.data.frame(x)) attr(x, "orders", exact = TRUE) else x
+  if (is.null(recorder)) return(data.table::data.table())
+  if (data.table::is.data.table(recorder)) return(data.table::copy(recorder))
+
+  out <- data.table::as.data.table(recorder)
+  if (nrow(out) == 0L) return(out)
+
+  bar_stage_label <- data.table::fifelse(out$bar_stage == 1L, "open",
+    data.table::fifelse(out$bar_stage == 2L, "intra",
+      data.table::fifelse(out$bar_stage == 3L, "close", NA_character_)
+    )
+  )
+  status_label <- data.table::fifelse(out$status == 1L, "filled",
+    data.table::fifelse(out$status == 0L, "pending",
+      data.table::fifelse(out$status == -1L, "failed", NA_character_)
+    )
+  )
+  action_label <- data.table::fifelse(out$action == 1L, "open",
+    data.table::fifelse(out$action == 2L, "increase",
+      data.table::fifelse(out$action == -1L, "close",
+        data.table::fifelse(out$action == -2L, "reduce",
+          data.table::fifelse(out$action == 0L, "none", NA_character_)
+        )
+      )
+    )
+  )
+  dir_label <- data.table::fifelse(out$dir == 1L, "long",
+    data.table::fifelse(out$dir == -1L, "short",
+      data.table::fifelse(out$dir == 0L, "flat", NA_character_)
+    )
+  )
+  data.table::set(out, j = "bar_stage_label", value = bar_stage_label)
+  data.table::set(out, j = "status_label", value = status_label)
+  data.table::set(out, j = "action_label", value = action_label)
+  data.table::set(out, j = "dir_label", value = dir_label)
+  out[]
+}
+
+#' Calculate core performance metrics from a simulation result
+#'
+#' @param sim A simulation result from `sim_backtest()`.
+#' @return A one-row data.table with return, drawdown, and event counts.
+#' @export
+sim_metrics <- function(sim) {
+  DT <- data.table::as.data.table(sim)
+  if (!all(c("timestamp", "equity") %in% names(DT))) {
+    stop("`sim` must contain `timestamp` and `equity` columns.", call. = FALSE)
+  }
+  if (nrow(DT) == 0L) {
+    return(data.table::data.table(
+      start_equity = numeric(),
+      end_equity = numeric(),
+      total_return = numeric(),
+      annualized_return = numeric(),
+      max_drawdown = numeric(),
+      n_events = integer(),
+      n_fills = integer(),
+      liquidated = logical()
+    ))
+  }
+
+  start_equity <- DT$equity[1L]
+  end_equity <- DT$equity[nrow(DT)]
+  total_return <- end_equity / start_equity - 1
+  peak <- cummax(DT$equity)
+  max_drawdown <- max(1 - DT$equity / peak, na.rm = TRUE)
+
+  timestamp <- DT$timestamp
+  years <- NA_real_
+  if (inherits(timestamp, "POSIXt") || inherits(timestamp, "Date")) {
+    years <- as.numeric(difftime(max(timestamp), min(timestamp), units = "days")) / 365.25
+  } else {
+    span_seconds <- max(as.numeric(timestamp), na.rm = TRUE) - min(as.numeric(timestamp), na.rm = TRUE)
+    years <- span_seconds / (365.25 * 24 * 60 * 60)
+  }
+  annualized_return <- if (is.finite(years) && years > 0 && start_equity > 0 && end_equity >= 0) {
+    (end_equity / start_equity)^(1 / years) - 1
+  } else {
+    NA_real_
+  }
+
+  orders <- sim_orders(sim)
+  data.table::data.table(
+    start_equity = start_equity,
+    end_equity = end_equity,
+    total_return = total_return,
+    annualized_return = annualized_return,
+    max_drawdown = max_drawdown,
+    n_events = nrow(orders),
+    n_fills = if (nrow(orders) > 0L) sum(orders$status_label == "filled", na.rm = TRUE) else 0L,
+    liquidated = any(DT$equity <= 0, na.rm = TRUE) ||
+      (nrow(orders) > 0L && any(orders$liquidation, na.rm = TRUE))
+  )
+}
+
+`%||%` <- function(x, y) {
+  if (is.null(x) || length(x) == 0L) y else x
+}
