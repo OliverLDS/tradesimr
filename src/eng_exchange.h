@@ -9,6 +9,7 @@ struct ExchangeMessage_on_funding {
   double timestamp = TRADESIMR::kNaReal;
   TRADESIMR::BarStage bar_stage = TRADESIMR::BarStage::CLOSE;
   double cash = TRADESIMR::kNaReal;
+  double funding_fee = 0.0;
   bool liquidate = false;
 };
 
@@ -35,6 +36,8 @@ struct ExchangeMessage_on_trade {
   TRADESIMR::Dir pos_dir = TRADESIMR::Dir::FLAT;
   double ctr_unit = TRADESIMR::kNaReal;
   double avg_price = TRADESIMR::kNaReal;
+  double fee = 0.0;
+  double realized_pnl = 0.0;
 };
 
 struct Exchange {
@@ -89,7 +92,8 @@ inline ExchangeMessage_on_funding Exchange::update_on_funding(const TradeState& 
   }
 
   const double dt = timestamp - old_timestamp;
-  out.cash = s.cash - s.fund_rt * dt * s.abs_notional() / (60.0 * 60.0 * 8.0);
+  out.funding_fee = s.fund_rt * dt * s.abs_notional() / (60.0 * 60.0 * 8.0);
+  out.cash = s.cash - out.funding_fee;
 
   if (out.cash + s.unrealized_pnl() < s.mm()) {
     out.cash = 0.0;
@@ -144,6 +148,7 @@ inline ExchangeMessage_on_trade Exchange::update_on_trade(
     }
 
     out.status = TRADESIMR::ActionStatus::FILLED;
+    out.fee = fee;
     out.cash = s.cash - fee;
     out.pos_dir = a.dir;
     if (a.action == TRADESIMR::ActionCode::OPEN) {
@@ -162,6 +167,8 @@ inline ExchangeMessage_on_trade Exchange::update_on_trade(
     const double realized_pnl = trade_units * (filled_price - s.avg_price) * dir_sign;
 
     out.status = TRADESIMR::ActionStatus::FILLED;
+    out.fee = fee_close;
+    out.realized_pnl = realized_pnl;
     out.cash = s.cash - fee_close + realized_pnl;
     out.pos_dir = TRADESIMR::Dir::FLAT;
     out.ctr_unit = 0.0;
@@ -175,6 +182,8 @@ inline ExchangeMessage_on_trade Exchange::update_on_trade(
     const double realized_pnl = trade_units * (filled_price - s.avg_price) * dir_sign;
 
     out.status = TRADESIMR::ActionStatus::FILLED;
+    out.fee = fee_reduce;
+    out.realized_pnl = realized_pnl;
     out.cash = s.cash - fee_reduce + realized_pnl;
     out.pos_dir = a.dir;
     out.ctr_unit = s.ctr_unit - a.ctr_qty;

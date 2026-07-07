@@ -4,6 +4,20 @@
 }
 
 #' @keywords internal
+.warn_vec_sim_deprecated <- local({
+  warned <- new.env(parent = emptyenv())
+  function(name) {
+    if (isTRUE(warned[[name]])) return(invisible(NULL))
+    warned[[name]] <- TRUE
+    warning(
+      name,
+      "() is a legacy approximate vectorized helper. Prefer sim_backtest() for stateful execution.",
+      call. = FALSE
+    )
+  }
+})
+
+#' @keywords internal
 .vec_sim_form_positions <- function(DT, mode = c("long", "short", "both")) {
   mode <- match.arg(mode)
   
@@ -41,6 +55,7 @@
 #' @return A list containing equity series and summary statistics.
 #' @export
 vec_sim_run_backtest <- function(DT) {
+  .warn_vec_sim_deprecated("vec_sim_run_backtest")
   
   pos <- DT[["pos"]]
   close <- DT[["close"]]
@@ -81,6 +96,7 @@ vec_sim_run_backtest <- function(DT) {
 #' @param report_mode Plot report mode.
 #' @export
 vec_sim_gen_plot <- function(vec_sim_res, report_mode = c('simple', 'full')) {
+  .warn_vec_sim_deprecated("vec_sim_gen_plot")
   
   report_mode <- match.arg(report_mode)
   
@@ -116,6 +132,7 @@ vec_sim_gen_plot <- function(vec_sim_res, report_mode = c('simple', 'full')) {
 #' @return Text or a one-row data.table depending on `report_mode`.
 #' @export
 vec_sim_gen_summary <- function(vec_sim_res, report_mode = c('short_txt', 'long_txt', 'dt')) {
+  .warn_vec_sim_deprecated("vec_sim_gen_summary")
   report_mode <- match.arg(report_mode)
   if (report_mode == 'short_txt') {
     sprintf("Ann Ret: %.2f%%; MoD: %.2f%%", vec_sim_res$ann_ret * 100, vec_sim_res$max_dd * 100)
@@ -156,6 +173,7 @@ vec_sim_gen_summary <- function(vec_sim_res, report_mode = c('short_txt', 'long_
 #' @return A data.table of summaries.
 #' @export
 vec_sim_gen_summary_table <- function(DTs) {
+  .warn_vec_sim_deprecated("vec_sim_gen_summary_table")
   table_list <- list()
   for (i in 1:length(DTs)) {
     DT <- DTs[[i]]
@@ -179,6 +197,7 @@ vec_sim_gen_summary_table <- function(DTs) {
 #' @return A named list of data.tables.
 #' @export
 vec_batch_run_simulations <- function(inst_ids, bar, signal_strategies, root_path=Sys.getenv("OKX_Candle_Data_Path"), bg_time = NULL, ed_time = NULL) {
+  .warn_vec_sim_deprecated("vec_batch_run_simulations")
   if (!requireNamespace("strategyr", quietly = TRUE)) {
     stop("Package `strategyr` is required for vec_batch_run_simulations().", call. = FALSE)
   }

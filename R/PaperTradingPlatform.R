@@ -19,6 +19,7 @@ PaperTradingPlatform <- R6::R6Class("PaperTradingPlatform",
     
     # ---- user data ----
     user_data = list(),
+    exchange = NULL,
     
     # ---- order pool ----
     order_pool = data.table::data.table(
@@ -37,6 +38,10 @@ PaperTradingPlatform <- R6::R6Class("PaperTradingPlatform",
       utime = as.POSIXct(character())
     ),
     order_id_counter = 1,
+
+    initialize = function(config = list()) {
+      self$exchange <- sim_exchange_new(config)
+    },
     
     # ---- fun function ----
     # run = function() {
@@ -125,6 +130,13 @@ PaperTradingPlatform <- R6::R6Class("PaperTradingPlatform",
       self$bar_info[[inst_id]]$high <- high
       self$bar_info[[inst_id]]$low <- low
       self$bar_info[[inst_id]]$close <- close
+      sim_exchange_add_bars(self$exchange, data.table::data.table(
+        timestamp = timestamp,
+        open = open,
+        high = high,
+        low = low,
+        close = close
+      ))
     },
     
     process_order = function(order) {
@@ -166,18 +178,39 @@ PaperTradingPlatform <- R6::R6Class("PaperTradingPlatform",
         data.table::set(self$order_pool, i = row_idx, j = "fill_price", value = fill_price)
         data.table::set(self$order_pool, i = row_idx, j = "utime", value = Sys.time())
         
-        # update user position
         order <- self$order_pool[row_idx, ]
         user_id <- order$user_id
-        self$update_user_wallet(user_id, self$update_user_position(order))
+        target_pos <- if (order$type == "CLOSE") {
+          0
+        } else if (order$pos == "long") {
+          1
+        } else if (order$pos == "short") {
+          -1
+        } else {
+          0
+        }
+        sim_exchange_place_order(
+          self$exchange,
+          agent_id = user_id,
+          timestamp = order$utime,
+          tgt_pos = target_pos,
+          tol_pos = 0
+        )
+        if (nrow(self$exchange$market_events) > 0L) {
+          sim_exchange_run(self$exchange)
+        }
       }
     },
     
     get_user_wallet = function(user_id) {
+      account <- sim_exchange_account(self$exchange)
+      if (nrow(account) > 0L) return(account$cash[1L])
       self$user_data[[user_id]]$wallet_balance
     },
     
     get_user_position = function(user_id) {
+      position <- sim_exchange_positions(self$exchange)
+      if (nrow(position) > 0L) return(position)
       self$user_data[[user_id]]$position 
     },
     

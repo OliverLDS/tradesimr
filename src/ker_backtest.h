@@ -4,6 +4,15 @@
 #include "eng_recorder.h"
 
 inline void backtest(double* eq,
+                     double* cash,
+                     int* pos_dir,
+                     double* ctr_unit,
+                     double* avg_price,
+                     double* last_px,
+                     double* notional,
+                     double* abs_notional,
+                     double* unrealized_pnl,
+                     double* maintenance_margin,
                      const double* timestamp,
                      const double* open,
                      const double* high,
@@ -38,9 +47,22 @@ inline void backtest(double* eq,
   Exchange x{};
   if (rec && recorder_ptr) recorder_ptr->reserve(len);
 
+  auto write_state = [&](size_t i) {
+    eq[i] = s.liquidated ? 0.0 : s.eq();
+    cash[i] = s.liquidated ? 0.0 : s.cash;
+    pos_dir[i] = s.liquidated ? 0 : static_cast<int>(s.pos_dir);
+    ctr_unit[i] = s.liquidated ? 0.0 : s.ctr_unit;
+    avg_price[i] = s.liquidated ? TRADESIMR::kNaReal : s.avg_price;
+    last_px[i] = s.last_px;
+    notional[i] = s.liquidated ? 0.0 : s.notional();
+    abs_notional[i] = s.liquidated ? 0.0 : s.abs_notional();
+    unrealized_pnl[i] = s.liquidated ? 0.0 : s.unrealized_pnl();
+    maintenance_margin[i] = s.liquidated ? 0.0 : s.mm();
+  };
+
   for (size_t i = 0; i < len; ++i) {
     if (s.liquidated) {
-      eq[i] = 0.0;
+      write_state(i);
       continue;
     }
 
@@ -53,7 +75,7 @@ inline void backtest(double* eq,
         if (a.type == TRADESIMR::OrderType::MARKET) {
           ExchangeMessage_on_trade trade_msg = x.update_on_trade(s, a, TRADESIMR::BarStage::OPEN, x.open);
           if (trade_msg.liquidate) {
-            if (rec && recorder_ptr) recorder_ptr->append_liquidation(trade_msg.timestamp, trade_msg.bar_stage);
+            if (rec && recorder_ptr) recorder_ptr->append_liquidation(s, trade_msg.timestamp, trade_msg.bar_stage);
             s.liquidated = true;
             eq[i] = 0.0;
             break;
@@ -70,7 +92,7 @@ inline void backtest(double* eq,
         } else if (x.limit_order_filled(a.px)) {
           ExchangeMessage_on_trade trade_msg = x.update_on_trade(s, a, TRADESIMR::BarStage::INTRA, a.px);
           if (trade_msg.liquidate) {
-            if (rec && recorder_ptr) recorder_ptr->append_liquidation(trade_msg.timestamp, trade_msg.bar_stage);
+            if (rec && recorder_ptr) recorder_ptr->append_liquidation(s, trade_msg.timestamp, trade_msg.bar_stage);
             s.liquidated = true;
             eq[i] = 0.0;
             break;
@@ -89,24 +111,30 @@ inline void backtest(double* eq,
         }
       }
       s.pending = remaining;
-      if (s.liquidated) continue;
+      if (s.liquidated) {
+        write_state(i);
+        continue;
+      }
     }
 
     ExchangeMessage_on_funding fund_msg = x.update_on_funding(s);
+    if (rec && recorder_ptr && (fund_msg.funding_fee != 0.0 || fund_msg.liquidate)) {
+      recorder_ptr->append_funding(s, fund_msg);
+    }
     s.cash = fund_msg.cash;
     if (fund_msg.liquidate) {
-      if (rec && recorder_ptr) recorder_ptr->append_liquidation(fund_msg.timestamp, fund_msg.bar_stage);
+      if (rec && recorder_ptr) recorder_ptr->append_liquidation(s, fund_msg.timestamp, fund_msg.bar_stage);
       s.liquidated = true;
-      eq[i] = 0.0;
+      write_state(i);
       continue;
     }
 
     ExchangeMessage_on_mark mark_msg = x.update_on_mark(s);
     s.last_px = mark_msg.last_px;
     if (mark_msg.liquidate) {
-      if (rec && recorder_ptr) recorder_ptr->append_liquidation(mark_msg.timestamp, mark_msg.bar_stage);
+      if (rec && recorder_ptr) recorder_ptr->append_liquidation(s, mark_msg.timestamp, mark_msg.bar_stage);
       s.liquidated = true;
-      eq[i] = 0.0;
+      write_state(i);
       continue;
     }
 
@@ -117,6 +145,6 @@ inline void backtest(double* eq,
     s.pending = s.plan_action_mkt_ord(intent, s.action_id_now);
     s.action_id_now += s.pending.n;
 
-    eq[i] = s.eq();
+    write_state(i);
   }
 }

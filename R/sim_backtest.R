@@ -70,7 +70,7 @@ sim_backtest <- function(data,
     as.numeric(DT[[tol_pos_col]])
   }
 
-  eq <- backtest_rcpp(
+  engine <- backtest_rcpp(
     timestamp = timestamp,
     open = as.numeric(DT[[open_col]]),
     high = as.numeric(DT[[high_col]]),
@@ -91,7 +91,19 @@ sim_backtest <- function(data,
     rec = isTRUE(record)
   )
 
-  out <- data.table::data.table(timestamp = timestamp_raw, equity = as.numeric(eq))
+  out <- data.table::data.table(
+    timestamp = timestamp_raw,
+    equity = as.numeric(engine$equity),
+    cash = as.numeric(engine$cash),
+    pos_dir = as.integer(engine$pos_dir),
+    ctr_unit = as.numeric(engine$ctr_unit),
+    avg_price = as.numeric(engine$avg_price),
+    last_px = as.numeric(engine$last_px),
+    notional = as.numeric(engine$notional),
+    abs_notional = as.numeric(engine$abs_notional),
+    unrealized_pnl = as.numeric(engine$unrealized_pnl),
+    maintenance_margin = as.numeric(engine$maintenance_margin)
+  )
   data.table::setattr(out, "sim_config", list(
     strat = strat,
     asset = asset,
@@ -105,17 +117,18 @@ sim_backtest <- function(data,
     tol_pos = tol_pos
   ))
 
-  recorder <- attr(eq, "recorder", exact = TRUE)
+  recorder <- engine$recorder
   if (!is.null(recorder)) {
-    orders <- sim_orders(recorder)
-    if (inherits(timestamp_raw, "POSIXt") && nrow(orders) > 0L) {
+    events <- sim_events(recorder)
+    if (inherits(timestamp_raw, "POSIXt") && nrow(events) > 0L) {
       data.table::set(
-        orders,
+        events,
         j = "timestamp",
-        value = as.POSIXct(orders$timestamp, origin = "1970-01-01", tz = attr(timestamp_raw, "tzone") %||% "UTC")
+        value = as.POSIXct(events$timestamp, origin = "1970-01-01", tz = attr(timestamp_raw, "tzone") %||% "UTC")
       )
     }
-    data.table::setattr(out, "orders", orders)
+    data.table::setattr(out, "events", events)
+    data.table::setattr(out, "orders", sim_orders(events))
   }
 
   out
@@ -132,6 +145,81 @@ sim_replay <- function(data, ...) {
   sim_backtest(data, ...)
 }
 
+#' Convert a simulation recorder into an event table
+#'
+#' @param x A simulation result returned by `sim_backtest()` or a raw recorder
+#'   list from the C++ engine.
+#' @return A data.table of recorded simulation events.
+#' @export
+sim_events <- function(x) {
+  recorder <- if (is.data.frame(x)) attr(x, "events", exact = TRUE) else x
+  if (is.null(recorder)) return(data.table::data.table())
+  if (data.table::is.data.table(recorder)) return(data.table::copy(recorder))
+
+  out <- data.table::as.data.table(recorder)
+  if (nrow(out) == 0L) return(out)
+
+  data.table::set(
+    out,
+    j = "event_type_label",
+    value = data.table::fifelse(out$event_type == 1L, "trade",
+      data.table::fifelse(out$event_type == 2L, "funding",
+        data.table::fifelse(out$event_type == 3L, "liquidation", NA_character_)
+      )
+    )
+  )
+  data.table::set(
+    out,
+    j = "bar_stage_label",
+    value = data.table::fifelse(out$bar_stage == 1L, "open",
+      data.table::fifelse(out$bar_stage == 2L, "intra",
+        data.table::fifelse(out$bar_stage == 3L, "close", NA_character_)
+      )
+    )
+  )
+  data.table::set(
+    out,
+    j = "status_label",
+    value = data.table::fifelse(out$status == 1L, "filled",
+      data.table::fifelse(out$status == 0L, "pending",
+        data.table::fifelse(out$status == -1L, "failed", NA_character_)
+      )
+    )
+  )
+  data.table::set(
+    out,
+    j = "action_label",
+    value = data.table::fifelse(out$action == 1L, "open",
+      data.table::fifelse(out$action == 2L, "increase",
+        data.table::fifelse(out$action == -1L, "close",
+          data.table::fifelse(out$action == -2L, "reduce",
+            data.table::fifelse(out$action == 0L, "none", NA_character_)
+          )
+        )
+      )
+    )
+  )
+  data.table::set(
+    out,
+    j = "dir_label",
+    value = data.table::fifelse(out$dir == 1L, "long",
+      data.table::fifelse(out$dir == -1L, "short",
+        data.table::fifelse(out$dir == 0L, "flat", NA_character_)
+      )
+    )
+  )
+  data.table::set(
+    out,
+    j = "state_dir_label",
+    value = data.table::fifelse(out$state_dir == 1L, "long",
+      data.table::fifelse(out$state_dir == -1L, "short",
+        data.table::fifelse(out$state_dir == 0L, "flat", NA_character_)
+      )
+    )
+  )
+  out[]
+}
+
 #' Convert a simulation recorder into an order/event table
 #'
 #' @param x A simulation result returned by `sim_backtest()` or a raw recorder
@@ -139,42 +227,9 @@ sim_replay <- function(data, ...) {
 #' @return A data.table of recorded execution events.
 #' @export
 sim_orders <- function(x) {
-  recorder <- if (is.data.frame(x)) attr(x, "orders", exact = TRUE) else x
-  if (is.null(recorder)) return(data.table::data.table())
-  if (data.table::is.data.table(recorder)) return(data.table::copy(recorder))
-
-  out <- data.table::as.data.table(recorder)
+  out <- sim_events(x)
   if (nrow(out) == 0L) return(out)
-
-  bar_stage_label <- data.table::fifelse(out$bar_stage == 1L, "open",
-    data.table::fifelse(out$bar_stage == 2L, "intra",
-      data.table::fifelse(out$bar_stage == 3L, "close", NA_character_)
-    )
-  )
-  status_label <- data.table::fifelse(out$status == 1L, "filled",
-    data.table::fifelse(out$status == 0L, "pending",
-      data.table::fifelse(out$status == -1L, "failed", NA_character_)
-    )
-  )
-  action_label <- data.table::fifelse(out$action == 1L, "open",
-    data.table::fifelse(out$action == 2L, "increase",
-      data.table::fifelse(out$action == -1L, "close",
-        data.table::fifelse(out$action == -2L, "reduce",
-          data.table::fifelse(out$action == 0L, "none", NA_character_)
-        )
-      )
-    )
-  )
-  dir_label <- data.table::fifelse(out$dir == 1L, "long",
-    data.table::fifelse(out$dir == -1L, "short",
-      data.table::fifelse(out$dir == 0L, "flat", NA_character_)
-    )
-  )
-  data.table::set(out, j = "bar_stage_label", value = bar_stage_label)
-  data.table::set(out, j = "status_label", value = status_label)
-  data.table::set(out, j = "action_label", value = action_label)
-  data.table::set(out, j = "dir_label", value = dir_label)
-  out[]
+  out[out$event_type_label == "trade"]
 }
 
 #' Calculate core performance metrics from a simulation result
@@ -220,17 +275,18 @@ sim_metrics <- function(sim) {
     NA_real_
   }
 
-  orders <- sim_orders(sim)
+  events <- sim_events(sim)
+  fills <- sim_fills(sim)
   data.table::data.table(
     start_equity = start_equity,
     end_equity = end_equity,
     total_return = total_return,
     annualized_return = annualized_return,
     max_drawdown = max_drawdown,
-    n_events = nrow(orders),
-    n_fills = if (nrow(orders) > 0L) sum(orders$status_label == "filled", na.rm = TRUE) else 0L,
+    n_events = nrow(events),
+    n_fills = nrow(fills),
     liquidated = any(DT$equity <= 0, na.rm = TRUE) ||
-      (nrow(orders) > 0L && any(orders$liquidation, na.rm = TRUE))
+      (nrow(events) > 0L && any(events$liquidation, na.rm = TRUE))
   )
 }
 

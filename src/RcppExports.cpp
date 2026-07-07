@@ -11,7 +11,7 @@ Rcpp::Rostream<false>& Rcpp::Rcerr = Rcpp::Rcpp_cerr_get();
 #endif
 
 // backtest_rcpp
-Rcpp::NumericVector backtest_rcpp(const Rcpp::NumericVector& timestamp, const Rcpp::NumericVector& open, const Rcpp::NumericVector& high, const Rcpp::NumericVector& low, const Rcpp::NumericVector& close, const Rcpp::NumericVector& tgt_pos, const Rcpp::IntegerVector& pos_strat, const Rcpp::NumericVector& tol_pos, int strat, int asset, double init_cash, double ctr_size, double ctr_step, double lev, double fee_rt, double fund_rt, double mmr, bool rec);
+Rcpp::List backtest_rcpp(const Rcpp::NumericVector& timestamp, const Rcpp::NumericVector& open, const Rcpp::NumericVector& high, const Rcpp::NumericVector& low, const Rcpp::NumericVector& close, const Rcpp::NumericVector& tgt_pos, const Rcpp::IntegerVector& pos_strat, const Rcpp::NumericVector& tol_pos, int strat, int asset, double init_cash, double ctr_size, double ctr_step, double lev, double fee_rt, double fund_rt, double mmr, bool rec);
 RcppExport SEXP _tradesimr_backtest_rcpp(SEXP timestampSEXP, SEXP openSEXP, SEXP highSEXP, SEXP lowSEXP, SEXP closeSEXP, SEXP tgt_posSEXP, SEXP pos_stratSEXP, SEXP tol_posSEXP, SEXP stratSEXP, SEXP assetSEXP, SEXP init_cashSEXP, SEXP ctr_sizeSEXP, SEXP ctr_stepSEXP, SEXP levSEXP, SEXP fee_rtSEXP, SEXP fund_rtSEXP, SEXP mmrSEXP, SEXP recSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;

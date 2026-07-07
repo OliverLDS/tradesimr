@@ -10,6 +10,7 @@ simulation path is \code{sim_backtest()} and the C++ execution engine.
 \section{Methods}{
 \subsection{Public methods}{
   \itemize{
+    \item \href{#method-PaperTradingPlatform-initialize}{\code{PaperTradingPlatform$new()}}
     \item \href{#method-PaperTradingPlatform-register_user}{\code{PaperTradingPlatform$register_user()}}
     \item \href{#method-PaperTradingPlatform-place_user_order}{\code{PaperTradingPlatform$place_user_order()}}
     \item \href{#method-PaperTradingPlatform-cancel_user_order}{\code{PaperTradingPlatform$cancel_user_order()}}
@@ -27,6 +28,17 @@ simulation path is \code{sim_backtest()} and the C++ execution engine.
     \item \href{#method-PaperTradingPlatform-clone}{\code{PaperTradingPlatform$clone()}}
   }
 }
+\if{html}{\out{<hr>}}
+\if{html}{\out{<a id="method-PaperTradingPlatform-initialize"></a>}}
+\if{latex}{\out{\hypertarget{method-PaperTradingPlatform-initialize}{}}}
+\subsection{\code{PaperTradingPlatform$new()}}{
+  \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
+    \preformatted{PaperTradingPlatform$new(config = list())}
+    \if{html}{\out{</div>}}
+  }
+}
+
 \if{html}{\out{<hr>}}
 \if{html}{\out{<a id="method-PaperTradingPlatform-register_user"></a>}}
 \if{latex}{\out{\hypertarget{method-PaperTradingPlatform-register_user}{}}}

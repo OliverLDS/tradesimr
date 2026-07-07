@@ -1,6 +1,6 @@
 Package: tradesimr
 Title: Backtesting and Paper Trading Framework for Systematic Strategies
-Version: 0.1.0
+Version: 0.2.0
 Authors@R: 
     person(given = "Oliver",
            family = "Lee",
@@ -26,6 +26,7 @@ LinkingTo:
     Rcpp
 Suggests: 
     testthat,
+    fst,
     ggplot2,
     lubridate,
     strategyr,
