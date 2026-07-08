@@ -31,6 +31,63 @@ sim_live_service <- function(exchange = sim_exchange_new()) {
     .service_headers(res)
     sim_feed_status(exchange)
   })
+  pr <- plumber_ns$pr_get(pr, "/agents", function(res) {
+    .service_headers(res)
+    list(agents = .service_records(exchange$agents), rankings = .service_records(sim_agent_rankings(exchange)))
+  })
+  pr <- plumber_ns$pr_get(pr, "/rankings", function(res) {
+    .service_headers(res)
+    .service_records(sim_agent_rankings(exchange))
+  })
+  pr <- plumber_ns$pr_post(pr, "/agents", function(req, res) {
+    .service_headers(res)
+    body <- .service_json_body(req)
+    requested_id <- .null_if_missing(body$agent_id)
+    agent_type <- body$agent_type %||% "chaos"
+    config <- as.list(body$config %||% list(qty = body$qty %||% 1, lookback = body$lookback %||% 12))
+    if (!is.null(requested_id) && requested_id %in% exchange$agents$agent_id) {
+      .ensure_agent_account(exchange, requested_id, agent_type = agent_type, config = config, status = body$status %||% "active")
+      agent_id <- requested_id
+    } else {
+      agent_id <- sim_agent_add(
+        exchange = exchange,
+        agent_id = requested_id,
+        agent_type = agent_type,
+        config = config,
+        status = body$status %||% "active"
+      )
+    }
+    list(agent_id = agent_id, state = .service_state(exchange))
+  })
+  pr <- plumber_ns$pr_post(pr, "/agents/start", function(req, res) {
+    .service_headers(res)
+    body <- .service_json_body(req)
+    if (is.null(body$agent_id)) stop("`agent_id` is required.", call. = FALSE)
+    sim_agent_set_status(exchange, body$agent_id, "active")
+    .service_state(exchange)
+  })
+  pr <- plumber_ns$pr_post(pr, "/agents/stop", function(req, res) {
+    .service_headers(res)
+    body <- .service_json_body(req)
+    if (is.null(body$agent_id)) stop("`agent_id` is required.", call. = FALSE)
+    sim_agent_set_status(exchange, body$agent_id, "paused")
+    .service_state(exchange)
+  })
+  pr <- plumber_ns$pr_post(pr, "/agents/remove", function(req, res) {
+    .service_headers(res)
+    body <- .service_json_body(req)
+    if (is.null(body$agent_id)) stop("`agent_id` is required.", call. = FALSE)
+    sim_agent_remove(exchange, body$agent_id)
+    .service_state(exchange)
+  })
+  pr <- plumber_ns$pr_post(pr, "/agents/step", function(req, res) {
+    .service_headers(res)
+    body <- .service_json_body(req)
+    bar <- if (!is.null(body$bar)) data.table::as.data.table(body$bar) else NULL
+    decisions <- sim_agents_step(exchange, bar)
+    sim_exchange_process_commands(exchange)
+    list(decisions = .service_records(decisions), state = .service_state(exchange))
+  })
   pr <- plumber_ns$pr_post(pr, "/feed/config", function(req, res) {
     .service_headers(res)
     body <- .service_json_body(req)
@@ -124,6 +181,9 @@ sim_live_service_run <- function(exchange = sim_exchange_new(), host = "127.0.0.
     agent_commands = .service_records(exchange$agent_commands),
     order_requests = .service_records(exchange$order_requests),
     order_cancellations = .service_records(exchange$order_cancellations),
+    agents = .service_records(exchange$agents),
+    agent_decisions = .service_records(exchange$agent_decisions),
+    agent_rankings = .service_records(sim_agent_rankings(exchange)),
     events = .service_records(sim_exchange_new_events(exchange)),
     feed = sim_feed_status(exchange)
   )

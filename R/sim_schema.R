@@ -1,7 +1,7 @@
 #' tradesimr durable schema version
 #'
 #' @export
-TRADESIMR_SCHEMA_VERSION <- "0.4.0"
+TRADESIMR_SCHEMA_VERSION <- "0.5.0"
 
 #' Simulation table schemas
 #'
@@ -73,6 +73,40 @@ sim_schemas <- function() {
       status = character(),
       message = character()
     ),
+    agents = data.table::data.table(
+      agent_id = character(),
+      agent_type = character(),
+      status = character(),
+      config = character(),
+      created_at = as.POSIXct(character())
+    ),
+    agent_decisions = data.table::data.table(
+      timestamp = as.POSIXct(character()),
+      agent_id = character(),
+      agent_type = character(),
+      decision_type = character(),
+      side = character(),
+      qty_type = character(),
+      qty = numeric(),
+      order_type = character(),
+      limit_price = numeric(),
+      reason = character(),
+      command_id = character(),
+      status = character()
+    ),
+    agent_rankings = data.table::data.table(
+      timestamp = as.POSIXct(character()),
+      agent_id = character(),
+      agent_type = character(),
+      status = character(),
+      equity = numeric(),
+      cash = numeric(),
+      orders = integer(),
+      filled_orders = integer(),
+      net_qty = numeric(),
+      last_side = character(),
+      rank = integer()
+    ),
     events = data.table::data.table(
       timestamp = as.POSIXct(character()),
       event_id = integer(),
@@ -100,6 +134,7 @@ sim_schemas <- function() {
     ),
     positions = data.table::data.table(
       timestamp = as.POSIXct(character()),
+      agent_id = character(),
       pos_dir = integer(),
       pos_label = character(),
       ctr_unit = numeric(),
@@ -120,6 +155,7 @@ sim_schemas <- function() {
     ),
     account_snapshots = data.table::data.table(
       timestamp = as.POSIXct(character()),
+      agent_id = character(),
       equity = numeric(),
       cash = numeric(),
       notional = numeric(),
@@ -128,6 +164,7 @@ sim_schemas <- function() {
     ),
     risk_snapshots = data.table::data.table(
       timestamp = as.POSIXct(character()),
+      agent_id = character(),
       equity = numeric(),
       abs_notional = numeric(),
       leverage = numeric(),

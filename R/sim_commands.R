@@ -32,6 +32,7 @@ sim_submit_order <- function(exchange,
                              client_order_id = NA_character_,
                              process = TRUE) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
+  .ensure_agent_account(exchange, agent_id, agent_type = "human")
   order_type <- match.arg(order_type)
   side <- match.arg(side)
   if (is.null(qty_type)) qty_type <- if (side == "target") "target_pos" else "contracts"

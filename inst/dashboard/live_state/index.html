@@ -66,6 +66,41 @@
       <p id="feed-status" class="feed-status">Feed service not contacted yet.</p>
     </section>
 
+    <section class="panel ai-console">
+      <div class="console-head">
+        <div>
+          <h2>AI Agent Console</h2>
+          <p>Add and control AI competitors. They submit ordinary order requests into the live service.</p>
+        </div>
+        <div class="feed-actions">
+          <button id="agents-refresh" type="button">Refresh Agents</button>
+          <button id="agents-step" type="button">Step AI Agents</button>
+        </div>
+      </div>
+      <form id="agent-admin-form" class="agent-admin-form">
+        <label>Agent ID<input name="agent_id" placeholder="optional"></label>
+        <label>Agent Type
+          <select name="agent_type">
+            <option value="chaos">chaos</option>
+            <option value="momentum">momentum</option>
+            <option value="contrarian">contrarian</option>
+            <option value="mean_reversion">mean_reversion</option>
+          </select>
+        </label>
+        <label>Qty<input name="qty" type="number" step="0.0001" value="1"></label>
+        <label>Lookback<input name="lookback" type="number" step="1" value="12"></label>
+        <button type="submit">Add AI Agent</button>
+      </form>
+      <form id="agent-status-form" class="agent-status-form">
+        <label>Agent ID<input name="agent_id" placeholder="agent id"></label>
+        <button name="status_action" value="start" type="submit">Start</button>
+        <button name="status_action" value="stop" type="submit">Stop</button>
+        <button name="status_action" value="remove" type="submit">Remove</button>
+      </form>
+      <p id="ai-status" class="feed-status">AI service not contacted yet.</p>
+      <div id="agents-table" class="table-wrap"></div>
+    </section>
+
     <section class="kpis" id="kpis"></section>
 
     <section class="panel">
@@ -102,6 +137,17 @@
       <article class="panel">
         <h2>Fills</h2>
         <div id="fills-table" class="table-wrap"></div>
+      </article>
+    </section>
+
+    <section class="grid">
+      <article class="panel">
+        <h2>Agent Decisions</h2>
+        <div id="agent-decisions-table" class="table-wrap"></div>
+      </article>
+      <article class="panel">
+        <h2>Agent Rankings</h2>
+        <div id="agent-rankings-table" class="table-wrap"></div>
       </article>
     </section>
   </main>

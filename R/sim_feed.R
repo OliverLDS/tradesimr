@@ -137,8 +137,11 @@ sim_feed_step <- function(exchange, now = Sys.time(), max_bars = Inf) {
   }
   out <- data.table::rbindlist(bars, fill = TRUE)
   if (nrow(out) > 0L) {
-    sim_exchange_process_commands(exchange)
-    sim_exchange_step(exchange, out)
+    for (i in seq_len(nrow(out))) {
+      sim_agents_step(exchange, out[i])
+      sim_exchange_process_commands(exchange)
+      sim_exchange_step(exchange, out[i])
+    }
   }
   exchange$feed <- feed
   out[]

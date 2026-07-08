@@ -1,1 +1,16 @@
-utils::globalVariables(".SD")
+utils::globalVariables(c(
+  ".",
+  ".N",
+  ".SD",
+  ":=",
+  "agent_id",
+  "agent_type",
+  "cash",
+  "equity",
+  "filled_orders",
+  "qty",
+  "side",
+  "signed_qty",
+  "status",
+  "timestamp"
+))

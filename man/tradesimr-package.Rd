@@ -7,9 +7,9 @@
 \title{tradesimr}
 \description{
 Execution and simulation engine for trading strategies, with durable event
-exports, append-only agent commands, scheduled live-feed stepping, local
-live-service APIs, separate replay, live-state, and agent dashboards, and
-local orchestration entrypoints.
+exports, append-only agent commands, per-agent live accounts, AI agent
+competitors, scheduled live-feed stepping, local live-service APIs, separate
+replay, live-state, and agent dashboards, and local orchestration entrypoints.
 }
 \author{
 \strong{Maintainer}: Oliver Lee \email{olee7149@gmail.com}

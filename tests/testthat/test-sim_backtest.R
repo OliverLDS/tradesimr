@@ -252,3 +252,82 @@ test_that("live feed accepts external adapter functions", {
   expect_equal(nrow(bars), 1)
   expect_equal(bars$close[1], 10.5)
 })
+
+test_that("AI agents submit ordinary order commands", {
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 0.01, lev = 10))
+  agent_id <- sim_agent_add(exchange, agent_type = "momentum", config = list(qty = 1))
+  expect_match(agent_id, "^momentum-")
+  expect_equal(exchange$agents$agent_type[1], "momentum")
+
+  bar1 <- data.frame(
+    timestamp = as.POSIXct("2026-01-01 00:00:00", tz = "UTC"),
+    open = 100,
+    high = 101,
+    low = 99,
+    close = 100
+  )
+  bar2 <- data.frame(
+    timestamp = as.POSIXct("2026-01-01 01:00:00", tz = "UTC"),
+    open = 100,
+    high = 103,
+    low = 100,
+    close = 102
+  )
+
+  sim_exchange_step(exchange, bar1)
+  decisions <- sim_agents_step(exchange, bar2)
+  expect_equal(nrow(decisions), 1)
+  expect_equal(decisions$side[1], "buy")
+  expect_equal(exchange$order_requests$status[1], "pending")
+
+  sim_exchange_process_commands(exchange)
+  expect_equal(exchange$order_requests$status[1], "accepted")
+  expect_equal(exchange$agent_orders$agent_id[1], agent_id)
+
+  rankings <- sim_agent_rankings(exchange)
+  expect_equal(rankings$agent_id[1], agent_id)
+  expect_equal(rankings$orders[1], 1L)
+
+  expect_true(sim_agent_set_status(exchange, agent_id, "paused"))
+  expect_equal(exchange$agents$status[1], "paused")
+})
+
+test_that("AI and human agents have separate exchange accounts", {
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 0.01, lev = 10))
+  ai_id <- sim_agent_add(exchange, agent_id = "ai-momo", agent_type = "momentum", config = list(qty = 1))
+  bar1 <- data.frame(
+    timestamp = as.POSIXct("2026-01-01 00:00:00", tz = "UTC"),
+    open = 100,
+    high = 101,
+    low = 99,
+    close = 100
+  )
+  bar2 <- data.frame(
+    timestamp = as.POSIXct("2026-01-01 01:00:00", tz = "UTC"),
+    open = 100,
+    high = 103,
+    low = 100,
+    close = 102
+  )
+  sim_submit_order(exchange, "human-a", timestamp = bar1$timestamp[1], side = "sell", qty = 2, process = TRUE)
+
+  initial_accounts <- sim_exchange_account(exchange)
+  expect_setequal(initial_accounts$agent_id, c(ai_id, "human-a"))
+  expect_true(all(initial_accounts$cash == 10000))
+
+  sim_exchange_step(exchange, bar1)
+  sim_agents_step(exchange, bar2)
+  sim_exchange_process_commands(exchange)
+  sim_exchange_step(exchange, bar2)
+
+  accounts <- sim_exchange_account(exchange)
+  positions <- sim_exchange_positions(exchange)
+  expect_setequal(accounts$agent_id, c(ai_id, "human-a"))
+  expect_setequal(positions$agent_id, c(ai_id, "human-a"))
+  expect_equal(positions$pos_dir[positions$agent_id == "human-a"], -1L)
+  expect_equal(positions$pos_dir[positions$agent_id == ai_id], 1L)
+
+  rankings <- sim_agent_rankings(exchange)
+  expect_setequal(rankings$agent_id, c(ai_id, "human-a"))
+  expect_true(all(c("equity", "cash") %in% names(rankings)))
+})

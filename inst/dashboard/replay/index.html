@@ -21,15 +21,31 @@
   </header>
 
   <main>
-    <section class="panel manifest-panel">
-      <div>
-        <h2>Manifest</h2>
-        <p id="manifest-summary">Waiting for manifest.csv.</p>
-      </div>
-      <div id="table-counts" class="counts"></div>
-    </section>
-
     <section class="kpis" id="kpis"></section>
+
+    <section class="panel replay-console">
+      <div class="console-head">
+        <div>
+          <h2>Replay Controls</h2>
+          <p id="replay-status">Waiting for exported market data.</p>
+        </div>
+        <div class="replay-actions">
+          <label>Visible Bars<input id="replay-window" type="number" min="5" step="5" value="50"></label>
+          <label>Step
+            <select id="replay-step-unit">
+              <option value="bar">1 bar</option>
+              <option value="10bar">10 bars</option>
+              <option value="month">1 month</option>
+              <option value="all">to end</option>
+            </select>
+          </label>
+          <button id="replay-reset" type="button">Reset</button>
+          <button id="replay-prev" type="button">Back</button>
+          <button id="replay-next" type="button">Step</button>
+          <button id="replay-play" type="button">Play</button>
+        </div>
+      </div>
+    </section>
 
     <section class="panel">
       <div class="chart-head">
@@ -46,10 +62,6 @@
         <h2>Equity Curve</h2>
         <div id="equity-chart" class="chart"></div>
       </article>
-      <article class="panel">
-        <h2>Risk</h2>
-        <div id="risk-summary" class="metric-stack"></div>
-      </article>
     </section>
 
     <section class="panel">
@@ -63,24 +75,8 @@
     </section>
 
     <section class="panel">
-      <h2>Event Timeline</h2>
-      <div id="event-timeline" class="timeline"></div>
-    </section>
-
-    <section class="grid">
-      <article class="panel">
-        <h2>Orders</h2>
-        <div id="orders-table" class="table-wrap"></div>
-      </article>
-      <article class="panel">
-        <h2>Fills</h2>
-        <div id="fills-table" class="table-wrap"></div>
-      </article>
-    </section>
-
-    <section class="panel">
-      <h2>Risk Snapshots</h2>
-      <div id="risk-table" class="table-wrap"></div>
+      <h2>Orders And Fills</h2>
+      <div id="orders-fills-table" class="table-wrap"></div>
     </section>
   </main>
 

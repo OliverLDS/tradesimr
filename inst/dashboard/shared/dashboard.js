@@ -9,18 +9,27 @@ const REQUIRED_TABLES = [
   "agent_commands",
   "order_requests",
   "order_cancellations",
-  "agent_orders"
+  "agent_orders",
+  "agents",
+  "agent_decisions",
+  "agent_rankings"
 ];
 
 const state = {
   manifest: [],
-  tables: {}
+  tables: {},
+  replay: {
+    cursor: null,
+    windowSize: 50,
+    timer: null
+  }
 };
 
 document.addEventListener("DOMContentLoaded", () => {
   applyDashboardMode();
   bind("file-picker", "change", handleFilePick);
   bind("order-form", "submit", submitOrder);
+  bind("register-human", "click", registerHumanAgent);
   bind("cancel-form", "submit", submitCancel);
   bind("refresh-state", "click", refreshServiceState);
   bind("feed-form", "submit", applyFeedConfig);
@@ -28,6 +37,17 @@ document.addEventListener("DOMContentLoaded", () => {
   bind("feed-start", "click", feedStart);
   bind("feed-stop", "click", feedStop);
   bind("feed-step", "click", feedStep);
+  bind("agent-admin-form", "submit", addAiAgent);
+  bind("agent-status-form", "submit", setAiAgentStatus);
+  bind("agents-refresh", "click", refreshAgents);
+  bind("agents-step", "click", stepAiAgents);
+  bind("replay-window", "change", updateReplayWindow);
+  bind("replay-step-unit", "change", renderReplayStatus);
+  bind("replay-reset", "click", replayReset);
+  bind("replay-prev", "click", replayPrev);
+  bind("replay-next", "click", replayNext);
+  bind("replay-play", "click", replayPlayToggle);
+  applyServiceUrlParam();
   loadFromFolder();
 });
 
@@ -51,6 +71,7 @@ async function loadFromFolder() {
     }
     state.manifest = manifest;
     state.tables = tables;
+    initializeReplayCursor();
     render();
     setStatus("Loaded dashboard data from exported CSV files.");
   } catch (err) {
@@ -76,6 +97,7 @@ async function handleFilePick(event) {
   }
   state.manifest = manifest;
   state.tables = tables;
+  initializeReplayCursor();
   render();
   setStatus("Loaded dashboard data from selected files.");
 }
@@ -132,6 +154,7 @@ function parseCsv(text) {
 
 function render() {
   renderManifest();
+  renderReplayStatus();
   renderKpis();
   renderCandles();
   renderEquity();
@@ -139,10 +162,14 @@ function render() {
   renderRiskSummary();
   renderTimeline();
   renderTable("orders-table", state.tables.orders, ["timestamp", "order_id", "agent_id", "side", "qty_type", "qty", "order_type", "status", "action_label", "dir_label", "ctr_qty", "price", "status_label"]);
+  renderTable("orders-fills-table", combinedOrderFillRows(), ["timestamp", "source", "order_id", "agent_id", "side", "qty_type", "qty", "order_type", "status", "action_label", "dir_label", "ctr_qty", "price", "fee", "realized_pnl"], 80);
   renderTable("commands-table", state.tables.agent_commands, ["timestamp", "command_id", "agent_id", "command_type", "status", "ref_id", "message"]);
   renderTable("requests-table", state.tables.order_requests, ["timestamp", "command_id", "agent_id", "side", "qty_type", "qty", "order_type", "status", "order_id", "message"]);
   renderTable("fills-table", state.tables.fills, ["timestamp", "action_label", "dir_label", "ctr_qty", "price", "fee", "realized_pnl"]);
   renderTable("risk-table", state.tables.risk_snapshots, ["timestamp", "equity", "abs_notional", "leverage", "maintenance_margin", "margin_buffer"], 25);
+  renderTable("agents-table", state.tables.agents, ["agent_id", "agent_type", "status", "config", "created_at"], 80);
+  renderTable("agent-decisions-table", state.tables.agent_decisions, ["timestamp", "agent_id", "agent_type", "side", "qty", "order_type", "reason", "command_id", "status"], 80);
+  renderTable("agent-rankings-table", state.tables.agent_rankings, ["rank", "agent_id", "agent_type", "status", "equity", "cash", "orders", "filled_orders", "net_qty", "last_side"], 80);
 }
 
 function applyDashboardMode() {
@@ -156,6 +183,10 @@ function applyDashboardMode() {
   }
 }
 
+function isReplayDashboard() {
+  return document.body.classList.contains("backtest-mode") || Boolean(document.getElementById("replay-status"));
+}
+
 async function submitOrder(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
@@ -167,6 +198,14 @@ async function submitOrder(event) {
     payload.tgt_pos = payload.qty;
   }
   await postService("/orders", payload, "Order submitted.");
+}
+
+async function registerHumanAgent() {
+  const form = document.getElementById("order-form");
+  const data = form ? Object.fromEntries(new FormData(form).entries()) : {};
+  const agentId = data.agent_id || "agent";
+  const response = await postAdmin("/agents", { agent_id: agentId, agent_type: "human", status: "active" }, "Human agent registered.");
+  if (response?.state) applyServiceState(response.state);
 }
 
 async function submitCancel(event) {
@@ -243,6 +282,71 @@ async function feedStep() {
   applyFeedStatus(data.feed || data);
 }
 
+async function addAiAgent(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const raw = Object.fromEntries(form.entries());
+  const payload = {
+    agent_type: raw.agent_type || "chaos",
+    qty: numericOrDefault(raw.qty, 1),
+    lookback: Math.trunc(numericOrDefault(raw.lookback, 12))
+  };
+  if (raw.agent_id) payload.agent_id = raw.agent_id;
+  const data = await postAdmin("/agents", payload, "AI agent added.");
+  if (data?.state) applyServiceState(data.state);
+}
+
+async function setAiAgentStatus(event) {
+  event.preventDefault();
+  const submitter = event.submitter;
+  const form = new FormData(event.currentTarget);
+  const raw = Object.fromEntries(form.entries());
+  const action = submitter?.value || raw.status_action || "start";
+  if (!raw.agent_id) {
+    setAiStatus("Agent ID is required.");
+    return;
+  }
+  const path = action === "remove" ? "/agents/remove" : action === "stop" ? "/agents/stop" : "/agents/start";
+  const data = await postAdmin(path, { agent_id: raw.agent_id }, `Agent ${action} submitted.`);
+  if (data) applyServiceState(data.state || data);
+}
+
+async function refreshAgents() {
+  try {
+    const response = await fetch(`${serviceBase()}/agents`, { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    state.tables.agents = data.agents || [];
+    state.tables.agent_rankings = data.rankings || [];
+    render();
+    setAiStatus("Agents refreshed.");
+  } catch (err) {
+    setAiStatus(`Unable to refresh agents: ${err.message}`);
+  }
+}
+
+async function stepAiAgents() {
+  const data = await postAdmin("/agents/step", {}, "AI agents stepped.");
+  if (data) applyServiceState(data.state || data);
+}
+
+async function postAdmin(path, payload, okMessage) {
+  try {
+    const response = await fetch(`${serviceBase()}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    setAiStatus(okMessage);
+    return data;
+  } catch (err) {
+    setAiStatus(`AI request failed: ${err.message}`);
+    return null;
+  }
+}
+
 async function postFeed(path, payload, okMessage) {
   try {
     const response = await fetch(`${serviceBase()}${path}`, {
@@ -269,9 +373,139 @@ function applyServiceState(data) {
   state.tables.agent_commands = data.agent_commands || [];
   state.tables.order_requests = data.order_requests || [];
   state.tables.order_cancellations = data.order_cancellations || [];
+  state.tables.agents = data.agents || [];
+  state.tables.agent_decisions = data.agent_decisions || [];
+  state.tables.agent_rankings = data.agent_rankings || [];
   state.tables.events = data.events || state.tables.events || [];
   if (data.feed) applyFeedStatus(data.feed);
   render();
+}
+
+function initializeReplayCursor() {
+  if (!isReplayDashboard()) return;
+  const bars = normalizeBars(state.tables.market_events || []);
+  if (!bars.length) {
+    state.replay.cursor = null;
+    return;
+  }
+  const windowEl = document.getElementById("replay-window");
+  const windowSize = Math.max(5, Math.trunc(number(windowEl?.value)) || state.replay.windowSize || 50);
+  state.replay.windowSize = windowSize;
+  state.replay.cursor = Math.min(bars.length, windowSize);
+}
+
+function updateReplayWindow() {
+  const bars = normalizeBars(state.tables.market_events || []);
+  const windowEl = document.getElementById("replay-window");
+  state.replay.windowSize = Math.max(5, Math.trunc(number(windowEl?.value)) || 50);
+  if (state.replay.cursor === null && bars.length) state.replay.cursor = Math.min(bars.length, state.replay.windowSize);
+  render();
+}
+
+function replayReset() {
+  stopReplayTimer();
+  const bars = normalizeBars(state.tables.market_events || []);
+  state.replay.cursor = bars.length ? Math.min(bars.length, state.replay.windowSize) : null;
+  render();
+}
+
+function replayPrev() {
+  stopReplayTimer();
+  moveReplayCursor(-replayStepSize());
+}
+
+function replayNext() {
+  moveReplayCursor(replayStepSize());
+}
+
+function replayPlayToggle() {
+  const button = document.getElementById("replay-play");
+  if (state.replay.timer) {
+    stopReplayTimer();
+    return;
+  }
+  if (button) button.textContent = "Pause";
+  state.replay.timer = window.setInterval(() => {
+    const bars = normalizeBars(state.tables.market_events || []);
+    if (!bars.length || state.replay.cursor >= bars.length) {
+      stopReplayTimer();
+      return;
+    }
+    moveReplayCursor(replayStepSize(), false);
+  }, 650);
+}
+
+function stopReplayTimer() {
+  if (state.replay.timer) {
+    window.clearInterval(state.replay.timer);
+    state.replay.timer = null;
+  }
+  const button = document.getElementById("replay-play");
+  if (button) button.textContent = "Play";
+}
+
+function replayStepSize() {
+  const bars = normalizeBars(state.tables.market_events || []);
+  const unit = document.getElementById("replay-step-unit")?.value || "bar";
+  if (unit === "10bar") return 10;
+  if (unit === "all") return bars.length;
+  if (unit === "month") return replayMonthStep(bars);
+  return 1;
+}
+
+function replayMonthStep(bars) {
+  if (!bars.length || state.replay.cursor === null) return 1;
+  const current = bars[Math.max(0, Math.min(bars.length - 1, state.replay.cursor - 1))];
+  const currentMonth = monthKey(current.timestamp);
+  let next = state.replay.cursor;
+  while (next < bars.length && monthKey(bars[next].timestamp) === currentMonth) next++;
+  return Math.max(1, next - state.replay.cursor);
+}
+
+function moveReplayCursor(delta, stopAtEnd = true) {
+  const bars = normalizeBars(state.tables.market_events || []);
+  if (!bars.length) return;
+  const start = Math.min(bars.length, Math.max(1, state.replay.windowSize));
+  const next = Math.max(start, Math.min(bars.length, (state.replay.cursor || start) + delta));
+  state.replay.cursor = next;
+  if (stopAtEnd && next >= bars.length) stopReplayTimer();
+  render();
+}
+
+function replayRows(rows) {
+  if (!isReplayDashboard()) return rows;
+  const bars = normalizeBars(state.tables.market_events || []);
+  if (!bars.length || state.replay.cursor === null) return rows;
+  const visibleBars = replayVisibleBars();
+  const maxTime = visibleBars[visibleBars.length - 1]?.timestamp;
+  if (!maxTime) return rows;
+  const maxMs = timeValue(maxTime);
+  return rows.filter(row => {
+    const rowMs = timeValue(row.timestamp);
+    return Number.isFinite(rowMs) ? rowMs <= maxMs : true;
+  });
+}
+
+function replayVisibleBars() {
+  const bars = normalizeBars(state.tables.market_events || []);
+  if (!isReplayDashboard() || !bars.length || state.replay.cursor === null) return bars.slice(-80);
+  const end = Math.max(1, Math.min(bars.length, state.replay.cursor));
+  const start = Math.max(0, end - state.replay.windowSize);
+  return bars.slice(start, end);
+}
+
+function renderReplayStatus() {
+  const el = document.getElementById("replay-status");
+  if (!el) return;
+  const bars = normalizeBars(state.tables.market_events || []);
+  if (!bars.length || state.replay.cursor === null) {
+    el.textContent = "Waiting for exported market data.";
+    return;
+  }
+  const visible = replayVisibleBars();
+  const first = visible[0]?.timestamp || "n/a";
+  const last = visible[visible.length - 1]?.timestamp || "n/a";
+  el.textContent = `Showing bars ${Math.max(1, state.replay.cursor - visible.length + 1)}-${state.replay.cursor} of ${bars.length}: ${first} to ${last}.`;
 }
 
 function feedConfigPayload() {
@@ -343,6 +577,14 @@ function serviceBase() {
   return (el ? el.value : "http://127.0.0.1:8080").replace(/\/+$/, "");
 }
 
+function applyServiceUrlParam() {
+  const el = document.getElementById("service-url");
+  if (!el) return;
+  const params = new URLSearchParams(window.location.search);
+  const serviceUrl = params.get("service_url") || params.get("service");
+  if (serviceUrl) el.value = serviceUrl;
+}
+
 function setAgentStatus(message) {
   const el = document.getElementById("agent-status");
   if (el) el.textContent = message;
@@ -350,6 +592,11 @@ function setAgentStatus(message) {
 
 function setFeedStatus(message) {
   const el = document.getElementById("feed-status");
+  if (el) el.textContent = message;
+}
+
+function setAiStatus(message) {
+  const el = document.getElementById("ai-status");
   if (el) el.textContent = message;
 }
 
@@ -370,8 +617,8 @@ function renderManifest() {
 function renderKpis() {
   const el = document.getElementById("kpis");
   if (!el) return;
-  const account = state.tables.account_snapshots || [];
-  const risk = state.tables.risk_snapshots || [];
+  const account = replayRows(state.tables.account_snapshots || []);
+  const risk = replayRows(state.tables.risk_snapshots || []);
   const lastAccount = account[account.length - 1] || {};
   const lastRisk = risk[risk.length - 1] || {};
   const firstEquity = number(account[0]?.equity);
@@ -401,10 +648,11 @@ function renderCandles() {
     return;
   }
 
-  const shown = bars.slice(-80);
-  const fills = normalizeMarkers(state.tables.fills || [], "fill");
-  const orders = normalizeMarkers(state.tables.orders || [], "order");
-  const markerRows = [...fills, ...orders].filter(marker => marker.price > 0);
+  const shown = replayVisibleBars();
+  const fills = normalizeMarkers(replayRows(state.tables.fills || []), "fill");
+  const orders = normalizeMarkers(replayRows(state.tables.orders || []), "order");
+  const visibleTimes = new Set(shown.map(row => String(row.timestamp)));
+  const markerRows = [...fills, ...orders].filter(marker => marker.price > 0 && visibleTimes.has(String(marker.timestamp)));
   const width = 960;
   const height = 360;
   const pad = { top: 24, right: 72, bottom: 44, left: 58 };
@@ -413,8 +661,10 @@ function renderCandles() {
   const lows = shown.map(row => row.low);
   const highs = shown.map(row => row.high);
   const markerPrices = markerRows.map(row => row.price);
-  const minY = Math.min(...lows, ...markerPrices);
-  const maxY = Math.max(...highs, ...markerPrices);
+  const rawMinY = Math.min(...lows, ...markerPrices);
+  const rawMaxY = Math.max(...highs, ...markerPrices);
+  const minY = rawMinY > 0 ? 0 : niceFloor(rawMinY);
+  const maxY = niceCeil(rawMaxY * 1.05);
   const yRange = maxY - minY || 1;
   const step = plotW / Math.max(1, shown.length);
   const bodyW = Math.max(3, Math.min(14, step * 0.58));
@@ -448,8 +698,8 @@ function renderCandles() {
     return `<circle cx="${x.toFixed(2)}" cy="${y.toFixed(2)}" r="${marker.kind === "fill" ? 4.5 : 3.5}" class="${cls}"><title>${escapeHtml(label)}</title></circle>`;
   }).join("");
 
-  const last = bars[bars.length - 1];
-  summary.textContent = `Bars ${bars.length}; latest ${last.timestamp}; close ${formatNumber(last.close, 4)}. Fills and orders are overlaid when timestamps match visible candles.`;
+  const last = shown[shown.length - 1];
+  summary.textContent = `Visible bars ${shown.length} of ${bars.length}; latest visible ${last.timestamp}; close ${formatNumber(last.close, 4)}. Y-axis is scaled to visible candles.`;
   el.innerHTML = `
     <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="OHLC candle chart">
       <rect x="${pad.left}" y="${pad.top}" width="${plotW}" height="${plotH}" class="plot-bg"></rect>
@@ -458,13 +708,14 @@ function renderCandles() {
       <text x="${pad.left}" y="${pad.top - 8}" class="chart-label">${formatNumber(maxY, 4)}</text>
       <text x="${pad.left}" y="${height - 12}" class="chart-label">${formatNumber(minY, 4)}</text>
       <text x="${width - pad.right}" y="${pad.top - 8}" text-anchor="end" class="chart-label">last ${formatNumber(last.close, 4)}</text>
+      ${axisTimeLabels(shown, xFor, height - 18)}
       ${candleSvg}
       ${markerSvg}
     </svg>`;
 }
 
 function renderTargets() {
-  const rows = normalizeTargetRows(state.tables.strategy_snapshots || []);
+  const rows = normalizeTargetRows(replayRows(state.tables.strategy_snapshots || []));
   const el = document.getElementById("target-chart");
   const summary = document.getElementById("target-summary");
   if (!el || !summary) return;
@@ -543,7 +794,7 @@ function normalizeMarkers(rows, kind) {
 }
 
 function renderEquity() {
-  const account = state.tables.account_snapshots || [];
+  const account = replayRows(state.tables.account_snapshots || []);
   const points = account.map((row, i) => ({ x: i, y: number(row.equity), t: row.timestamp })).filter(point => isFinite(point.y));
   const el = document.getElementById("equity-chart");
   if (!el) return;
@@ -553,30 +804,32 @@ function renderEquity() {
   }
   const width = 900;
   const height = 280;
-  const pad = 36;
+  const pad = { top: 30, right: 28, bottom: 52, left: 48 };
   const ys = points.map(point => point.y);
   const minY = Math.min(...ys);
   const maxY = Math.max(...ys);
   const yRange = maxY - minY || 1;
   const path = points.map((point, i) => {
-    const x = pad + (i / (points.length - 1)) * (width - pad * 2);
-    const y = height - pad - ((point.y - minY) / yRange) * (height - pad * 2);
+    const x = pad.left + (i / (points.length - 1)) * (width - pad.left - pad.right);
+    const y = height - pad.bottom - ((point.y - minY) / yRange) * (height - pad.top - pad.bottom);
     return `${x.toFixed(2)},${y.toFixed(2)}`;
   }).join(" ");
+  const xFor = i => pad.left + (i / Math.max(1, points.length - 1)) * (width - pad.left - pad.right);
   el.innerHTML = `
     <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Equity curve">
-      <line x1="${pad}" y1="${height - pad}" x2="${width - pad}" y2="${height - pad}" class="axis"></line>
-      <line x1="${pad}" y1="${pad}" x2="${pad}" y2="${height - pad}" class="axis"></line>
+      <line x1="${pad.left}" y1="${height - pad.bottom}" x2="${width - pad.right}" y2="${height - pad.bottom}" class="axis"></line>
+      <line x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${height - pad.bottom}" class="axis"></line>
       <polyline points="${path}" class="equity-line"></polyline>
-      <text x="${pad}" y="${pad - 10}" class="chart-label">${formatNumber(maxY)}</text>
-      <text x="${pad}" y="${height - 8}" class="chart-label">${formatNumber(minY)}</text>
+      <text x="${pad.left}" y="${pad.top - 10}" class="chart-label">${formatNumber(maxY)}</text>
+      <text x="${pad.left}" y="${height - 8}" class="chart-label">${formatNumber(minY)}</text>
+      ${axisTimeLabels(points, xFor, height - 16, point => point.t)}
     </svg>`;
 }
 
 function renderRiskSummary() {
   const el = document.getElementById("risk-summary");
   if (!el) return;
-  const risk = state.tables.risk_snapshots || [];
+  const risk = replayRows(state.tables.risk_snapshots || []);
   const last = risk[risk.length - 1] || {};
   const rows = [
     ["Equity", last.equity],
@@ -591,7 +844,7 @@ function renderRiskSummary() {
 }
 
 function renderTimeline() {
-  const events = state.tables.events || [];
+  const events = replayRows(state.tables.events || []);
   const el = document.getElementById("event-timeline");
   if (!el) return;
   if (!events.length) {
@@ -607,6 +860,12 @@ function renderTimeline() {
       </div>
     </div>
   `).join("");
+}
+
+function combinedOrderFillRows() {
+  const orders = replayRows(state.tables.orders || []).map(row => ({ source: "order", ...row }));
+  const fills = replayRows(state.tables.fills || []).map(row => ({ source: "fill", ...row }));
+  return [...orders, ...fills].sort((a, b) => timeValue(a.timestamp) - timeValue(b.timestamp));
 }
 
 function renderTable(id, rows = [], preferred = [], limit = 50) {
@@ -638,6 +897,56 @@ function setStatus(message) {
 function number(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : NaN;
+}
+
+function timeValue(value) {
+  if (value === undefined || value === null || value === "") return NaN;
+  const parsed = Date.parse(value);
+  if (Number.isFinite(parsed)) return parsed;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : NaN;
+}
+
+function monthKey(value) {
+  const ms = timeValue(value);
+  if (!Number.isFinite(ms)) return String(value).slice(0, 7);
+  const d = new Date(ms);
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function shortTimeLabel(value) {
+  const ms = timeValue(value);
+  if (!Number.isFinite(ms)) return String(value ?? "");
+  const d = new Date(ms);
+  const date = `${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+  const time = `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
+  return `${date} ${time}`;
+}
+
+function axisTimeLabels(rows, xFor, y, timeAccessor = row => row.timestamp) {
+  if (!rows.length) return "";
+  const tickCount = Math.min(5, rows.length);
+  const indexes = Array.from({ length: tickCount }, (_, i) =>
+    Math.round((i / Math.max(1, tickCount - 1)) * (rows.length - 1))
+  );
+  return [...new Set(indexes)].map(i => {
+    const anchor = i === 0 ? "start" : i === rows.length - 1 ? "end" : "middle";
+    return `<text x="${xFor(i).toFixed(2)}" y="${y}" text-anchor="${anchor}" class="chart-label x-tick">${escapeHtml(shortTimeLabel(timeAccessor(rows[i])))}</text>`;
+  }).join("");
+}
+
+function niceCeil(value) {
+  if (!Number.isFinite(value) || value === 0) return 1;
+  const abs = Math.abs(value);
+  const pow = 10 ** Math.floor(Math.log10(abs));
+  return Math.ceil(value / pow) * pow;
+}
+
+function niceFloor(value) {
+  if (!Number.isFinite(value) || value === 0) return 0;
+  const abs = Math.abs(value);
+  const pow = 10 ** Math.floor(Math.log10(abs));
+  return Math.floor(value / pow) * pow;
 }
 
 function numericOrDefault(value, fallback) {

@@ -16,7 +16,7 @@ sim_fills <- function(sim) {
 #' @export
 sim_positions <- function(sim) {
   DT <- data.table::as.data.table(sim)
-  cols <- c("timestamp", "pos_dir", "ctr_unit", "avg_price", "last_px", "notional", "unrealized_pnl")
+  cols <- c("timestamp", "agent_id", "pos_dir", "ctr_unit", "avg_price", "last_px", "notional", "unrealized_pnl")
   out <- DT[, .SD, .SDcols = intersect(cols, names(DT))]
   if (!"pos_dir" %in% names(out)) return(data.table::data.table())
   pos_label <- data.table::fifelse(out$pos_dir == 1L, "long",
@@ -25,7 +25,7 @@ sim_positions <- function(sim) {
     )
   )
   data.table::set(out, j = "pos_label", value = pos_label)
-  data.table::setcolorder(out, intersect(c("timestamp", "pos_dir", "pos_label", "ctr_unit", "avg_price", "last_px", "notional", "unrealized_pnl"), names(out)))
+  data.table::setcolorder(out, intersect(c("timestamp", "agent_id", "pos_dir", "pos_label", "ctr_unit", "avg_price", "last_px", "notional", "unrealized_pnl"), names(out)))
   out[]
 }
 
@@ -48,7 +48,7 @@ sim_cash_ledger <- function(sim) {
 #' @export
 sim_account <- function(sim) {
   DT <- data.table::as.data.table(sim)
-  cols <- c("timestamp", "equity", "cash", "notional", "abs_notional", "unrealized_pnl")
+  cols <- c("timestamp", "agent_id", "equity", "cash", "notional", "abs_notional", "unrealized_pnl")
   DT[, .SD, .SDcols = intersect(cols, names(DT))]
 }
 
@@ -77,6 +77,7 @@ sim_risk <- function(sim) {
   if (nrow(DT) == 0L) return(data.table::data.table())
   out <- data.table::data.table(
     timestamp = DT$timestamp,
+    agent_id = if ("agent_id" %in% names(DT)) DT$agent_id else NA_character_,
     equity = DT$equity,
     abs_notional = DT$abs_notional,
     leverage = data.table::fifelse(DT$equity > 0, DT$abs_notional / DT$equity, Inf),
