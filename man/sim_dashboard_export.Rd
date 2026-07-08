@@ -16,7 +16,5 @@ sim_dashboard_export(sim, path)
 Invisibly returns a named character vector of written files.
 }
 \description{
-Writes dashboard-ready CSV tables, a manifest, and static HTML/CSS/JS assets.
-The dashboard is a read-only consumer of durable market, event, account, risk,
-order, and fill tables; it does not call C++, R6, or live exchange internals.
+Compatibility alias for \code{sim_replay_dashboard_export()}.
 }

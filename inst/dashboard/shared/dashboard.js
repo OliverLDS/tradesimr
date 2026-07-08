@@ -1,5 +1,6 @@
 const REQUIRED_TABLES = [
   "market_events",
+  "strategy_snapshots",
   "events",
   "account_snapshots",
   "risk_snapshots",
@@ -17,17 +18,23 @@ const state = {
 };
 
 document.addEventListener("DOMContentLoaded", () => {
-  document.getElementById("file-picker").addEventListener("change", handleFilePick);
-  document.getElementById("order-form").addEventListener("submit", submitOrder);
-  document.getElementById("cancel-form").addEventListener("submit", submitCancel);
-  document.getElementById("refresh-state").addEventListener("click", refreshServiceState);
-  document.getElementById("feed-form").addEventListener("submit", applyFeedConfig);
-  document.getElementById("feed-refresh").addEventListener("click", refreshFeedStatus);
-  document.getElementById("feed-start").addEventListener("click", feedStart);
-  document.getElementById("feed-stop").addEventListener("click", feedStop);
-  document.getElementById("feed-step").addEventListener("click", feedStep);
+  applyDashboardMode();
+  bind("file-picker", "change", handleFilePick);
+  bind("order-form", "submit", submitOrder);
+  bind("cancel-form", "submit", submitCancel);
+  bind("refresh-state", "click", refreshServiceState);
+  bind("feed-form", "submit", applyFeedConfig);
+  bind("feed-refresh", "click", refreshFeedStatus);
+  bind("feed-start", "click", feedStart);
+  bind("feed-stop", "click", feedStop);
+  bind("feed-step", "click", feedStep);
   loadFromFolder();
 });
+
+function bind(id, event, handler) {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener(event, handler);
+}
 
 async function loadFromFolder() {
   try {
@@ -128,6 +135,7 @@ function render() {
   renderKpis();
   renderCandles();
   renderEquity();
+  renderTargets();
   renderRiskSummary();
   renderTimeline();
   renderTable("orders-table", state.tables.orders, ["timestamp", "order_id", "agent_id", "side", "qty_type", "qty", "order_type", "status", "action_label", "dir_label", "ctr_qty", "price", "status_label"]);
@@ -135,6 +143,17 @@ function render() {
   renderTable("requests-table", state.tables.order_requests, ["timestamp", "command_id", "agent_id", "side", "qty_type", "qty", "order_type", "status", "order_id", "message"]);
   renderTable("fills-table", state.tables.fills, ["timestamp", "action_label", "dir_label", "ctr_qty", "price", "fee", "realized_pnl"]);
   renderTable("risk-table", state.tables.risk_snapshots, ["timestamp", "equity", "abs_notional", "leverage", "maintenance_margin", "margin_buffer"], 25);
+}
+
+function applyDashboardMode() {
+  const params = new URLSearchParams(window.location.search);
+  const mode = params.get("mode") || "default";
+  if (mode === "backtest" || mode === "replay") {
+    document.body.classList.add("backtest-mode");
+    document.getElementById("dashboard-title").textContent = "Backtest Replay Review";
+    document.getElementById("dashboard-lede").textContent =
+      "Reads exported market, target exposure, account, risk, order, fill, and event tables. Live agent controls are hidden in replay mode.";
+  }
 }
 
 async function submitOrder(event) {
@@ -320,29 +339,37 @@ function deriveRiskRows(accountRows) {
 }
 
 function serviceBase() {
-  return document.getElementById("service-url").value.replace(/\/+$/, "");
+  const el = document.getElementById("service-url");
+  return (el ? el.value : "http://127.0.0.1:8080").replace(/\/+$/, "");
 }
 
 function setAgentStatus(message) {
-  document.getElementById("agent-status").textContent = message;
+  const el = document.getElementById("agent-status");
+  if (el) el.textContent = message;
 }
 
 function setFeedStatus(message) {
-  document.getElementById("feed-status").textContent = message;
+  const el = document.getElementById("feed-status");
+  if (el) el.textContent = message;
 }
 
 function renderManifest() {
+  const summary = document.getElementById("manifest-summary");
+  const counts = document.getElementById("table-counts");
+  if (!summary || !counts) return;
   const manifest = state.manifest;
   const version = manifest[0]?.schema_version || "unknown";
   const packageVersion = manifest[0]?.package_version || "unknown";
-  document.getElementById("manifest-summary").textContent =
+  summary.textContent =
     `Schema ${version}, tradesimr ${packageVersion}, ${manifest.length} declared tables.`;
-  document.getElementById("table-counts").innerHTML = manifest.map(row =>
+  counts.innerHTML = manifest.map(row =>
     `<span><strong>${escapeHtml(row.table)}</strong>${escapeHtml(row.rows || "0")} rows</span>`
   ).join("");
 }
 
 function renderKpis() {
+  const el = document.getElementById("kpis");
+  if (!el) return;
   const account = state.tables.account_snapshots || [];
   const risk = state.tables.risk_snapshots || [];
   const lastAccount = account[account.length - 1] || {};
@@ -358,7 +385,7 @@ function renderKpis() {
     ["Margin Buffer", formatNumber(number(lastRisk.margin_buffer))],
     ["P&L", formatNumber(pnl)]
   ];
-  document.getElementById("kpis").innerHTML = items.map(([label, value]) =>
+  el.innerHTML = items.map(([label, value]) =>
     `<article class="kpi"><span>${label}</span><strong>${value}</strong></article>`
   ).join("");
 }
@@ -367,6 +394,7 @@ function renderCandles() {
   const bars = normalizeBars(state.tables.market_events || []);
   const el = document.getElementById("candle-chart");
   const summary = document.getElementById("candle-summary");
+  if (!el || !summary) return;
   if (!bars.length) {
     el.innerHTML = "<p class=\"empty\">No OHLC bars available. Export market_events.csv or refresh live service state.</p>";
     summary.textContent = "No market data loaded.";
@@ -435,6 +463,49 @@ function renderCandles() {
     </svg>`;
 }
 
+function renderTargets() {
+  const rows = normalizeTargetRows(state.tables.strategy_snapshots || []);
+  const el = document.getElementById("target-chart");
+  const summary = document.getElementById("target-summary");
+  if (!el || !summary) return;
+  if (!rows.length) {
+    el.innerHTML = "<p class=\"empty\">No target exposure snapshots available.</p>";
+    summary.textContent = "No strategy snapshots loaded.";
+    return;
+  }
+
+  const shown = rows.slice(-240);
+  const width = 960;
+  const height = 260;
+  const pad = { top: 22, right: 60, bottom: 36, left: 56 };
+  const plotW = width - pad.left - pad.right;
+  const plotH = height - pad.top - pad.bottom;
+  const values = shown.flatMap(row => [row.tgt_pos, row.ctr_unit * row.pos_dir]).filter(Number.isFinite);
+  const minY = Math.min(-1, ...values);
+  const maxY = Math.max(1, ...values);
+  const yRange = maxY - minY || 1;
+  const xFor = i => pad.left + (i / Math.max(1, shown.length - 1)) * plotW;
+  const yFor = value => pad.top + (maxY - value) / yRange * plotH;
+  const targetPath = shown.map((row, i) => `${xFor(i).toFixed(2)},${yFor(row.tgt_pos).toFixed(2)}`).join(" ");
+  const positionPath = shown.map((row, i) => `${xFor(i).toFixed(2)},${yFor(row.ctr_unit * row.pos_dir).toFixed(2)}`).join(" ");
+  const zeroY = yFor(0);
+  const last = rows[rows.length - 1];
+
+  summary.textContent = `Snapshots ${rows.length}; latest target ${formatNumber(last.tgt_pos, 3)}, position ${formatNumber(last.ctr_unit * last.pos_dir, 3)}, strategy ${last.pos_strat}.`;
+  el.innerHTML = `
+    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Target exposure replay">
+      <rect x="${pad.left}" y="${pad.top}" width="${plotW}" height="${plotH}" class="plot-bg"></rect>
+      <line x1="${pad.left}" y1="${zeroY.toFixed(2)}" x2="${width - pad.right}" y2="${zeroY.toFixed(2)}" class="zero-line"></line>
+      <line x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${height - pad.bottom}" class="axis"></line>
+      <line x1="${pad.left}" y1="${height - pad.bottom}" x2="${width - pad.right}" y2="${height - pad.bottom}" class="axis"></line>
+      <polyline points="${targetPath}" class="target-line"><title>Target position</title></polyline>
+      <polyline points="${positionPath}" class="position-line"><title>Realized position direction * contracts</title></polyline>
+      <text x="${pad.left}" y="${pad.top - 8}" class="chart-label">${formatNumber(maxY, 3)}</text>
+      <text x="${pad.left}" y="${height - 10}" class="chart-label">${formatNumber(minY, 3)}</text>
+      <text x="${width - pad.right}" y="${pad.top - 8}" text-anchor="end" class="chart-label">target / position</text>
+    </svg>`;
+}
+
 function normalizeBars(rows) {
   return rows.map(row => ({
     timestamp: row.timestamp,
@@ -451,6 +522,17 @@ function normalizeBars(rows) {
   );
 }
 
+function normalizeTargetRows(rows) {
+  return rows.map(row => ({
+    timestamp: row.timestamp,
+    tgt_pos: number(row.tgt_pos),
+    pos_strat: row.pos_strat || "",
+    pos_dir: number(row.pos_dir || 0),
+    ctr_unit: number(row.ctr_unit || 0),
+    tol_pos: number(row.tol_pos)
+  })).filter(row => row.timestamp !== undefined && Number.isFinite(row.tgt_pos));
+}
+
 function normalizeMarkers(rows, kind) {
   return rows.map(row => ({
     kind,
@@ -464,6 +546,7 @@ function renderEquity() {
   const account = state.tables.account_snapshots || [];
   const points = account.map((row, i) => ({ x: i, y: number(row.equity), t: row.timestamp })).filter(point => isFinite(point.y));
   const el = document.getElementById("equity-chart");
+  if (!el) return;
   if (points.length < 2) {
     el.innerHTML = "<p class=\"empty\">Not enough account snapshots to draw an equity curve.</p>";
     return;
@@ -491,6 +574,8 @@ function renderEquity() {
 }
 
 function renderRiskSummary() {
+  const el = document.getElementById("risk-summary");
+  if (!el) return;
   const risk = state.tables.risk_snapshots || [];
   const last = risk[risk.length - 1] || {};
   const rows = [
@@ -500,7 +585,7 @@ function renderRiskSummary() {
     ["Maintenance Margin", last.maintenance_margin],
     ["Margin Buffer", last.margin_buffer]
   ];
-  document.getElementById("risk-summary").innerHTML = rows.map(([label, raw]) =>
+  el.innerHTML = rows.map(([label, raw]) =>
     `<div><span>${label}</span><strong>${formatNumber(number(raw), label === "Leverage" ? 3 : 2)}</strong></div>`
   ).join("");
 }
@@ -508,6 +593,7 @@ function renderRiskSummary() {
 function renderTimeline() {
   const events = state.tables.events || [];
   const el = document.getElementById("event-timeline");
+  if (!el) return;
   if (!events.length) {
     el.innerHTML = "<p class=\"empty\">No recorded events.</p>";
     return;
@@ -525,6 +611,7 @@ function renderTimeline() {
 
 function renderTable(id, rows = [], preferred = [], limit = 50) {
   const el = document.getElementById(id);
+  if (!el) return;
   if (!rows.length) {
     el.innerHTML = "<p class=\"empty\">No rows.</p>";
     return;
@@ -544,7 +631,8 @@ function basename(path) {
 }
 
 function setStatus(message) {
-  document.getElementById("load-status").textContent = message;
+  const el = document.getElementById("load-status");
+  if (el) el.textContent = message;
 }
 
 function number(value) {

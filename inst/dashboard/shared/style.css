@@ -246,6 +246,10 @@ main {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+.backtest-mode .live-only {
+  display: none;
+}
+
 .kpi {
   padding: 1rem;
 }
@@ -299,6 +303,10 @@ main {
   min-height: 360px;
 }
 
+.target-chart {
+  min-height: 260px;
+}
+
 svg {
   display: block;
   width: 100%;
@@ -345,6 +353,27 @@ svg {
   fill: #111f1b;
   stroke: #fff9ec;
   stroke-width: 1.5;
+}
+
+.target-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-linejoin: round;
+  stroke-width: 3;
+}
+
+.position-line {
+  fill: none;
+  stroke: var(--accent-2);
+  stroke-linejoin: round;
+  stroke-width: 2.5;
+  stroke-dasharray: 6 5;
+}
+
+.zero-line {
+  stroke: #9f927e;
+  stroke-dasharray: 4 4;
+  stroke-width: 1;
 }
 
 .order-marker {

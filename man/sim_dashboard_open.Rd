@@ -2,16 +2,16 @@
 % Please edit documentation in R/sim_dashboard.R
 \name{sim_dashboard_open}
 \alias{sim_dashboard_open}
-\title{Open a static simulation dashboard}
+\title{Open an exported static dashboard}
 \usage{
 sim_dashboard_open(path)
 }
 \arguments{
-\item{path}{Directory created by \code{sim_dashboard_export()}.}
+\item{path}{Directory created by a dashboard export helper.}
 }
 \value{
 Invisibly returns the dashboard index path.
 }
 \description{
-Open a static simulation dashboard
+Open an exported static dashboard
 }

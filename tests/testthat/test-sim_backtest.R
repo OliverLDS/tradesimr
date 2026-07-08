@@ -183,12 +183,12 @@ test_that("sim_dashboard_export writes static dashboard contract", {
   expect_true(all(file.exists(paths)))
   expect_true(all(file.exists(file.path(
     out_dir,
-    c("index.html", "dashboard.js", "style.css", "manifest.csv", "market_events.csv", "events.csv", "account_snapshots.csv", "risk_snapshots.csv", "orders.csv", "fills.csv")
+    c("index.html", "shared/dashboard.js", "shared/style.css", "manifest.csv", "market_events.csv", "strategy_snapshots.csv", "events.csv", "account_snapshots.csv", "risk_snapshots.csv", "orders.csv", "fills.csv")
   ))))
   manifest <- data.table::fread(file.path(out_dir, "manifest.csv"))
   expect_setequal(
     manifest$table,
-    c("market_events", "events", "account_snapshots", "risk_snapshots", "orders", "fills")
+    c("market_events", "strategy_snapshots", "events", "account_snapshots", "risk_snapshots", "orders", "fills")
   )
 })
 

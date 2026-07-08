@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>tradesimr Live State Dashboard</title>
+  <link rel="stylesheet" href="shared/style.css">
+</head>
+<body>
+  <header class="hero">
+    <div>
+      <p class="eyebrow">tradesimr state dashboard</p>
+      <h1 id="dashboard-title">Live Market State</h1>
+      <p id="dashboard-lede" class="lede">God-facing simulation controls for feed configuration, market stepping, and state inspection. No order placement.</p>
+    </div>
+    <div class="loader">
+      <label for="file-picker">Load exported CSV files</label>
+      <input id="file-picker" type="file" multiple webkitdirectory>
+      <p id="load-status">Trying to load files from this folder...</p>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel manifest-panel">
+      <div>
+        <h2>Manifest</h2>
+        <p id="manifest-summary">Waiting for manifest.csv.</p>
+      </div>
+      <div id="table-counts" class="counts"></div>
+    </section>
+
+    <section class="panel feed-console">
+      <div class="console-head">
+        <div>
+          <h2>Feed Console</h2>
+          <p>Configure and step the simulated or external live market feed.</p>
+        </div>
+        <div class="service-box">
+          <label for="service-url">Service URL</label>
+          <input id="service-url" value="http://127.0.0.1:8080">
+          <button id="refresh-state" type="button">Refresh State</button>
+        </div>
+      </div>
+      <div class="feed-actions">
+        <button id="feed-refresh" type="button">Refresh Feed Status</button>
+        <button id="feed-start" type="button">Start</button>
+        <button id="feed-stop" type="button">Stop</button>
+        <button id="feed-step" type="button">Step</button>
+      </div>
+      <form id="feed-form" class="feed-form">
+        <label>Symbol<input name="symbol" value="BTC-USDT-SWAP"></label>
+        <label>Timeframe<input name="timeframe" value="4h"></label>
+        <label>Time Zone<input name="tz" value="UTC"></label>
+        <label>Feed Mode
+          <select name="feed_mode">
+            <option value="simulation">simulation</option>
+            <option value="external">external</option>
+          </select>
+        </label>
+        <label>Start Price<input name="start_price" type="number" step="0.0001" value="100"></label>
+        <label>Drift<input name="drift" type="number" step="0.000001" value="0"></label>
+        <label>Vol<input name="vol" type="number" step="0.000001" value="0.02"></label>
+        <label>Seed<input name="seed" type="number" step="1" value="1"></label>
+        <button type="submit">Apply Config</button>
+      </form>
+      <p id="feed-status" class="feed-status">Feed service not contacted yet.</p>
+    </section>
+
+    <section class="kpis" id="kpis"></section>
+
+    <section class="panel">
+      <div class="chart-head">
+        <div>
+          <h2>Candle Chart</h2>
+          <p id="candle-summary">Waiting for market_events.csv or live service state.</p>
+        </div>
+      </div>
+      <div id="candle-chart" class="chart candle-chart"></div>
+    </section>
+
+    <section class="grid">
+      <article class="panel wide">
+        <h2>Equity Curve</h2>
+        <div id="equity-chart" class="chart"></div>
+      </article>
+      <article class="panel">
+        <h2>Risk</h2>
+        <div id="risk-summary" class="metric-stack"></div>
+      </article>
+    </section>
+
+    <section class="panel">
+      <h2>Event Timeline</h2>
+      <div id="event-timeline" class="timeline"></div>
+    </section>
+
+    <section class="grid">
+      <article class="panel">
+        <h2>Orders</h2>
+        <div id="orders-table" class="table-wrap"></div>
+      </article>
+      <article class="panel">
+        <h2>Fills</h2>
+        <div id="fills-table" class="table-wrap"></div>
+      </article>
+    </section>
+  </main>
+
+  <script src="shared/dashboard.js"></script>
+</body>
+</html>

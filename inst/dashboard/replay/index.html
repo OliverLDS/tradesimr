@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>tradesimr Replay Dashboard</title>
+  <link rel="stylesheet" href="shared/style.css">
+</head>
+<body class="backtest-mode">
+  <header class="hero">
+    <div>
+      <p class="eyebrow">tradesimr replay dashboard</p>
+      <h1 id="dashboard-title">Backtest Replay Review</h1>
+      <p id="dashboard-lede" class="lede">Reads exported market, target exposure, account, risk, order, fill, and event tables. This dashboard is read-only.</p>
+    </div>
+    <div class="loader">
+      <label for="file-picker">Load exported CSV files</label>
+      <input id="file-picker" type="file" multiple webkitdirectory>
+      <p id="load-status">Trying to load files from this folder...</p>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel manifest-panel">
+      <div>
+        <h2>Manifest</h2>
+        <p id="manifest-summary">Waiting for manifest.csv.</p>
+      </div>
+      <div id="table-counts" class="counts"></div>
+    </section>
+
+    <section class="kpis" id="kpis"></section>
+
+    <section class="panel">
+      <div class="chart-head">
+        <div>
+          <h2>Candle Chart</h2>
+          <p id="candle-summary">Waiting for market_events.csv.</p>
+        </div>
+      </div>
+      <div id="candle-chart" class="chart candle-chart"></div>
+    </section>
+
+    <section class="grid">
+      <article class="panel wide">
+        <h2>Equity Curve</h2>
+        <div id="equity-chart" class="chart"></div>
+      </article>
+      <article class="panel">
+        <h2>Risk</h2>
+        <div id="risk-summary" class="metric-stack"></div>
+      </article>
+    </section>
+
+    <section class="panel">
+      <div class="chart-head">
+        <div>
+          <h2>Target Exposure Replay</h2>
+          <p id="target-summary">Waiting for strategy_snapshots.csv.</p>
+        </div>
+      </div>
+      <div id="target-chart" class="chart target-chart"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Event Timeline</h2>
+      <div id="event-timeline" class="timeline"></div>
+    </section>
+
+    <section class="grid">
+      <article class="panel">
+        <h2>Orders</h2>
+        <div id="orders-table" class="table-wrap"></div>
+      </article>
+      <article class="panel">
+        <h2>Fills</h2>
+        <div id="fills-table" class="table-wrap"></div>
+      </article>
+    </section>
+
+    <section class="panel">
+      <h2>Risk Snapshots</h2>
+      <div id="risk-table" class="table-wrap"></div>
+    </section>
+  </main>
+
+  <script src="shared/dashboard.js"></script>
+</body>
+</html>

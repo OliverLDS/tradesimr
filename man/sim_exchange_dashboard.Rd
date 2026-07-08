@@ -12,7 +12,7 @@ sim_exchange_dashboard(exchange, path)
 \item{path}{Output directory.}
 }
 \value{
-Invisibly returns written files from \code{sim_dashboard_export()}.
+Invisibly returns written dashboard files.
 }
 \description{
 Export and open a simulated exchange dashboard
