@@ -88,6 +88,8 @@ sim_agents_step <- function(exchange, bar = NULL) {
     command_id <- sim_submit_order(
       exchange = exchange,
       agent_id = agent$agent_id,
+      symbol = decision$symbol,
+      asset_id = decision$asset_id,
       timestamp = decision$timestamp,
       order_type = decision$order_type,
       side = decision$side,
@@ -220,11 +222,13 @@ sim_agent_rankings <- function(exchange) {
   )
   if (is.null(side)) return(NULL)
   reason <- sprintf("type=%s;last_ret=%.6f;mean_gap=%.6f", agent$agent_type, last_ret, mean_gap)
-  intent <- .agent_execution_intent(exchange, agent$agent_id, side, qty)
+  intent <- .agent_execution_intent(exchange, agent$agent_id, side, qty, asset_id = bar$asset_id[1L] %||% 0L)
   data.table::data.table(
     timestamp = as.POSIXct(bar$timestamp, origin = "1970-01-01"),
     agent_id = agent$agent_id,
     agent_type = agent$agent_type,
+    symbol = as.character(bar$symbol[1L] %||% "default"),
+    asset_id = as.integer(bar$asset_id[1L] %||% 0L),
     decision_type = "order",
     side = side,
     intended_action = intent$action,
@@ -240,8 +244,9 @@ sim_agent_rankings <- function(exchange) {
 }
 
 #' @keywords internal
-.agent_execution_intent <- function(exchange, agent_id, side, qty) {
-  state <- exchange$agent_states[[as.character(agent_id)]]
+.agent_execution_intent <- function(exchange, agent_id, side, qty, asset_id = 0L) {
+  state <- exchange$agent_states[[.agent_state_key(as.character(agent_id), asset_id)]]
+  if (is.null(state)) state <- sim_state()
   cur_dir <- as.integer(state$pos_dir %||% 0L)
   cur_qty <- as.numeric(state$ctr_unit %||% 0)
   side <- tolower(as.character(side))

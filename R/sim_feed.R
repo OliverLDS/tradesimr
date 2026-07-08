@@ -225,7 +225,7 @@ sim_feed_status <- function(exchange) {
 .feed_get_bar <- function(feed, start, end) {
   if (identical(feed$feed_mode, "external")) {
     bar <- feed$feed_adapter(feed$symbol, feed$timeframe, start, end, tz = feed$tz)
-    return(as_market_bars(bar))
+    return(as_market_bars(bar, symbol = feed$symbol, asset_id = .asset_id_from_symbol(feed$symbol)))
   }
   .feed_random_walk_bar(feed, start, end)
 }
@@ -246,6 +246,8 @@ sim_feed_status <- function(exchange) {
   low <- min(open, close) * max(.Machine$double.eps, 1 - wiggle[2])
   data.table::data.table(
     timestamp = start,
+    symbol = as.character(feed$symbol),
+    asset_id = .asset_id_from_symbol(feed$symbol),
     open = open,
     high = high,
     low = low,

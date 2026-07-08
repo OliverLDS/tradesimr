@@ -7,6 +7,10 @@
 as_market_bars(
   data,
   timestamp_col = "timestamp",
+  symbol_col = NULL,
+  asset_id_col = NULL,
+  symbol = NULL,
+  asset_id = NULL,
   open_col = "open",
   high_col = "high",
   low_col = "low",

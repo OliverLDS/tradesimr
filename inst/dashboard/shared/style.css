@@ -336,6 +336,14 @@ main {
   margin-bottom: 0.8rem;
 }
 
+.asset-filter {
+  min-width: 180px;
+}
+
+.asset-filter select {
+  width: 100%;
+}
+
 .chart-head p {
   margin: 0.2rem 0 0;
   color: var(--muted);

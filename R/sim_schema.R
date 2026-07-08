@@ -1,7 +1,7 @@
 #' tradesimr durable schema version
 #'
 #' @export
-TRADESIMR_SCHEMA_VERSION <- "0.6.0"
+TRADESIMR_SCHEMA_VERSION <- "0.7.0"
 
 #' Simulation table schemas
 #'
@@ -12,6 +12,8 @@ sim_schemas <- function() {
   list(
     market_events = data.table::data.table(
       timestamp = as.POSIXct(character()),
+      symbol = character(),
+      asset_id = integer(),
       open = numeric(),
       high = numeric(),
       low = numeric(),
@@ -27,6 +29,8 @@ sim_schemas <- function() {
       order_id = character(),
       client_order_id = character(),
       agent_id = character(),
+      symbol = character(),
+      asset_id = integer(),
       timestamp = as.POSIXct(character()),
       order_type = character(),
       side = character(),
@@ -53,6 +57,8 @@ sim_schemas <- function() {
       command_id = character(),
       client_order_id = character(),
       agent_id = character(),
+      symbol = character(),
+      asset_id = integer(),
       timestamp = as.POSIXct(character()),
       order_type = character(),
       side = character(),
@@ -86,8 +92,12 @@ sim_schemas <- function() {
       timestamp = as.POSIXct(character()),
       agent_id = character(),
       agent_type = character(),
+      symbol = character(),
+      asset_id = integer(),
       decision_type = character(),
       side = character(),
+      intended_action = character(),
+      intended_dir = character(),
       qty_type = character(),
       qty = numeric(),
       order_type = character(),
@@ -138,6 +148,8 @@ sim_schemas <- function() {
     positions = data.table::data.table(
       timestamp = as.POSIXct(character()),
       agent_id = character(),
+      symbol = character(),
+      asset_id = integer(),
       pos_dir = integer(),
       pos_label = character(),
       ctr_unit = numeric(),
@@ -159,6 +171,8 @@ sim_schemas <- function() {
     account_snapshots = data.table::data.table(
       timestamp = as.POSIXct(character()),
       agent_id = character(),
+      symbol = character(),
+      asset_id = integer(),
       equity = numeric(),
       cash = numeric(),
       notional = numeric(),
@@ -168,6 +182,8 @@ sim_schemas <- function() {
     risk_snapshots = data.table::data.table(
       timestamp = as.POSIXct(character()),
       agent_id = character(),
+      symbol = character(),
+      asset_id = integer(),
       equity = numeric(),
       abs_notional = numeric(),
       leverage = numeric(),
@@ -265,14 +281,26 @@ validate_intents <- function(data, tgt_pos_col = "tgt_pos", tol_pos_col = NULL) 
 #' @export
 as_market_bars <- function(data,
                            timestamp_col = "timestamp",
+                           symbol_col = NULL,
+                           asset_id_col = NULL,
+                           symbol = NULL,
+                           asset_id = NULL,
                            open_col = "open",
                            high_col = "high",
                            low_col = "low",
                            close_col = "close") {
   validate_market_data(data, timestamp_col, open_col, high_col, low_col, close_col)
   DT <- data.table::as.data.table(data)
+  if (is.null(symbol_col) && "symbol" %in% names(DT)) symbol_col <- "symbol"
+  if (is.null(asset_id_col) && "asset_id" %in% names(DT)) asset_id_col <- "asset_id"
+  if (is.null(symbol) && is.null(symbol_col) && !is.null(asset_id)) symbol <- paste0("asset-", asset_id)
+  if (is.null(symbol)) symbol <- "default"
+  if (is.null(asset_id)) asset_id <- 0L
   out <- DT[, .SD, .SDcols = c(timestamp_col, open_col, high_col, low_col, close_col)]
   data.table::setnames(out, c("timestamp", "open", "high", "low", "close"))
+  data.table::set(out, j = "symbol", value = if (!is.null(symbol_col)) as.character(DT[[symbol_col]]) else rep.int(as.character(symbol), nrow(out)))
+  data.table::set(out, j = "asset_id", value = if (!is.null(asset_id_col)) as.integer(DT[[asset_id_col]]) else rep.int(as.integer(asset_id), nrow(out)))
+  data.table::setcolorder(out, c("timestamp", "symbol", "asset_id", "open", "high", "low", "close"))
   out[]
 }
 

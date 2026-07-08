@@ -159,6 +159,37 @@ test_that("sim_exchange_step uses incremental step state", {
   expect_gt(sim_exchange_account(exchange)$equity[1], first$equity[1])
 })
 
+test_that("sim_exchange_step routes orders and state by asset", {
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 1, lev = 10, fee_rt = 0))
+  ts <- as.POSIXct("2026-01-01 00:00:00", tz = "UTC")
+  bars <- data.frame(
+    timestamp = c(ts, ts),
+    symbol = c("BTC-USDT-SWAP", "ETH-USDT-SWAP"),
+    asset_id = c(1L, 2L),
+    open = c(100, 50),
+    high = c(101, 51),
+    low = c(99, 49),
+    close = c(100, 50)
+  )
+
+  sim_exchange_place_order(exchange, "agent1", ts, symbol = "BTC-USDT-SWAP", asset_id = 1L, side = "buy", qty = 1)
+  sim_exchange_place_order(exchange, "agent1", ts, symbol = "ETH-USDT-SWAP", asset_id = 2L, side = "sell", qty = 2)
+  sim_exchange_step(exchange, bars)
+
+  positions <- sim_exchange_positions(exchange)
+  expect_setequal(positions$asset_id, c(1L, 2L))
+  expect_equal(positions$pos_dir[positions$asset_id == 1L], 1L)
+  expect_equal(positions$pos_dir[positions$asset_id == 2L], -1L)
+  expect_equal(positions$ctr_unit[positions$asset_id == 1L], 1)
+  expect_equal(positions$ctr_unit[positions$asset_id == 2L], 2)
+
+  account <- sim_exchange_account(exchange)
+  expect_equal(nrow(account), 1)
+  expect_equal(account$agent_id[1], "agent1")
+  expect_true(all(c("equity", "cash", "unrealized_pnl") %in% names(account)))
+  expect_equal(length(exchange$agent_states), 2)
+})
+
 test_that("order quantity semantics are explicit", {
   exchange <- sim_exchange_new()
   ts <- as.POSIXct("2026-01-01", tz = "UTC")

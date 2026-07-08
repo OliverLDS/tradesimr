@@ -17,6 +17,7 @@ sim_exchange_new <- function(config = list()) {
   state$agent_decisions <- sim_schemas()$agent_decisions[0]
   state$agent_rankings <- sim_schemas()$agent_rankings[0]
   state$agent_states <- list()
+  state$asset_symbols <- list()
   state$event_log <- data.table::data.table(
     timestamp = as.POSIXct(character()),
     source = character(),
@@ -79,6 +80,8 @@ sim_exchange_add_bars <- function(exchange, bars) {
 sim_exchange_place_order <- function(exchange,
                                      agent_id,
                                      timestamp,
+                                     symbol = NULL,
+                                     asset_id = NULL,
                                      tgt_pos = NULL,
                                      tol_pos = 0,
                                      order_type = c("market", "limit"),
@@ -89,7 +92,8 @@ sim_exchange_place_order <- function(exchange,
                                      time_in_force = "gtc",
                                      client_order_id = NA_character_) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
-  .ensure_agent_account(exchange, agent_id, agent_type = "human")
+  asset <- .normalize_asset_key(symbol = symbol, asset_id = asset_id, exchange = exchange)
+  .ensure_agent_account(exchange, agent_id, asset_id = asset$asset_id, symbol = asset$symbol, agent_type = "human")
   order_type <- match.arg(order_type)
   side <- match.arg(side)
   if (is.null(qty_type)) qty_type <- if (side == "target") "target_pos" else "contracts"
@@ -108,6 +112,8 @@ sim_exchange_place_order <- function(exchange,
     order_id = order_id,
     client_order_id = as.character(client_order_id),
     agent_id = as.character(agent_id),
+    symbol = asset$symbol,
+    asset_id = asset$asset_id,
     timestamp = timestamp,
     order_type = order_type,
     side = side,
@@ -219,29 +225,34 @@ sim_exchange_step <- function(exchange, bars) {
 
   for (i in seq_len(nrow(new_bars))) {
     bar <- new_bars[i]
-    agents <- .exchange_agents_to_step(exchange, bar$timestamp[1L])
+    asset <- .bar_asset_key(bar)
+    agents <- .exchange_agents_to_step(exchange, bar$timestamp[1L], asset_id = asset$asset_id)
     agent_snapshots <- vector("list", length(agents))
     for (j in seq_along(agents)) {
       agent_id <- agents[[j]]
-      .ensure_agent_account(exchange, agent_id, agent_type = "human")
-      orders <- .exchange_orders_for_bar(exchange, bar$timestamp[1L], agent_id = agent_id)
+      state_key <- .agent_state_key(agent_id, asset$asset_id)
+      .ensure_agent_account(exchange, agent_id, asset_id = asset$asset_id, symbol = asset$symbol, agent_type = "human")
+      orders <- .exchange_orders_for_bar(exchange, bar$timestamp[1L], agent_id = agent_id, asset_id = asset$asset_id)
       step_config <- exchange$config[intersect(names(exchange$config), names(formals(sim_step)))]
       step_config$init_cash <- NULL
       step_config$fill_model <- NULL
       step_config$order_type_col <- NULL
       step_config$limit_price_col <- NULL
+      step_config$asset <- asset$asset_id
       step_args <- c(list(
-        state = exchange$agent_states[[agent_id]],
+        state = exchange$agent_states[[state_key]],
         bar = bar,
         orders = orders
       ), step_config)
       step <- do.call(sim_step, step_args)
-      exchange$agent_states[[agent_id]] <- step$state
+      exchange$agent_states[[state_key]] <- step$state
       if (j == 1L) exchange$step_state <- step$state
-      snapshot <- .state_to_snapshot(step$state, bar$timestamp[1L], agent_id = agent_id)
+      snapshot <- .state_to_snapshot(step$state, bar$timestamp[1L], agent_id = agent_id, symbol = asset$symbol, asset_id = asset$asset_id)
       agent_snapshots[[j]] <- snapshot
       if (nrow(step$events) > 0L) {
         data.table::set(step$events, j = "agent_id", value = agent_id)
+        data.table::set(step$events, j = "symbol", value = asset$symbol)
+        data.table::set(step$events, j = "asset_id", value = asset$asset_id)
         new_event_list[[length(new_event_list) + 1L]] <- step$events
         .mark_orders_from_events(exchange, orders, step$events)
       }
@@ -291,13 +302,14 @@ sim_exchange_account <- function(exchange) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   if (is.null(exchange$result)) {
     snapshots <- .agent_states_snapshot(exchange)
-    return(sim_account(snapshots))
+    return(.aggregate_account_snapshots(sim_account(snapshots), latest = TRUE))
   }
   account <- sim_account(exchange$result)
   if (nrow(account) == 0L) return(account)
   if ("agent_id" %in% names(account)) {
     data.table::setorderv(account, "timestamp")
-    return(account[, .SD[.N], by = agent_id])
+    latest <- if ("asset_id" %in% names(account)) account[, .SD[.N], by = .(agent_id, asset_id)] else account[, .SD[.N], by = agent_id]
+    return(.aggregate_account_snapshots(latest, latest = TRUE))
   }
   tail(account, 1L)
 }
@@ -315,6 +327,10 @@ sim_exchange_positions <- function(exchange) {
   }
   positions <- sim_positions(exchange$result)
   if (nrow(positions) == 0L) return(positions)
+  if (all(c("agent_id", "asset_id") %in% names(positions))) {
+    data.table::setorderv(positions, "timestamp")
+    return(positions[, .SD[.N], by = .(agent_id, asset_id)])
+  }
   if ("agent_id" %in% names(positions)) {
     data.table::setorderv(positions, "timestamp")
     return(positions[, .SD[.N], by = agent_id])
@@ -398,16 +414,27 @@ sim_exchange_load <- function(path) {
   if (file.exists(file.path(path, "agent_decisions.csv"))) exchange$agent_decisions <- data.table::fread(file.path(path, "agent_decisions.csv"))
   if (file.exists(file.path(path, "agent_rankings.csv"))) exchange$agent_rankings <- data.table::fread(file.path(path, "agent_rankings.csv"))
   if (nrow(exchange$agents) > 0L) {
-    for (agent_id in exchange$agents$agent_id) .ensure_agent_account(exchange, agent_id, exchange$agents$agent_type[match(agent_id, exchange$agents$agent_id)])
+    for (agent_id in exchange$agents$agent_id) {
+      .ensure_agent_account(
+        exchange,
+        agent_id,
+        agent_type = exchange$agents$agent_type[match(agent_id, exchange$agents$agent_id)]
+      )
+    }
     if (nrow(exchange$step_snapshots) > 0L && "agent_id" %in% names(exchange$step_snapshots)) {
-      latest <- exchange$step_snapshots[order(timestamp), .SD[.N], by = agent_id]
+      by_cols <- intersect(c("agent_id", "asset_id"), names(exchange$step_snapshots))
+      latest <- exchange$step_snapshots[order(timestamp), .SD[.N], by = by_cols]
       for (i in seq_len(nrow(latest))) {
-        exchange$agent_states[[latest$agent_id[i]]] <- sim_state(
+        asset_id <- as.integer(latest$asset_id[i] %||% 0L)
+        symbol <- as.character(latest$symbol[i] %||% paste0("asset-", asset_id))
+        exchange$asset_symbols[[as.character(asset_id)]] <- symbol
+        exchange$agent_states[[.agent_state_key(latest$agent_id[i], asset_id)]] <- sim_state(
           cash = latest$cash[i],
           pos_dir = latest$pos_dir[i],
           ctr_unit = latest$ctr_unit[i],
           avg_price = latest$avg_price[i],
           last_px = latest$last_px[i],
+          asset = asset_id,
           old_timestamp = as.numeric(latest$timestamp[i])
         )
       }
@@ -461,7 +488,7 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
 }
 
 #' @keywords internal
-.exchange_orders_for_bar <- function(exchange, timestamp, agent_id = NULL) {
+.exchange_orders_for_bar <- function(exchange, timestamp, agent_id = NULL, asset_id = NULL) {
   orders <- exchange$agent_orders[
     exchange$agent_orders$status == "accepted" &
       exchange$agent_orders$qty_type == "contracts" &
@@ -470,6 +497,10 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
   if (!is.null(agent_id)) {
     requested_agent_id <- as.character(agent_id)
     orders <- orders[orders[["agent_id"]] == requested_agent_id]
+  }
+  if (!is.null(asset_id) && "asset_id" %in% names(orders)) {
+    requested_asset_id <- as.integer(asset_id)
+    orders <- orders[orders[["asset_id"]] == requested_asset_id]
   }
   if (nrow(orders) == 0L) {
     return(data.table::data.table(
@@ -483,7 +514,8 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
       action_id = integer()
     ))
   }
-  step_state <- if (!is.null(agent_id) && !is.null(exchange$agent_states[[agent_id]])) exchange$agent_states[[agent_id]] else exchange$step_state
+  state_key <- .agent_state_key(agent_id %||% "default", asset_id %||% 0L)
+  step_state <- if (!is.null(agent_id) && !is.null(exchange$agent_states[[state_key]])) exchange$agent_states[[state_key]] else exchange$step_state
   cur_dir <- as.integer(step_state$pos_dir %||% 0L)
   cur_qty <- as.numeric(step_state$ctr_unit %||% 0)
   side <- tolower(as.character(orders$side))
@@ -555,22 +587,29 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
 }
 
 #' @keywords internal
-.exchange_agents_to_step <- function(exchange, timestamp) {
+.exchange_agents_to_step <- function(exchange, timestamp, asset_id = NULL) {
   registered <- if (nrow(exchange$agents) > 0L) exchange$agents$agent_id[exchange$agents$status != "removed"] else character()
-  order_agents <- exchange$agent_orders[
+  order_rows <- exchange$agent_orders[
     exchange$agent_orders$status == "accepted" &
       exchange$agent_orders$qty_type == "contracts" &
-      exchange$agent_orders$timestamp <= timestamp,
-    unique(agent_id)
+      exchange$agent_orders$timestamp <= timestamp
   ]
+  if (!is.null(asset_id) && "asset_id" %in% names(order_rows)) {
+    requested_asset_id <- as.integer(asset_id)
+    order_rows <- order_rows[order_rows[["asset_id"]] == requested_asset_id]
+  }
+  order_agents <- if (nrow(order_rows) > 0L) unique(order_rows$agent_id) else character()
   agents <- unique(c(registered, order_agents))
   agents
 }
 
 #' @keywords internal
-.ensure_agent_account <- function(exchange, agent_id, agent_type = "human", config = list(), status = "active") {
+.ensure_agent_account <- function(exchange, agent_id, asset_id = NULL, symbol = NULL, agent_type = "human", config = list(), status = "active") {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   agent_id <- as.character(agent_id %||% "agent")
+  asset <- .normalize_asset_key(symbol = symbol, asset_id = asset_id, exchange = exchange)
+  state_key <- .agent_state_key(agent_id, asset$asset_id)
+  exchange$asset_symbols[[as.character(asset$asset_id)]] <- asset$symbol
   if (is.null(exchange$agent_states)) exchange$agent_states <- list()
   if (!agent_id %in% exchange$agents$agent_id) {
     row <- data.table::data.table(
@@ -582,7 +621,7 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
     )
     exchange$agents <- data.table::rbindlist(list(exchange$agents, row), fill = TRUE)
   }
-  if (is.null(exchange$agent_states[[agent_id]])) {
+  if (is.null(exchange$agent_states[[state_key]])) {
     state_config <- exchange$config
     if (!is.null(state_config$init_cash) && is.null(state_config$cash)) {
       state_config$cash <- state_config$init_cash
@@ -590,12 +629,15 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
     if (!is.null(config$initial_cash)) {
       state_config$cash <- as.numeric(config$initial_cash)
     }
-    if (nrow(exchange$market_events) > 0L && is.null(state_config$last_px)) {
-      state_config$last_px <- as.numeric(tail(exchange$market_events$close, 1L))
+    asset_events <- exchange$market_events
+    if (nrow(asset_events) > 0L && "asset_id" %in% names(asset_events)) asset_events <- asset_events[asset_id == asset$asset_id]
+    if (nrow(asset_events) > 0L && is.null(state_config$last_px)) {
+      state_config$last_px <- as.numeric(tail(asset_events$close, 1L))
     }
-    exchange$agent_states[[agent_id]] <- do.call(sim_state, state_config[intersect(names(state_config), names(formals(sim_state)))])
+    state_config$asset <- asset$asset_id
+    exchange$agent_states[[state_key]] <- do.call(sim_state, state_config[intersect(names(state_config), names(formals(sim_state)))])
   }
-  invisible(exchange$agent_states[[agent_id]])
+  invisible(exchange$agent_states[[state_key]])
 }
 
 #' @keywords internal
@@ -623,7 +665,7 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
 }
 
 #' @keywords internal
-.state_to_snapshot <- function(state, timestamp, agent_id = NA_character_) {
+.state_to_snapshot <- function(state, timestamp, agent_id = NA_character_, symbol = "default", asset_id = 0L) {
   cash <- as.numeric(state$cash %||% 0)
   pos_dir <- as.integer(state$pos_dir %||% 0L)
   ctr_unit <- as.numeric(state$ctr_unit %||% 0)
@@ -637,6 +679,8 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
   data.table::data.table(
     timestamp = timestamp,
     agent_id = as.character(agent_id),
+    symbol = as.character(symbol),
+    asset_id = as.integer(asset_id),
     equity = equity,
     cash = cash,
     pos_dir = pos_dir,
@@ -655,8 +699,73 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
   if (is.null(exchange$agent_states) || !length(exchange$agent_states)) {
     return(data.table::data.table())
   }
-  rows <- lapply(names(exchange$agent_states), function(agent_id) {
-    .state_to_snapshot(exchange$agent_states[[agent_id]], timestamp, agent_id = agent_id)
+  rows <- lapply(names(exchange$agent_states), function(key) {
+    parsed <- .parse_agent_state_key(key)
+    symbol <- exchange$asset_symbols[[as.character(parsed$asset_id)]] %||% parsed$symbol
+    .state_to_snapshot(exchange$agent_states[[key]], timestamp, agent_id = parsed$agent_id, symbol = symbol, asset_id = parsed$asset_id)
   })
   data.table::rbindlist(rows, fill = TRUE)
+}
+
+#' @keywords internal
+.aggregate_account_snapshots <- function(account, latest = FALSE) {
+  if (nrow(account) == 0L || !"agent_id" %in% names(account)) return(account)
+  data.table::setDT(account)
+  by_cols <- intersect(c("timestamp", "agent_id"), names(account))
+  sum_or_na <- function(x) if (all(is.na(x))) NA_real_ else sum(x, na.rm = TRUE)
+  out <- account[, .(
+    equity = sum_or_na(equity),
+    cash = sum_or_na(cash),
+    notional = sum_or_na(notional),
+    abs_notional = sum_or_na(abs_notional),
+    unrealized_pnl = sum_or_na(unrealized_pnl)
+  ), by = by_cols]
+  if (isTRUE(latest) && "timestamp" %in% names(out)) {
+    data.table::setorderv(out, "timestamp")
+    out <- out[, .SD[.N], by = agent_id]
+  }
+  out[]
+}
+
+#' @keywords internal
+.normalize_asset_key <- function(symbol = NULL, asset_id = NULL, exchange = NULL) {
+  if (is.null(symbol) && is.null(asset_id) && !is.null(exchange) && nrow(exchange$market_events) > 0L) {
+    latest <- exchange$market_events[nrow(exchange$market_events)]
+    symbol <- latest$symbol[1L] %||% NULL
+    asset_id <- latest$asset_id[1L] %||% NULL
+  }
+  if (is.null(asset_id) && !is.null(symbol)) {
+    asset_id <- .asset_id_from_symbol(symbol)
+  }
+  if (is.null(symbol) && !is.null(asset_id)) {
+    symbol <- paste0("asset-", as.integer(asset_id))
+  }
+  if (is.null(asset_id)) asset_id <- .asset_id_from_symbol(symbol %||% "default")
+  if (is.null(symbol)) symbol <- "default"
+  list(symbol = as.character(symbol), asset_id = as.integer(asset_id))
+}
+
+#' @keywords internal
+.asset_id_from_symbol <- function(symbol) {
+  symbol <- as.character(symbol %||% "default")
+  if (identical(symbol, "default")) return(0L)
+  as.integer(sum(utf8ToInt(symbol)) %% .Machine$integer.max)
+}
+
+#' @keywords internal
+.bar_asset_key <- function(bar) {
+  .normalize_asset_key(symbol = bar$symbol[1L] %||% "default", asset_id = bar$asset_id[1L] %||% 0L)
+}
+
+#' @keywords internal
+.agent_state_key <- function(agent_id, asset_id) {
+  paste(as.character(agent_id), as.integer(asset_id), sep = "\r")
+}
+
+#' @keywords internal
+.parse_agent_state_key <- function(key) {
+  parts <- strsplit(key, "\r", fixed = TRUE)[[1L]]
+  agent_id <- parts[[1L]]
+  asset_id <- if (length(parts) >= 2L) as.integer(parts[[2L]]) else 0L
+  list(agent_id = agent_id, asset_id = asset_id, symbol = paste0("asset-", asset_id))
 }

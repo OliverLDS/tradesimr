@@ -43,6 +43,7 @@
       </div>
       <form id="order-form" class="order-form">
         <label>Agent ID<input name="agent_id" placeholder="register before trading"></label>
+        <label>Symbol<input name="symbol" value="BTC-USDT-SWAP"></label>
         <label>Side
           <select name="side">
             <option value="buy">buy</option>
@@ -86,6 +87,11 @@
           <h2>Candle Chart</h2>
           <p id="candle-summary">Waiting for market_events.csv or live service state.</p>
         </div>
+        <label class="asset-filter">Asset
+          <select id="asset-filter">
+            <option value="all">All assets</option>
+          </select>
+        </label>
       </div>
       <div id="candle-chart" class="chart candle-chart"></div>
     </section>

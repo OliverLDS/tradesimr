@@ -16,7 +16,7 @@ sim_fills <- function(sim) {
 #' @export
 sim_positions <- function(sim) {
   DT <- data.table::as.data.table(sim)
-  cols <- c("timestamp", "agent_id", "pos_dir", "ctr_unit", "avg_price", "last_px", "notional", "unrealized_pnl")
+  cols <- c("timestamp", "agent_id", "symbol", "asset_id", "pos_dir", "ctr_unit", "avg_price", "last_px", "notional", "unrealized_pnl")
   out <- DT[, .SD, .SDcols = intersect(cols, names(DT))]
   if (!"pos_dir" %in% names(out)) return(data.table::data.table())
   pos_label <- data.table::fifelse(out$pos_dir == 1L, "long",
@@ -25,7 +25,7 @@ sim_positions <- function(sim) {
     )
   )
   data.table::set(out, j = "pos_label", value = pos_label)
-  data.table::setcolorder(out, intersect(c("timestamp", "agent_id", "pos_dir", "pos_label", "ctr_unit", "avg_price", "last_px", "notional", "unrealized_pnl"), names(out)))
+  data.table::setcolorder(out, intersect(c("timestamp", "agent_id", "symbol", "asset_id", "pos_dir", "pos_label", "ctr_unit", "avg_price", "last_px", "notional", "unrealized_pnl"), names(out)))
   out[]
 }
 
@@ -48,7 +48,7 @@ sim_cash_ledger <- function(sim) {
 #' @export
 sim_account <- function(sim) {
   DT <- data.table::as.data.table(sim)
-  cols <- c("timestamp", "agent_id", "equity", "cash", "notional", "abs_notional", "unrealized_pnl")
+  cols <- c("timestamp", "agent_id", "symbol", "asset_id", "equity", "cash", "notional", "abs_notional", "unrealized_pnl")
   DT[, .SD, .SDcols = intersect(cols, names(DT))]
 }
 
@@ -62,8 +62,9 @@ sim_market_events <- function(sim) {
   attr_bars <- attr(sim, "market_events", exact = TRUE)
   if (!is.null(attr_bars)) return(as_market_bars(attr_bars))
   DT <- data.table::as.data.table(sim)
-  cols <- c("timestamp", "open", "high", "low", "close")
-  if (!all(cols %in% names(DT))) return(sim_schemas()$market_events[0])
+  required <- c("timestamp", "open", "high", "low", "close")
+  if (!all(required %in% names(DT))) return(sim_schemas()$market_events[0])
+  cols <- intersect(c("timestamp", "symbol", "asset_id", "open", "high", "low", "close"), names(DT))
   as_market_bars(DT[, .SD, .SDcols = cols])
 }
 
@@ -78,6 +79,8 @@ sim_risk <- function(sim) {
   out <- data.table::data.table(
     timestamp = DT$timestamp,
     agent_id = if ("agent_id" %in% names(DT)) DT$agent_id else NA_character_,
+    symbol = if ("symbol" %in% names(DT)) DT$symbol else NA_character_,
+    asset_id = if ("asset_id" %in% names(DT)) DT$asset_id else NA_integer_,
     equity = DT$equity,
     abs_notional = DT$abs_notional,
     leverage = data.table::fifelse(DT$equity > 0, DT$abs_notional / DT$equity, Inf),

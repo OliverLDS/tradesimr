@@ -21,6 +21,8 @@ sim_agent_command_schema <- function() {
 sim_submit_order <- function(exchange,
                              agent_id,
                              timestamp = Sys.time(),
+                             symbol = NULL,
+                             asset_id = NULL,
                              tgt_pos = NULL,
                              tol_pos = 0,
                              order_type = c("market", "limit"),
@@ -32,7 +34,8 @@ sim_submit_order <- function(exchange,
                              client_order_id = NA_character_,
                              process = TRUE) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
-  .ensure_agent_account(exchange, agent_id, agent_type = "human")
+  asset <- .normalize_asset_key(symbol = symbol, asset_id = asset_id, exchange = exchange)
+  .ensure_agent_account(exchange, agent_id, asset_id = asset$asset_id, symbol = asset$symbol, agent_type = "human")
   order_type <- match.arg(order_type)
   side <- match.arg(side)
   if (is.null(qty_type)) qty_type <- if (side == "target") "target_pos" else "contracts"
@@ -42,6 +45,8 @@ sim_submit_order <- function(exchange,
     command_id = command_id,
     client_order_id = as.character(client_order_id),
     agent_id = as.character(agent_id),
+    symbol = asset$symbol,
+    asset_id = asset$asset_id,
     timestamp = as.POSIXct(timestamp, origin = "1970-01-01"),
     order_type = order_type,
     side = side,
@@ -114,6 +119,8 @@ sim_exchange_process_commands <- function(exchange) {
         order_id <- sim_exchange_place_order(
           exchange = exchange,
           agent_id = request$agent_id,
+          symbol = request$symbol,
+          asset_id = request$asset_id,
           timestamp = request$timestamp,
           tgt_pos = if (is.na(request$tgt_pos)) NULL else request$tgt_pos,
           tol_pos = request$tol_pos,

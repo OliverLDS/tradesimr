@@ -8,6 +8,8 @@ sim_exchange_place_order(
   exchange,
   agent_id,
   timestamp,
+  symbol = NULL,
+  asset_id = NULL,
   tgt_pos = NULL,
   tol_pos = 0,
   order_type = c("market", "limit"),

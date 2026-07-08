@@ -131,6 +131,8 @@ sim_live_service <- function(exchange = sim_exchange_new()) {
     command_id <- sim_submit_order(
       exchange = exchange,
       agent_id = body$agent_id %||% "agent",
+      symbol = .null_if_missing(body$symbol),
+      asset_id = .null_if_missing(body$asset_id),
       timestamp = .service_timestamp(body$timestamp %||% Sys.time()),
       tgt_pos = .null_if_missing(body$tgt_pos),
       tol_pos = as.numeric(body$tol_pos %||% 0),
@@ -187,7 +189,7 @@ sim_live_service_run <- function(exchange = sim_exchange_new(), host = "127.0.0.
   account_history <- if (is.null(exchange$result)) {
     sim_exchange_account(exchange)
   } else {
-    sim_account(exchange$result)
+    .aggregate_account_snapshots(sim_account(exchange$result))
   }
   list(
     account = .service_records(account_history),

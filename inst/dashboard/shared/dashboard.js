@@ -34,7 +34,8 @@ const state = {
     cursor: null,
     windowSize: 50,
     timer: null
-  }
+  },
+  selectedAsset: "all"
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -56,6 +57,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bind("agent-status-form", "submit", setAiAgentStatus);
   bind("replay-window", "change", updateReplayWindow);
   bind("replay-step-unit", "change", renderReplayStatus);
+  bind("asset-filter", "change", updateAssetFilter);
   bind("replay-reset", "click", replayReset);
   bind("replay-prev", "click", replayPrev);
   bind("replay-next", "click", replayNext);
@@ -169,6 +171,7 @@ function parseCsv(text) {
 }
 
 function render() {
+  renderAssetFilter();
   renderManifest();
   renderReplayStatus();
   renderKpis();
@@ -177,14 +180,14 @@ function render() {
   renderTargets();
   renderRiskSummary();
   renderTimeline();
-  renderTable("orders-table", state.tables.orders, ["timestamp", "order_id", "agent_id", "side", "qty_type", "qty", "order_type", "status", "action_label", "dir_label", "ctr_qty", "price", "status_label"]);
-  renderTable("orders-fills-table", combinedOrderFillRows(), ["timestamp", "source", "order_id", "agent_id", "side", "qty_type", "qty", "order_type", "status", "action_label", "dir_label", "ctr_qty", "price", "fee", "realized_pnl"], 80);
+  renderTable("orders-table", filterRowsByAsset(state.tables.orders), ["timestamp", "order_id", "agent_id", "symbol", "asset_id", "side", "qty_type", "qty", "order_type", "status", "action_label", "dir_label", "ctr_qty", "price", "status_label"]);
+  renderTable("orders-fills-table", filterRowsByAsset(combinedOrderFillRows()), ["timestamp", "source", "order_id", "agent_id", "symbol", "asset_id", "side", "qty_type", "qty", "order_type", "status", "action_label", "dir_label", "ctr_qty", "price", "fee", "realized_pnl"], 80);
   renderTable("commands-table", state.tables.agent_commands, ["timestamp", "command_id", "agent_id", "command_type", "status", "ref_id", "message"]);
-  renderTable("requests-table", state.tables.order_requests, ["timestamp", "command_id", "agent_id", "side", "qty_type", "qty", "order_type", "status", "order_id", "message"]);
+  renderTable("requests-table", filterRowsByAsset(state.tables.order_requests), ["timestamp", "command_id", "agent_id", "symbol", "asset_id", "side", "qty_type", "qty", "order_type", "status", "order_id", "message"]);
   renderTable("fills-table", state.tables.fills, ["timestamp", "action_label", "dir_label", "ctr_qty", "price", "fee", "realized_pnl"]);
   renderTable("risk-table", state.tables.risk_snapshots, ["timestamp", "equity", "abs_notional", "leverage", "maintenance_margin", "margin_buffer"], 25);
   renderTable("agents-table", state.tables.agents, ["agent_id", "agent_type", "status", "config", "created_at"], 80);
-  renderTable("agent-decisions-table", state.tables.agent_decisions, ["timestamp", "agent_id", "agent_type", "side", "intended_action", "intended_dir", "qty", "order_type", "reason", "command_id", "status"], 80);
+  renderTable("agent-decisions-table", filterRowsByAsset(state.tables.agent_decisions), ["timestamp", "agent_id", "agent_type", "symbol", "asset_id", "side", "intended_action", "intended_dir", "qty", "order_type", "reason", "command_id", "status"], 80);
   renderTable("agent-rankings-table", state.tables.agent_rankings, ["rank", "agent_id", "agent_type", "status", "equity", "cash", "unrealized_pnl", "orders", "filled_orders", "net_qty", "last_side"], 80, { newestFirst: false });
 }
 
@@ -517,6 +520,48 @@ function applyServiceState(data) {
   render();
 }
 
+function updateAssetFilter(event) {
+  state.selectedAsset = event.currentTarget.value || "all";
+  render();
+}
+
+function renderAssetFilter() {
+  const el = document.getElementById("asset-filter");
+  if (!el) return;
+  const assets = assetOptions(state.tables.market_events || []);
+  const current = state.selectedAsset || "all";
+  const options = [`<option value="all">All assets</option>`].concat(assets.map(asset => {
+    const selected = asset.key === current ? " selected" : "";
+    return `<option value="${escapeHtml(asset.key)}"${selected}>${escapeHtml(asset.label)}</option>`;
+  }));
+  el.innerHTML = options.join("");
+  if (current !== "all" && !assets.some(asset => asset.key === current)) {
+    state.selectedAsset = "all";
+    el.value = "all";
+  }
+}
+
+function assetOptions(rows) {
+  const seen = new Map();
+  replayRows(rows).forEach(row => {
+    const symbol = String(scalarValue(row.symbol) || "default");
+    const assetId = scalarValue(row.asset_id);
+    const key = `${symbol}|${assetId ?? ""}`;
+    if (!seen.has(key)) seen.set(key, { key, label: `${symbol} (${assetId ?? "na"})` });
+  });
+  return [...seen.values()].sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function filterRowsByAsset(rows = []) {
+  const selected = state.selectedAsset || "all";
+  if (selected === "all") return rows;
+  return rows.filter(row => {
+    const symbol = String(scalarValue(row.symbol) || "default");
+    const assetId = scalarValue(row.asset_id);
+    return `${symbol}|${assetId ?? ""}` === selected;
+  });
+}
+
 function initializeReplayCursor() {
   if (!isReplayDashboard()) return;
   const bars = normalizeBars(state.tables.market_events || []);
@@ -829,7 +874,7 @@ function renderKpis() {
 }
 
 function renderCandles() {
-  const bars = normalizeBars(state.tables.market_events || []);
+  const bars = normalizeBars(filterRowsByAsset(state.tables.market_events || []));
   const el = document.getElementById("candle-chart");
   const summary = document.getElementById("candle-summary");
   if (!el || !summary) return;
@@ -840,8 +885,8 @@ function renderCandles() {
   }
 
   const shown = replayVisibleBars();
-  const fills = normalizeMarkers(replayRows(state.tables.fills || []), "fill");
-  const orders = normalizeMarkers(replayRows(state.tables.orders || []), "order");
+  const fills = normalizeMarkers(replayRows(filterRowsByAsset(state.tables.fills || [])), "fill");
+  const orders = normalizeMarkers(replayRows(filterRowsByAsset(state.tables.orders || [])), "order");
   const visibleTimes = new Set(shown.map(row => String(row.timestamp)));
   const markerRows = [...fills, ...orders].filter(marker => marker.price > 0 && visibleTimes.has(String(marker.timestamp)));
   const width = 960;
@@ -947,7 +992,9 @@ function renderTargets() {
 
 function normalizeBars(rows) {
   return rows.map(row => ({
-    timestamp: row.timestamp,
+    timestamp: scalarValue(row.timestamp),
+    symbol: String(scalarValue(row.symbol) || "default"),
+    asset_id: scalarValue(row.asset_id),
     open: number(row.open),
     high: number(row.high),
     low: number(row.low),
