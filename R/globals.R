@@ -12,5 +12,6 @@ utils::globalVariables(c(
   "side",
   "signed_qty",
   "status",
-  "timestamp"
+  "timestamp",
+  "unrealized_pnl"
 ))

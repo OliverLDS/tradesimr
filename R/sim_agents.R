@@ -111,8 +111,7 @@ sim_agents_step <- function(exchange, bar = NULL) {
 
 #' Compute current agent rankings
 #'
-#' This is currently an order-activity leaderboard. Independent per-agent
-#' account equity requires the next core engine step: per-agent account state.
+#' Rankings combine current per-agent account equity with order activity.
 #'
 #' @param exchange A `tradesimr_exchange`.
 #' @return A data.table of agent rankings.
@@ -131,17 +130,18 @@ sim_agent_rankings <- function(exchange) {
       status,
       equity = NA_real_,
       cash = NA_real_,
+      unrealized_pnl = NA_real_,
       orders = 0L,
       filled_orders = 0L,
       net_qty = 0,
       last_side = NA_character_
     )]
     if (nrow(accounts) > 0L && "agent_id" %in% names(accounts)) {
-      acct <- accounts[, .SD[1L], by = agent_id]
-      data.table::set(out, j = "equity", value = NULL)
-      data.table::set(out, j = "cash", value = NULL)
-      out <- merge(out, acct[, .(agent_id, equity, cash)], by = "agent_id", all.x = TRUE)
-      data.table::setcolorder(out, c("timestamp", "agent_id", "agent_type", "status", "equity", "cash", "orders", "filled_orders", "net_qty", "last_side"))
+      data.table::setorderv(accounts, "timestamp")
+      acct <- accounts[, .SD[.N], by = agent_id]
+      out[, c("equity", "cash", "unrealized_pnl") := NULL]
+      out <- merge(out, acct[, .(agent_id, equity, cash, unrealized_pnl)], by = "agent_id", all.x = TRUE)
+      data.table::setcolorder(out, c("timestamp", "agent_id", "agent_type", "status", "equity", "cash", "unrealized_pnl", "orders", "filled_orders", "net_qty", "last_side"))
     }
   } else {
     orders[, signed_qty := data.table::fcase(
@@ -164,18 +164,26 @@ sim_agent_rankings <- function(exchange) {
     )
     accounts <- sim_exchange_account(exchange)
     if (nrow(accounts) > 0L && "agent_id" %in% names(accounts)) {
-      acct <- accounts[, .SD[1L], by = agent_id]
-      out <- merge(out, acct[, .(agent_id, equity, cash)], by = "agent_id", all.x = TRUE)
+      data.table::setorderv(accounts, "timestamp")
+      acct <- accounts[, .SD[.N], by = agent_id]
+      out <- merge(out, acct[, .(agent_id, equity, cash, unrealized_pnl)], by = "agent_id", all.x = TRUE)
     } else {
       data.table::set(out, j = "equity", value = NA_real_)
       data.table::set(out, j = "cash", value = NA_real_)
+      data.table::set(out, j = "unrealized_pnl", value = NA_real_)
     }
     for (col in c("orders", "filled_orders")) data.table::set(out, which(is.na(out[[col]])), col, 0L)
     data.table::set(out, which(is.na(out$net_qty)), "net_qty", 0)
     data.table::set(out, j = "timestamp", value = Sys.time())
-    data.table::setcolorder(out, c("timestamp", "agent_id", "agent_type", "status", "equity", "cash", "orders", "filled_orders", "net_qty", "last_side"))
+    data.table::setcolorder(out, c("timestamp", "agent_id", "agent_type", "status", "equity", "cash", "unrealized_pnl", "orders", "filled_orders", "net_qty", "last_side"))
   }
-  data.table::setorder(out, -equity, -filled_orders, -orders, agent_id)
+  for (col in c("equity", "cash", "unrealized_pnl")) {
+    bad <- which(!is.finite(out[[col]]))
+    if (length(bad) > 0L) data.table::set(out, i = bad, j = col, value = NA_real_)
+  }
+  out[, ranking_equity := data.table::fifelse(is.finite(equity), equity, -Inf)]
+  data.table::setorder(out, -ranking_equity, -filled_orders, -orders, agent_id)
+  out[, ranking_equity := NULL]
   out[, rank := seq_len(.N)]
   exchange$agent_rankings <- out[]
   out[]
@@ -212,12 +220,15 @@ sim_agent_rankings <- function(exchange) {
   )
   if (is.null(side)) return(NULL)
   reason <- sprintf("type=%s;last_ret=%.6f;mean_gap=%.6f", agent$agent_type, last_ret, mean_gap)
+  intent <- .agent_execution_intent(exchange, agent$agent_id, side, qty)
   data.table::data.table(
     timestamp = as.POSIXct(bar$timestamp, origin = "1970-01-01"),
     agent_id = agent$agent_id,
     agent_type = agent$agent_type,
     decision_type = "order",
     side = side,
+    intended_action = intent$action,
+    intended_dir = intent$dir,
     qty_type = "contracts",
     qty = qty,
     order_type = order_type,
@@ -226,6 +237,26 @@ sim_agent_rankings <- function(exchange) {
     command_id = NA_character_,
     status = "planned"
   )
+}
+
+#' @keywords internal
+.agent_execution_intent <- function(exchange, agent_id, side, qty) {
+  state <- exchange$agent_states[[as.character(agent_id)]]
+  cur_dir <- as.integer(state$pos_dir %||% 0L)
+  cur_qty <- as.numeric(state$ctr_unit %||% 0)
+  side <- tolower(as.character(side))
+  if (side == "flat") {
+    if (cur_dir == 0L || cur_qty <= 0 || !is.finite(cur_qty)) {
+      return(list(action = "no_op", dir = "flat"))
+    }
+    return(list(action = "close", dir = "flat"))
+  }
+  target_dir <- if (side == "buy") 1L else if (side == "sell") -1L else 0L
+  if (target_dir == 0L) return(list(action = "no_op", dir = "flat"))
+  target_label <- if (target_dir > 0L) "long" else "short"
+  if (cur_dir == 0L) return(list(action = "open", dir = target_label))
+  if (cur_dir == target_dir) return(list(action = "increase", dir = target_label))
+  list(action = "close", dir = "flat")
 }
 
 #' @keywords internal

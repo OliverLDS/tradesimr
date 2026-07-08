@@ -21,28 +21,28 @@
   </header>
 
   <main>
-    <section class="panel manifest-panel">
-      <div>
-        <h2>Manifest</h2>
-        <p id="manifest-summary">Waiting for manifest.csv.</p>
-      </div>
-      <div id="table-counts" class="counts"></div>
-    </section>
-
     <section class="panel agent-console">
       <div class="console-head">
         <div>
           <h2>Agent Console</h2>
-          <p>Submit and cancel orders through the local live service.</p>
+          <p>Submit and cancel orders through the local live service. Cash is collateral: trades use margin, fees reduce cash, realized P&L is booked on close/reduce, and liquidation is handled by the same C++ engine as backtests.</p>
         </div>
         <div class="service-box">
           <label for="service-url">Service URL</label>
           <input id="service-url" value="http://127.0.0.1:8080">
+          <label for="agent-refresh-interval">Auto Refresh</label>
+          <select id="agent-refresh-interval">
+            <option value="0">off</option>
+            <option value="2000">2s</option>
+            <option value="5000" selected>5s</option>
+            <option value="10000">10s</option>
+            <option value="30000">30s</option>
+          </select>
           <button id="refresh-state" type="button">Refresh State</button>
         </div>
       </div>
       <form id="order-form" class="order-form">
-        <label>Agent ID<input name="agent_id" value="agent-a"></label>
+        <label>Agent ID<input name="agent_id" placeholder="register before trading"></label>
         <label>Side
           <select name="side">
             <option value="buy">buy</option>
@@ -66,12 +66,13 @@
         </label>
         <label>Limit Price<input name="limit_price" type="number" step="0.0001"></label>
         <label>Client Order ID<input name="client_order_id" placeholder="optional"></label>
+        <label>Initial Cash<input name="initial_cash" type="number" step="0.01" value="10000"></label>
         <button type="submit">Submit Order</button>
         <button id="register-human" type="button">Register Human</button>
       </form>
       <form id="cancel-form" class="cancel-form">
         <label>Order ID<input name="order_id" placeholder="ORD000001"></label>
-        <label>Agent ID<input name="agent_id" value="agent-a"></label>
+        <label>Agent ID<input name="agent_id" placeholder="registered agent id"></label>
         <button type="submit">Cancel Order</button>
       </form>
       <p id="agent-status" class="agent-status">Service not contacted yet.</p>
@@ -102,7 +103,7 @@
 
     <section class="panel">
       <h2>Competition Leaderboard</h2>
-      <p class="small-note">Current leaderboard is based on public order activity until per-agent account state is added.</p>
+      <p class="small-note">Leaderboard uses per-agent live account equity, cash, and public order activity.</p>
       <div id="agent-rankings-table" class="table-wrap"></div>
     </section>
 

@@ -18,6 +18,18 @@ const REQUIRED_TABLES = [
 const state = {
   manifest: [],
   tables: {},
+  feed: {
+    timer: null,
+    nextTickAt: null,
+    running: false,
+    starting: false
+  },
+  stateRefresh: {
+    timer: null
+  },
+  agentRefresh: {
+    timer: null
+  },
   replay: {
     cursor: null,
     windowSize: 50,
@@ -32,15 +44,16 @@ document.addEventListener("DOMContentLoaded", () => {
   bind("register-human", "click", registerHumanAgent);
   bind("cancel-form", "submit", submitCancel);
   bind("refresh-state", "click", refreshServiceState);
+  bind("agent-refresh-interval", "change", configureAgentAutoRefresh);
   bind("feed-form", "submit", applyFeedConfig);
   bind("feed-refresh", "click", refreshFeedStatus);
+  bind("feed-warmup", "click", feedWarmup);
   bind("feed-start", "click", feedStart);
   bind("feed-stop", "click", feedStop);
   bind("feed-step", "click", feedStep);
+  bind("feed-form", "change", updateFeedRunMode);
   bind("agent-admin-form", "submit", addAiAgent);
   bind("agent-status-form", "submit", setAiAgentStatus);
-  bind("agents-refresh", "click", refreshAgents);
-  bind("agents-step", "click", stepAiAgents);
   bind("replay-window", "change", updateReplayWindow);
   bind("replay-step-unit", "change", renderReplayStatus);
   bind("replay-reset", "click", replayReset);
@@ -48,7 +61,10 @@ document.addEventListener("DOMContentLoaded", () => {
   bind("replay-next", "click", replayNext);
   bind("replay-play", "click", replayPlayToggle);
   applyServiceUrlParam();
+  updateFeedRunMode();
   loadFromFolder();
+  configureAgentAutoRefresh();
+  configureStateAutoRefresh();
 });
 
 function bind(id, event, handler) {
@@ -168,8 +184,8 @@ function render() {
   renderTable("fills-table", state.tables.fills, ["timestamp", "action_label", "dir_label", "ctr_qty", "price", "fee", "realized_pnl"]);
   renderTable("risk-table", state.tables.risk_snapshots, ["timestamp", "equity", "abs_notional", "leverage", "maintenance_margin", "margin_buffer"], 25);
   renderTable("agents-table", state.tables.agents, ["agent_id", "agent_type", "status", "config", "created_at"], 80);
-  renderTable("agent-decisions-table", state.tables.agent_decisions, ["timestamp", "agent_id", "agent_type", "side", "qty", "order_type", "reason", "command_id", "status"], 80);
-  renderTable("agent-rankings-table", state.tables.agent_rankings, ["rank", "agent_id", "agent_type", "status", "equity", "cash", "orders", "filled_orders", "net_qty", "last_side"], 80);
+  renderTable("agent-decisions-table", state.tables.agent_decisions, ["timestamp", "agent_id", "agent_type", "side", "intended_action", "intended_dir", "qty", "order_type", "reason", "command_id", "status"], 80);
+  renderTable("agent-rankings-table", state.tables.agent_rankings, ["rank", "agent_id", "agent_type", "status", "equity", "cash", "unrealized_pnl", "orders", "filled_orders", "net_qty", "last_side"], 80, { newestFirst: false });
 }
 
 function applyDashboardMode() {
@@ -191,6 +207,10 @@ async function submitOrder(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const payload = Object.fromEntries(form.entries());
+  if (!payload.agent_id) {
+    setAgentStatus("Register or enter a human agent ID before submitting orders.");
+    return;
+  }
   for (const key of ["qty", "limit_price"]) {
     if (payload[key] === "") delete payload[key];
   }
@@ -203,8 +223,17 @@ async function submitOrder(event) {
 async function registerHumanAgent() {
   const form = document.getElementById("order-form");
   const data = form ? Object.fromEntries(new FormData(form).entries()) : {};
-  const agentId = data.agent_id || "agent";
-  const response = await postAdmin("/agents", { agent_id: agentId, agent_type: "human", status: "active" }, "Human agent registered.");
+  const agentId = data.agent_id;
+  if (!agentId) {
+    setAgentStatus("Enter a human agent ID before registering.");
+    return;
+  }
+  const response = await postAdmin("/agents", {
+    agent_id: agentId,
+    agent_type: "human",
+    status: "active",
+    initial_cash: numericOrDefault(data.initial_cash, 10000)
+  }, "Human agent registered.");
   if (response?.state) applyServiceState(response.state);
 }
 
@@ -214,6 +243,10 @@ async function submitCancel(event) {
   const payload = Object.fromEntries(form.entries());
   if (!payload.order_id) {
     setAgentStatus("Order ID is required for cancellation.");
+    return;
+  }
+  if (!payload.agent_id) {
+    setAgentStatus("Agent ID is required for cancellation.");
     return;
   }
   await postService("/cancel", payload, "Cancel submitted.");
@@ -229,6 +262,48 @@ async function refreshServiceState() {
     setAgentStatus("State refreshed from live service.");
   } catch (err) {
     setAgentStatus(`Unable to refresh service state: ${err.message}`);
+  }
+}
+
+function configureAgentAutoRefresh() {
+  const field = document.getElementById("agent-refresh-interval");
+  if (!field) return;
+  stopAgentAutoRefresh();
+  const intervalMs = Number(field.value);
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+    setAgentStatus("Auto refresh is off.");
+    return;
+  }
+  state.agentRefresh.timer = window.setInterval(refreshServiceState, intervalMs);
+  setAgentStatus(`Auto refresh every ${formatDuration(intervalMs)}.`);
+}
+
+function stopAgentAutoRefresh() {
+  if (state.agentRefresh.timer) {
+    window.clearInterval(state.agentRefresh.timer);
+    state.agentRefresh.timer = null;
+  }
+}
+
+function configureStateAutoRefresh() {
+  if (!document.querySelector(".feed-console") || document.getElementById("order-form")) return;
+  stopStateAutoRefresh();
+  refreshServiceState();
+  state.stateRefresh.timer = window.setInterval(refreshLiveStateTick, 2000);
+}
+
+async function refreshLiveStateTick() {
+  if (isFeedAutoMode() && state.feed.running) {
+    await feedStep("Auto feed checked for completed bars.");
+    return;
+  }
+  await refreshServiceState();
+}
+
+function stopStateAutoRefresh() {
+  if (state.stateRefresh.timer) {
+    window.clearInterval(state.stateRefresh.timer);
+    state.stateRefresh.timer = null;
   }
 }
 
@@ -253,6 +328,7 @@ async function applyFeedConfig(event) {
   event.preventDefault();
   const data = await postFeed("/feed/config", feedConfigPayload(), "Feed config applied.");
   if (data) applyFeedStatus(data);
+  updateFeedRunMode();
 }
 
 async function refreshFeedStatus() {
@@ -268,18 +344,77 @@ async function refreshFeedStatus() {
 async function feedStart() {
   const data = await postFeed("/feed/start", {}, "Feed started.");
   if (data) applyFeedStatus(data);
+  if (isFeedAutoMode()) {
+    if (!isLiveStateDashboard()) startFeedAutoTimer();
+    await feedStep("Auto feed checked for completed bars.");
+  }
 }
 
 async function feedStop() {
+  stopFeedAutoTimer();
   const data = await postFeed("/feed/stop", {}, "Feed stopped.");
   if (data) applyFeedStatus(data);
 }
 
-async function feedStep() {
-  const data = await postFeed("/feed/step", {}, "Feed stepped.");
+async function feedStep(okMessage = "Feed stepped.") {
+  const data = await postFeed("/feed/step", {}, okMessage);
   if (!data) return;
   if (data.state) applyServiceState(data.state);
   applyFeedStatus(data.feed || data);
+}
+
+async function feedWarmup() {
+  const config = feedConfigPayload();
+  if (config.feed_mode !== "simulation") {
+    setFeedStatus("Historical warmup is available for simulation mode only.");
+    return;
+  }
+  const configResult = await postFeed("/feed/config", config, "Feed config applied.");
+  if (configResult) applyFeedStatus(configResult);
+  const form = new FormData(document.getElementById("feed-form"));
+  const nBars = Math.trunc(numericOrDefault(Object.fromEntries(form.entries()).warmup_bars, 100));
+  const data = await postFeed("/feed/warmup", { n_bars: nBars }, `Simulated ${nBars} historical bars.`);
+  if (!data) return;
+  if (data.state) applyServiceState(data.state);
+  applyFeedStatus(data.feed || data);
+}
+
+function updateFeedRunMode() {
+  const stepButton = document.getElementById("feed-step");
+  if (!stepButton) return;
+  const auto = isFeedAutoMode();
+  stepButton.disabled = auto;
+  stepButton.title = auto ? "Step is disabled in Auto mode; the live-state loop advances the feed." : "";
+  if (!auto) {
+    stopFeedAutoTimer();
+  } else if (!isLiveStateDashboard() && state.feed.running && !state.feed.timer) {
+    startFeedAutoTimer();
+  }
+}
+
+function isFeedAutoMode() {
+  const field = document.querySelector('#feed-form [name="run_mode"]');
+  return field && field.value === "auto";
+}
+
+function startFeedAutoTimer() {
+  stopFeedAutoTimer();
+  const intervalMs = Math.max(1000, parseTimeframeMs(feedConfigPayload().timeframe));
+  const schedulerMs = Math.min(5000, Math.max(1000, Math.floor(intervalMs / 10)));
+  state.feed.nextTickAt = Date.now() + schedulerMs;
+  state.feed.timer = window.setInterval(async () => {
+    state.feed.nextTickAt = Date.now() + schedulerMs;
+    await feedStep("Auto feed checked for completed bars.");
+  }, schedulerMs);
+  setFeedStatus(`Auto feed scheduler started; checking every ${formatDuration(schedulerMs)} for completed ${formatDuration(intervalMs)} bars.`);
+}
+
+function stopFeedAutoTimer() {
+  if (state.feed.timer) {
+    window.clearInterval(state.feed.timer);
+    state.feed.timer = null;
+    state.feed.nextTickAt = null;
+  }
 }
 
 async function addAiAgent(event) {
@@ -289,7 +424,8 @@ async function addAiAgent(event) {
   const payload = {
     agent_type: raw.agent_type || "chaos",
     qty: numericOrDefault(raw.qty, 1),
-    lookback: Math.trunc(numericOrDefault(raw.lookback, 12))
+    lookback: Math.trunc(numericOrDefault(raw.lookback, 12)),
+    initial_cash: numericOrDefault(raw.initial_cash, 10000)
   };
   if (raw.agent_id) payload.agent_id = raw.agent_id;
   const data = await postAdmin("/agents", payload, "AI agent added.");
@@ -526,27 +662,75 @@ function feedConfigPayload() {
   };
 }
 
+function parseTimeframeMs(timeframe) {
+  const raw = String(timeframe || "4h").trim().toLowerCase();
+  const match = raw.match(/^([0-9.]+)\s*([a-z]+)$/);
+  if (!match) return 4 * 60 * 60 * 1000;
+  const value = Number(match[1]);
+  const unit = match[2];
+  const multiplier = {
+    s: 1000,
+    sec: 1000,
+    secs: 1000,
+    second: 1000,
+    seconds: 1000,
+    m: 60 * 1000,
+    min: 60 * 1000,
+    mins: 60 * 1000,
+    minute: 60 * 1000,
+    minutes: 60 * 1000,
+    h: 60 * 60 * 1000,
+    hr: 60 * 60 * 1000,
+    hour: 60 * 60 * 1000,
+    hours: 60 * 60 * 1000,
+    d: 24 * 60 * 60 * 1000,
+    day: 24 * 60 * 60 * 1000,
+    days: 24 * 60 * 60 * 1000
+  }[unit];
+  return Number.isFinite(value) && multiplier ? value * multiplier : 4 * 60 * 60 * 1000;
+}
+
+function formatDuration(ms) {
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = seconds / 60;
+  if (minutes < 60) return `${formatNumber(minutes, minutes % 1 ? 1 : 0)}m`;
+  const hours = minutes / 60;
+  if (hours < 24) return `${formatNumber(hours, hours % 1 ? 1 : 0)}h`;
+  const days = hours / 24;
+  return `${formatNumber(days, days % 1 ? 1 : 0)}d`;
+}
+
 function applyFeedStatus(feed = {}) {
   if (!feed || typeof feed !== "object") {
     setFeedStatus("Feed status is unavailable.");
     return;
   }
-  setFeedField("symbol", feed.symbol);
-  setFeedField("timeframe", feed.timeframe);
-  setFeedField("tz", feed.tz);
-  setFeedField("feed_mode", feed.feed_mode);
-  const running = feed.running === true || feed.running === "TRUE" || feed.running === "true";
+  const runningValue = scalarValue(feed.running);
+  const running = runningValue === true || runningValue === "TRUE" || runningValue === "true" || runningValue === 1 || runningValue === "1";
+  state.feed.running = running;
+  if (!running) {
+    stopFeedAutoTimer();
+  } else if (!isLiveStateDashboard() && isFeedAutoMode() && !state.feed.timer) {
+    startFeedAutoTimer();
+  }
   const details = [
     `status=${running ? "running" : "stopped"}`,
-    `mode=${feed.feed_mode || "unknown"}`,
-    `symbol=${feed.symbol || "unknown"}`,
-    `timeframe=${feed.timeframe || "unknown"}`,
-    `tz=${feed.tz || "unknown"}`,
-    `bars=${feed.bars ?? "0"}`,
-    `last_end=${feed.last_completed_end || "none"}`,
-    `last_price=${feed.last_price ?? "n/a"}`
+    `mode=${scalarValue(feed.feed_mode) || "unknown"}`,
+    `symbol=${scalarValue(feed.symbol) || "unknown"}`,
+    `timeframe=${scalarValue(feed.timeframe) || "unknown"}`,
+    `tz=${scalarValue(feed.tz) || "unknown"}`,
+    `bars=${scalarValue(feed.bars) ?? "0"}`,
+    `last_end=${scalarValue(feed.last_completed_end) || "none"}`,
+    `last_price=${scalarValue(feed.last_price) ?? "n/a"}`
   ];
   setFeedStatus(details.join(" | "));
+}
+
+function isLiveStateDashboard() {
+  return Boolean(document.querySelector(".feed-console")) &&
+    !document.getElementById("order-form") &&
+    !isReplayDashboard();
 }
 
 function setFeedField(name, value) {
@@ -579,10 +763,17 @@ function serviceBase() {
 
 function applyServiceUrlParam() {
   const el = document.getElementById("service-url");
-  if (!el) return;
   const params = new URLSearchParams(window.location.search);
-  const serviceUrl = params.get("service_url") || params.get("service");
-  if (serviceUrl) el.value = serviceUrl;
+  if (el) {
+    const serviceUrl = params.get("service_url") || params.get("service");
+    if (serviceUrl) el.value = serviceUrl;
+  }
+  const agentId = params.get("agent_id") || params.get("agent");
+  if (agentId) {
+    document.querySelectorAll('input[name="agent_id"]').forEach(input => {
+      input.value = agentId;
+    });
+  }
 }
 
 function setAgentStatus(message) {
@@ -655,22 +846,20 @@ function renderCandles() {
   const markerRows = [...fills, ...orders].filter(marker => marker.price > 0 && visibleTimes.has(String(marker.timestamp)));
   const width = 960;
   const height = 360;
-  const pad = { top: 24, right: 72, bottom: 44, left: 58 };
+  const pad = { top: 24, right: 72, bottom: 44, left: 82 };
   const plotW = width - pad.left - pad.right;
   const plotH = height - pad.top - pad.bottom;
   const lows = shown.map(row => row.low);
   const highs = shown.map(row => row.high);
-  const markerPrices = markerRows.map(row => row.price);
-  const rawMinY = Math.min(...lows, ...markerPrices);
-  const rawMaxY = Math.max(...highs, ...markerPrices);
-  const minY = rawMinY > 0 ? 0 : niceFloor(rawMinY);
-  const maxY = niceCeil(rawMaxY * 1.05);
+  const minY = Math.min(...lows);
+  const maxY = Math.max(...highs);
   const yRange = maxY - minY || 1;
   const step = plotW / Math.max(1, shown.length);
   const bodyW = Math.max(3, Math.min(14, step * 0.58));
   const xFor = i => pad.left + step * i + step / 2;
   const yFor = price => pad.top + (maxY - price) / yRange * plotH;
   const timeIndex = new Map(shown.map((bar, i) => [String(bar.timestamp), i]));
+  const yTicks = axisYLabels(minY, maxY, yFor, pad.left - 10, 4, 4);
 
   const candleSvg = shown.map((bar, i) => {
     const x = xFor(i);
@@ -705,9 +894,8 @@ function renderCandles() {
       <rect x="${pad.left}" y="${pad.top}" width="${plotW}" height="${plotH}" class="plot-bg"></rect>
       <line x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${height - pad.bottom}" class="axis"></line>
       <line x1="${pad.left}" y1="${height - pad.bottom}" x2="${width - pad.right}" y2="${height - pad.bottom}" class="axis"></line>
-      <text x="${pad.left}" y="${pad.top - 8}" class="chart-label">${formatNumber(maxY, 4)}</text>
-      <text x="${pad.left}" y="${height - 12}" class="chart-label">${formatNumber(minY, 4)}</text>
       <text x="${width - pad.right}" y="${pad.top - 8}" text-anchor="end" class="chart-label">last ${formatNumber(last.close, 4)}</text>
+      ${yTicks}
       ${axisTimeLabels(shown, xFor, height - 18)}
       ${candleSvg}
       ${markerSvg}
@@ -795,7 +983,11 @@ function normalizeMarkers(rows, kind) {
 
 function renderEquity() {
   const account = replayRows(state.tables.account_snapshots || []);
-  const points = account.map((row, i) => ({ x: i, y: number(row.equity), t: row.timestamp })).filter(point => isFinite(point.y));
+  const points = account.map(row => ({
+    agent: String(scalarValue(row.agent_id) || "account"),
+    y: number(scalarValue(row.equity)),
+    t: scalarValue(row.timestamp)
+  })).filter(point => isFinite(point.y));
   const el = document.getElementById("equity-chart");
   if (!el) return;
   if (points.length < 2) {
@@ -804,26 +996,40 @@ function renderEquity() {
   }
   const width = 900;
   const height = 280;
-  const pad = { top: 30, right: 28, bottom: 52, left: 48 };
+  const pad = { top: 30, right: 28, bottom: 52, left: 82 };
   const ys = points.map(point => point.y);
   const minY = Math.min(...ys);
   const maxY = Math.max(...ys);
   const yRange = maxY - minY || 1;
-  const path = points.map((point, i) => {
-    const x = pad.left + (i / (points.length - 1)) * (width - pad.left - pad.right);
-    const y = height - pad.bottom - ((point.y - minY) / yRange) * (height - pad.top - pad.bottom);
-    return `${x.toFixed(2)},${y.toFixed(2)}`;
-  }).join(" ");
-  const xFor = i => pad.left + (i / Math.max(1, points.length - 1)) * (width - pad.left - pad.right);
+  const agents = [...new Set(points.map(point => point.agent))];
+  const groups = agents.map(agent => ({
+    agent,
+    points: points.filter(point => point.agent === agent)
+      .sort((a, b) => timeValue(a.t) - timeValue(b.t))
+  }));
+  const maxLen = Math.max(...groups.map(group => group.points.length));
+  const palette = ["#d45f2f", "#0f766e", "#2456a6", "#9f7a16", "#8b3f63", "#4d6b2f", "#6d4ba3"];
+  const colorFor = i => palette[i % palette.length];
+  const xFor = (i, n = maxLen) => pad.left + (i / Math.max(1, n - 1)) * (width - pad.left - pad.right);
+  const yFor = y => height - pad.bottom - ((y - minY) / yRange) * (height - pad.top - pad.bottom);
+  const yTicks = axisYLabels(minY, maxY, yFor, pad.left - 10, 4, 2);
+  const paths = groups.map((group, gi) => {
+    if (group.points.length < 2) return "";
+    const path = group.points.map((point, i) => `${xFor(i, group.points.length).toFixed(2)},${yFor(point.y).toFixed(2)}`).join(" ");
+    return `<polyline points="${path}" class="equity-line agent-equity-line" style="stroke:${colorFor(gi)}"><title>${escapeHtml(group.agent)}</title></polyline>`;
+  }).join("");
+  const legend = groups.map((group, gi) =>
+    `<span><i style="background:${colorFor(gi)}"></i>${escapeHtml(group.agent)}</span>`
+  ).join("");
   el.innerHTML = `
     <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Equity curve">
       <line x1="${pad.left}" y1="${height - pad.bottom}" x2="${width - pad.right}" y2="${height - pad.bottom}" class="axis"></line>
       <line x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${height - pad.bottom}" class="axis"></line>
-      <polyline points="${path}" class="equity-line"></polyline>
-      <text x="${pad.left}" y="${pad.top - 10}" class="chart-label">${formatNumber(maxY)}</text>
-      <text x="${pad.left}" y="${height - 8}" class="chart-label">${formatNumber(minY)}</text>
+      ${paths}
+      ${yTicks}
       ${axisTimeLabels(points, xFor, height - 16, point => point.t)}
-    </svg>`;
+    </svg>
+    <div class="chart-legend">${legend}</div>`;
 }
 
 function renderRiskSummary() {
@@ -868,7 +1074,7 @@ function combinedOrderFillRows() {
   return [...orders, ...fills].sort((a, b) => timeValue(a.timestamp) - timeValue(b.timestamp));
 }
 
-function renderTable(id, rows = [], preferred = [], limit = 50) {
+function renderTable(id, rows = [], preferred = [], limit = 50, options = {}) {
   const el = document.getElementById(id);
   if (!el) return;
   if (!rows.length) {
@@ -877,7 +1083,8 @@ function renderTable(id, rows = [], preferred = [], limit = 50) {
   }
   let columns = preferred.filter(col => col in rows[0]);
   if (!columns.length) columns = Object.keys(rows[0]);
-  const shown = rows.slice(-limit).reverse();
+  const newestFirst = options.newestFirst !== false;
+  const shown = newestFirst ? rows.slice(-limit).reverse() : rows.slice(0, limit);
   el.innerHTML = `
     <table>
       <thead><tr>${columns.map(col => `<th>${escapeHtml(col)}</th>`).join("")}</tr></thead>
@@ -895,16 +1102,28 @@ function setStatus(message) {
 }
 
 function number(value) {
+  value = scalarValue(value);
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : NaN;
 }
 
 function timeValue(value) {
+  value = scalarValue(value);
   if (value === undefined || value === null || value === "") return NaN;
   const parsed = Date.parse(value);
   if (Number.isFinite(parsed)) return parsed;
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : NaN;
+}
+
+function scalarValue(value) {
+  if (Array.isArray(value)) return value.length ? scalarValue(value[0]) : "";
+  if (value && typeof value === "object") {
+    if ("value" in value) return scalarValue(value.value);
+    const keys = Object.keys(value);
+    if (keys.length === 1) return scalarValue(value[keys[0]]);
+  }
+  return value;
 }
 
 function monthKey(value) {
@@ -932,6 +1151,20 @@ function axisTimeLabels(rows, xFor, y, timeAccessor = row => row.timestamp) {
   return [...new Set(indexes)].map(i => {
     const anchor = i === 0 ? "start" : i === rows.length - 1 ? "end" : "middle";
     return `<text x="${xFor(i).toFixed(2)}" y="${y}" text-anchor="${anchor}" class="chart-label x-tick">${escapeHtml(shortTimeLabel(timeAccessor(rows[i])))}</text>`;
+  }).join("");
+}
+
+function axisYLabels(minY, maxY, yFor, x, tickCount = 4, digits = 2) {
+  if (!Number.isFinite(minY) || !Number.isFinite(maxY)) return "";
+  const count = Math.max(2, tickCount);
+  const values = Array.from({ length: count }, (_, i) =>
+    minY + (i / Math.max(1, count - 1)) * (maxY - minY)
+  );
+  return values.map(value => {
+    const y = yFor(value);
+    return `
+      <line x1="${x + 10}" y1="${y.toFixed(2)}" x2="${x + 16}" y2="${y.toFixed(2)}" class="axis-tick"></line>
+      <text x="${x}" y="${(y + 4).toFixed(2)}" text-anchor="end" class="chart-label y-tick">${formatNumber(value, digits)}</text>`;
   }).join("");
 }
 

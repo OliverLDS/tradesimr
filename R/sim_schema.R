@@ -1,7 +1,7 @@
 #' tradesimr durable schema version
 #'
 #' @export
-TRADESIMR_SCHEMA_VERSION <- "0.5.0"
+TRADESIMR_SCHEMA_VERSION <- "0.6.0"
 
 #' Simulation table schemas
 #'
@@ -30,6 +30,8 @@ sim_schemas <- function() {
       timestamp = as.POSIXct(character()),
       order_type = character(),
       side = character(),
+      intended_action = character(),
+      intended_dir = character(),
       qty_type = character(),
       qty = numeric(),
       limit_price = numeric(),
@@ -101,6 +103,7 @@ sim_schemas <- function() {
       status = character(),
       equity = numeric(),
       cash = numeric(),
+      unrealized_pnl = numeric(),
       orders = integer(),
       filled_orders = integer(),
       net_qty = numeric(),

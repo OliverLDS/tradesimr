@@ -41,8 +41,15 @@ sim_feed_config <- function(symbol = "BTC-USDT-SWAP",
 #' @export
 sim_feed_configure <- function(exchange, config = sim_feed_config()) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
+  previous <- exchange$feed
   defaults <- sim_feed_config()
+  supplied <- names(config)
   config <- utils::modifyList(defaults, config)
+  if (!is.null(previous)) {
+    for (field in c("running", "last_completed_end", "last_price")) {
+      if (!field %in% supplied) config[[field]] <- previous[[field]]
+    }
+  }
   config$feed_mode <- match.arg(config$feed_mode, c("simulation", "external"))
   .feed_parse_timeframe(config$timeframe)
   if (identical(config$feed_mode, "external") && !is.function(config$feed_adapter)) {
@@ -142,6 +149,52 @@ sim_feed_step <- function(exchange, now = Sys.time(), max_bars = Inf) {
       sim_exchange_process_commands(exchange)
       sim_exchange_step(exchange, out[i])
     }
+  }
+  exchange$feed <- feed
+  out[]
+}
+
+#' Generate historical simulation bars before starting a live feed
+#'
+#' Appends `n_bars` simulated OHLC bars ending at the latest completed boundary.
+#' This is a market-history warmup: it does not step AI agents or process
+#' pending orders.
+#'
+#' @param exchange A `tradesimr_exchange`.
+#' @param n_bars Number of historical bars to append.
+#' @param now Current time used to align the latest completed boundary.
+#' @return A data.table of appended market bars.
+#' @export
+sim_feed_warmup <- function(exchange, n_bars = 100L, now = Sys.time()) {
+  stopifnot(inherits(exchange, "tradesimr_exchange"))
+  if (is.null(exchange$feed)) sim_feed_configure(exchange)
+  feed <- exchange$feed
+  if (!identical(feed$feed_mode, "simulation")) {
+    stop("Feed warmup currently supports `feed_mode = 'simulation'` only.", call. = FALSE)
+  }
+  n_bars <- as.integer(n_bars)
+  if (is.na(n_bars) || n_bars <= 0L) return(sim_schemas()$market_events[0])
+  step_seconds <- .feed_parse_timeframe(feed$timeframe)
+  latest_end <- .feed_latest_completed_end(.feed_as_time(now, feed$tz), feed$timeframe, feed$tz)
+  starts <- seq(
+    from = as.numeric(latest_end) - step_seconds * n_bars,
+    to = as.numeric(latest_end) - step_seconds,
+    by = step_seconds
+  )
+  if (!length(starts)) return(sim_schemas()$market_events[0])
+  bars <- vector("list", length(starts))
+  for (i in seq_along(starts)) {
+    start <- as.POSIXct(starts[i], origin = "1970-01-01", tz = feed$tz)
+    end <- as.POSIXct(starts[i] + step_seconds, origin = "1970-01-01", tz = feed$tz)
+    bars[[i]] <- .feed_get_bar(feed, start, end)
+    feed$last_completed_end <- end
+    if (nrow(bars[[i]]) > 0L && "close" %in% names(bars[[i]])) {
+      feed$last_price <- as.numeric(tail(bars[[i]]$close, 1L))
+    }
+  }
+  out <- data.table::rbindlist(bars, fill = TRUE)
+  if (nrow(out) > 0L) {
+    exchange$market_events <- data.table::rbindlist(list(exchange$market_events, out), fill = TRUE)
   }
   exchange$feed <- feed
   out[]

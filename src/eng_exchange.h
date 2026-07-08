@@ -162,6 +162,10 @@ inline ExchangeMessage_on_trade Exchange::update_on_trade(
   }
 
   if (a.action == TRADESIMR::ActionCode::CLOSE) {
+    if (!s.has_pos() || std::isnan(s.avg_price) || a.ctr_qty <= 0.0) {
+      out.status = TRADESIMR::ActionStatus::FAILED;
+      return out;
+    }
     const double fee_close = s.fee_rt * trade_notional;
     const double dir_sign = static_cast<double>(s.pos_dir);
     const double realized_pnl = trade_units * (filled_price - s.avg_price) * dir_sign;
@@ -177,6 +181,10 @@ inline ExchangeMessage_on_trade Exchange::update_on_trade(
   }
 
   if (a.action == TRADESIMR::ActionCode::REDUCE) {
+    if (!s.has_pos() || std::isnan(s.avg_price) || a.ctr_qty <= 0.0 || a.ctr_qty > s.ctr_unit) {
+      out.status = TRADESIMR::ActionStatus::FAILED;
+      return out;
+    }
     const double fee_reduce = s.fee_rt * trade_notional;
     const double dir_sign = static_cast<double>(s.pos_dir);
     const double realized_pnl = trade_units * (filled_price - s.avg_price) * dir_sign;

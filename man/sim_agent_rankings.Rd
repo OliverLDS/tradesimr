@@ -13,6 +13,5 @@ sim_agent_rankings(exchange)
 A data.table of agent rankings.
 }
 \description{
-This is currently an order-activity leaderboard. Independent per-agent
-account equity requires the next core engine step: per-agent account state.
+Rankings combine current per-agent account equity with order activity.
 }

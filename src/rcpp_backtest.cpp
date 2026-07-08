@@ -259,6 +259,9 @@ Rcpp::List step_rcpp(const Rcpp::List& state,
   Exchange x{};
   x.timestamp = Rcpp::NumericVector::is_na(old_timestamp) ? TRADESIMR::kNaReal : old_timestamp;
   x.update_bar(timestamp, open, high, low, close);
+  if (!s.has_pos() && (s.last_px == 0.0 || is_na(s.last_px))) {
+    s.last_px = open;
+  }
 
   Recorder recorder{};
   if (rec) recorder.reserve(static_cast<size_t>(n) + 2);

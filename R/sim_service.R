@@ -45,6 +45,7 @@ sim_live_service <- function(exchange = sim_exchange_new()) {
     requested_id <- .null_if_missing(body$agent_id)
     agent_type <- body$agent_type %||% "chaos"
     config <- as.list(body$config %||% list(qty = body$qty %||% 1, lookback = body$lookback %||% 12))
+    if (!is.null(body$initial_cash)) config$initial_cash <- as.numeric(body$initial_cash)
     if (!is.null(requested_id) && requested_id %in% exchange$agents$agent_id) {
       .ensure_agent_account(exchange, requested_id, agent_type = agent_type, config = config, status = body$status %||% "active")
       agent_id <- requested_id
@@ -94,6 +95,16 @@ sim_live_service <- function(exchange = sim_exchange_new()) {
     if (!is.null(body$random_walk)) body$random_walk <- as.list(body$random_walk)
     sim_feed_configure(exchange, body)
     sim_feed_status(exchange)
+  })
+  pr <- plumber_ns$pr_post(pr, "/feed/warmup", function(req, res) {
+    .service_headers(res)
+    body <- .service_json_body(req)
+    bars <- sim_feed_warmup(
+      exchange,
+      n_bars = as.integer(body$n_bars %||% 100L),
+      now = .service_timestamp(body$now %||% Sys.time())
+    )
+    list(feed = sim_feed_status(exchange), bars = .service_records(bars), state = .service_state(exchange))
   })
   pr <- plumber_ns$pr_post(pr, "/feed/start", function(req, res) {
     .service_headers(res)
@@ -173,8 +184,14 @@ sim_live_service_run <- function(exchange = sim_exchange_new(), host = "127.0.0.
 
 #' @keywords internal
 .service_state <- function(exchange) {
+  account_history <- if (is.null(exchange$result)) {
+    sim_exchange_account(exchange)
+  } else {
+    sim_account(exchange$result)
+  }
   list(
-    account = .service_records(sim_exchange_account(exchange)),
+    account = .service_records(account_history),
+    account_latest = .service_records(sim_exchange_account(exchange)),
     positions = .service_records(sim_exchange_positions(exchange)),
     market_events = .service_records(exchange$market_events),
     agent_orders = .service_records(exchange$agent_orders),
@@ -192,7 +209,13 @@ sim_live_service_run <- function(exchange = sim_exchange_new(), host = "127.0.0.
 #' @keywords internal
 .service_records <- function(x) {
   if (is.null(x) || nrow(x) == 0L) return(list())
-  lapply(seq_len(nrow(x)), function(i) as.list(x[i]))
+  lapply(seq_len(nrow(x)), function(i) {
+    row <- as.list(x[i])
+    lapply(row, function(value) {
+      if (length(value) == 1L) return(value[[1L]])
+      value
+    })
+  })
 }
 
 #' @keywords internal

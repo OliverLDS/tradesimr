@@ -487,9 +487,14 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
   cur_dir <- as.integer(step_state$pos_dir %||% 0L)
   cur_qty <- as.numeric(step_state$ctr_unit %||% 0)
   side <- tolower(as.character(orders$side))
-  action <- character(nrow(orders))
-  dir <- character(nrow(orders))
-  ctr_qty <- numeric(nrow(orders))
+  action <- character()
+  dir <- character()
+  ctr_qty <- numeric()
+  order_id <- character()
+  order_type <- character()
+  price <- numeric()
+  action_id <- integer()
+  next_action_id <- as.integer(step_state$action_id_now %||% 1L)
   for (i in seq_len(nrow(orders))) {
     if (!side[i] %in% c("buy", "sell", "flat")) {
       stop("Contract orders require side `buy`, `sell`, or `flat`.", call. = FALSE)
@@ -497,35 +502,55 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
     target_dir <- if (side[i] == "buy") 1L else if (side[i] == "sell") -1L else 0L
     target_qty <- abs(as.numeric(orders$qty[i]))
     if (target_dir == 0L) {
-      action[i] <- "close"
-      dir[i] <- "flat"
-      ctr_qty[i] <- cur_qty
+      if (cur_dir == 0L || cur_qty <= 0 || !is.finite(cur_qty)) {
+        .mark_orders_noop(exchange, orders$order_id[i])
+        next
+      }
+      this_action <- "close"
+      this_dir <- "flat"
+      this_qty <- cur_qty
+      cur_dir <- 0L
+      cur_qty <- 0
     } else if (cur_dir == 0L) {
-      action[i] <- "open"
-      dir[i] <- if (target_dir > 0L) "long" else "short"
-      ctr_qty[i] <- target_qty
+      this_action <- "open"
+      this_dir <- if (target_dir > 0L) "long" else "short"
+      this_qty <- target_qty
+      cur_dir <- target_dir
+      cur_qty <- target_qty
     } else if (cur_dir == target_dir) {
-      action[i] <- "increase"
-      dir[i] <- if (target_dir > 0L) "long" else "short"
-      ctr_qty[i] <- target_qty
+      this_action <- "increase"
+      this_dir <- if (target_dir > 0L) "long" else "short"
+      this_qty <- target_qty
+      cur_qty <- cur_qty + target_qty
     } else {
-      action[i] <- "close"
-      dir[i] <- "flat"
-      ctr_qty[i] <- cur_qty
+      this_action <- "close"
+      this_dir <- "flat"
+      this_qty <- cur_qty
+      cur_dir <- 0L
+      cur_qty <- 0
     }
+    if (!is.finite(this_qty) || this_qty <= 0) {
+      .mark_orders_noop(exchange, orders$order_id[i])
+      next
+    }
+    action <- c(action, this_action)
+    dir <- c(dir, this_dir)
+    ctr_qty <- c(ctr_qty, this_qty)
+    order_id <- c(order_id, orders$order_id[i])
+    order_type <- c(order_type, orders$order_type[i])
+    price <- c(price, orders$limit_price[i])
+    action_id <- c(action_id, next_action_id)
+    next_action_id <- next_action_id + 1L
   }
   data.table::data.table(
-    order_id = orders$order_id,
+    order_id = order_id,
     action = action,
     dir = dir,
-    order_type = orders$order_type,
+    order_type = order_type,
     ctr_qty = ctr_qty,
-    price = orders$limit_price,
-    strat_id = 0L,
-    action_id = seq.int(
-      as.integer(step_state$action_id_now %||% 1L),
-      length.out = nrow(orders)
-    )
+    price = price,
+    strat_id = rep.int(0L, length(action_id)),
+    action_id = action_id
   )
 }
 
@@ -539,11 +564,6 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
     unique(agent_id)
   ]
   agents <- unique(c(registered, order_agents))
-  if (!length(agents)) {
-    legacy_id <- "default"
-    .ensure_agent_account(exchange, legacy_id, agent_type = "human")
-    agents <- legacy_id
-  }
   agents
 }
 
@@ -567,6 +587,12 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
     if (!is.null(state_config$init_cash) && is.null(state_config$cash)) {
       state_config$cash <- state_config$init_cash
     }
+    if (!is.null(config$initial_cash)) {
+      state_config$cash <- as.numeric(config$initial_cash)
+    }
+    if (nrow(exchange$market_events) > 0L && is.null(state_config$last_px)) {
+      state_config$last_px <- as.numeric(tail(exchange$market_events$close, 1L))
+    }
     exchange$agent_states[[agent_id]] <- do.call(sim_state, state_config[intersect(names(state_config), names(formals(sim_state)))])
   }
   invisible(exchange$agent_states[[agent_id]])
@@ -582,6 +608,16 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
   order_idx <- order_idx[!is.na(order_idx)]
   if (length(order_idx) > 0L) {
     data.table::set(exchange$agent_orders, i = order_idx, j = "status", value = "filled")
+  }
+  invisible(NULL)
+}
+
+#' @keywords internal
+.mark_orders_noop <- function(exchange, order_id) {
+  idx <- match(order_id, exchange$agent_orders$order_id)
+  idx <- idx[!is.na(idx)]
+  if (length(idx) > 0L) {
+    data.table::set(exchange$agent_orders, i = idx, j = "status", value = "no_op")
   }
   invisible(NULL)
 }

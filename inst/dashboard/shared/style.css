@@ -196,11 +196,11 @@ main {
 }
 
 .feed-form {
-  grid-template-columns: repeat(9, minmax(100px, 1fr));
+  grid-template-columns: repeat(10, minmax(100px, 1fr));
 }
 
 .agent-admin-form {
-  grid-template-columns: repeat(5, minmax(120px, 1fr));
+  grid-template-columns: repeat(6, minmax(120px, 1fr));
 }
 
 .agent-status-form {
@@ -270,6 +270,14 @@ main {
   color: #fff9ec;
   cursor: pointer;
   font-weight: 700;
+}
+
+.agent-console button:disabled,
+.feed-console button:disabled,
+.ai-console button:disabled,
+.replay-console button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .agent-status,
@@ -417,6 +425,11 @@ svg {
   stroke-width: 1;
 }
 
+.axis-tick {
+  stroke: #9f927e;
+  stroke-width: 1;
+}
+
 .order-marker {
   fill: var(--accent-2);
   stroke: #111f1b;
@@ -427,6 +440,29 @@ svg {
   fill: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13px;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem 1rem;
+  margin-top: 0.7rem;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+}
+
+.chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.chart-legend i {
+  display: inline-block;
+  width: 0.8rem;
+  height: 0.8rem;
+  border-radius: 999px;
 }
 
 .metric-stack {

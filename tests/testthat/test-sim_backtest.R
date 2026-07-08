@@ -117,6 +117,11 @@ test_that("sim_step processes one bar and carries prior state forward", {
   expect_equal(nrow(step1$events), 1)
   expect_equal(step1$events$action_label[1], "open")
 
+  first_bar_state <- sim_state(cash = 10000)
+  first_bar_step <- sim_step(first_bar_state, bar1, orders, ctr_step = 0.01, lev = 10, fee_rt = 0.001)
+  expect_equal(first_bar_step$events$equity[1], 9999.9, tolerance = 1e-8)
+  expect_equal(first_bar_step$events$fee[1], 0.1, tolerance = 1e-8)
+
   bar2 <- data.frame(
     timestamp = as.POSIXct("2026-01-02", tz = "UTC"),
     open = 101,
@@ -237,6 +242,36 @@ test_that("live feed steps completed bars on schedule", {
   expect_equal(nrow(no_new_bars), 0)
 })
 
+test_that("live feed does not create a default agent before registration", {
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 0.01, lev = 10))
+  sim_feed_configure(exchange, sim_feed_config(
+    timeframe = "1m",
+    tz = "UTC",
+    start_time = as.POSIXct("2026-01-01 00:00:00", tz = "UTC")
+  ))
+  sim_feed_start(exchange, now = as.POSIXct("2026-01-01 00:00:30", tz = "UTC"))
+  bars <- sim_feed_step(exchange, now = as.POSIXct("2026-01-01 00:03:01", tz = "UTC"))
+
+  expect_equal(nrow(bars), 3)
+  expect_equal(nrow(exchange$market_events), 3)
+  expect_equal(nrow(exchange$agents), 0)
+  expect_equal(nrow(sim_exchange_account(exchange)), 0)
+})
+
+test_that("live feed config updates preserve running state", {
+  exchange <- sim_exchange_new()
+  sim_feed_configure(exchange, sim_feed_config(timeframe = "4h", tz = "UTC"))
+  sim_feed_start(exchange, now = as.POSIXct("2026-01-01 08:30:00", tz = "UTC"))
+  before <- sim_feed_status(exchange)
+  expect_true(before$running)
+  expect_equal(before$last_completed_end, as.POSIXct("2026-01-01 08:00:00", tz = "UTC"))
+
+  sim_feed_configure(exchange, list(timeframe = "5m"))
+  after <- sim_feed_status(exchange)
+  expect_true(after$running)
+  expect_equal(after$last_completed_end, before$last_completed_end)
+})
+
 test_that("live feed accepts external adapter functions", {
   exchange <- sim_exchange_new()
   adapter <- function(symbol, timeframe, start, end, tz = "UTC") {
@@ -251,6 +286,30 @@ test_that("live feed accepts external adapter functions", {
   bars <- sim_feed_step(exchange, now = as.POSIXct("2026-01-01 04:01:00", tz = "UTC"))
   expect_equal(nrow(bars), 1)
   expect_equal(bars$close[1], 10.5)
+})
+
+test_that("simulation feed warmup appends historical bars without stepping agents", {
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 0.01, lev = 10))
+  sim_feed_configure(exchange, sim_feed_config(
+    timeframe = "1h",
+    tz = "UTC",
+    random_walk = list(start_price = 100, drift = 0, vol = 0.01, seed = 11L)
+  ))
+  bars <- sim_feed_warmup(exchange, n_bars = 5, now = as.POSIXct("2026-01-01 05:30:00", tz = "UTC"))
+  expect_equal(nrow(bars), 5)
+  expect_equal(nrow(exchange$market_events), 5)
+  expect_equal(nrow(exchange$agent_decisions), 0)
+  expect_equal(sim_feed_status(exchange)$last_completed_end, as.POSIXct("2026-01-01 05:00:00", tz = "UTC"))
+
+  agent_id <- sim_agent_add(exchange, agent_id = "cash-agent", agent_type = "momentum", config = list(qty = 1, initial_cash = 25000))
+  account <- sim_exchange_account(exchange)
+  positions <- sim_exchange_positions(exchange)
+  expect_equal(account$cash[account$agent_id == agent_id], 25000)
+  expect_equal(positions$last_px[positions$agent_id == agent_id], tail(exchange$market_events$close, 1))
+
+  rankings <- sim_agent_rankings(exchange)
+  expect_true("unrealized_pnl" %in% names(rankings))
+  expect_equal(rankings$unrealized_pnl[rankings$agent_id == agent_id], 0)
 })
 
 test_that("AI agents submit ordinary order commands", {
@@ -278,6 +337,8 @@ test_that("AI agents submit ordinary order commands", {
   decisions <- sim_agents_step(exchange, bar2)
   expect_equal(nrow(decisions), 1)
   expect_equal(decisions$side[1], "buy")
+  expect_equal(decisions$intended_action[1], "open")
+  expect_equal(decisions$intended_dir[1], "long")
   expect_equal(exchange$order_requests$status[1], "pending")
 
   sim_exchange_process_commands(exchange)
@@ -290,6 +351,66 @@ test_that("AI agents submit ordinary order commands", {
 
   expect_true(sim_agent_set_status(exchange, agent_id, "paused"))
   expect_equal(exchange$agents$status[1], "paused")
+})
+
+test_that("AI flat orders do not leave stale orders that corrupt account state", {
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 1, lev = 10, fee_rt = 0.0005))
+  sim_agent_add(exchange, agent_id = "Momentum", agent_type = "momentum", config = list(qty = 1))
+  sim_agent_add(exchange, agent_id = "Contrarian", agent_type = "contrarian", config = list(qty = 1))
+  sim_agent_add(exchange, agent_id = "Reversion", agent_type = "mean_reversion", config = list(qty = 1))
+  sim_agent_add(exchange, agent_id = "Chaos", agent_type = "chaos", config = list(qty = 1))
+
+  set.seed(1)
+  px <- 100
+  for (i in seq_len(12)) {
+    open <- px
+    close <- px * exp(stats::rnorm(1, 0, 0.02))
+    bar <- data.frame(
+      timestamp = as.POSIXct("2026-07-08 21:00:00", tz = "UTC") + i * 60,
+      open = open,
+      high = max(open, close) * 1.005,
+      low = min(open, close) * 0.995,
+      close = close
+    )
+    sim_agents_step(exchange, bar)
+    sim_exchange_process_commands(exchange)
+    sim_exchange_step(exchange, bar)
+    account <- sim_exchange_account(exchange)
+    expect_true(all(is.finite(account$equity)))
+    expect_true(all(is.finite(account$cash)))
+    px <- close
+  }
+
+  rankings <- sim_agent_rankings(exchange)
+  expect_true(all(is.na(rankings$equity) | is.finite(rankings$equity)))
+  expect_false(is.na(rankings$equity[1]))
+  expect_true(any(exchange$agent_orders$status == "no_op"))
+})
+
+test_that("agent rankings sort non-finite account values below finite accounts", {
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 1, lev = 10))
+  sim_agent_add(exchange, agent_id = "finite", agent_type = "momentum")
+  sim_agent_add(exchange, agent_id = "broken", agent_type = "chaos")
+  exchange$step_snapshots <- data.table::data.table(
+    timestamp = as.POSIXct("2026-01-01", tz = "UTC"),
+    agent_id = c("finite", "broken"),
+    equity = c(10000, NaN),
+    cash = c(10000, NaN),
+    pos_dir = c(0L, 0L),
+    ctr_unit = c(0, 0),
+    avg_price = c(NA_real_, NA_real_),
+    last_px = c(100, 100),
+    notional = c(0, 0),
+    abs_notional = c(0, 0),
+    unrealized_pnl = c(0, 0),
+    maintenance_margin = c(0, 0)
+  )
+  exchange$result <- exchange$step_snapshots
+
+  rankings <- sim_agent_rankings(exchange)
+  expect_equal(rankings$agent_id[1], "finite")
+  expect_equal(rankings$equity[rankings$agent_id == "broken"], NA_real_)
+  expect_equal(rankings$cash[rankings$agent_id == "broken"], NA_real_)
 })
 
 test_that("AI and human agents have separate exchange accounts", {
@@ -330,4 +451,24 @@ test_that("AI and human agents have separate exchange accounts", {
   rankings <- sim_agent_rankings(exchange)
   expect_setequal(rankings$agent_id, c(ai_id, "human-a"))
   expect_true(all(c("equity", "cash") %in% names(rankings)))
+})
+
+test_that("live service state returns account history for equity curves", {
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 0.01, lev = 10))
+  sim_agent_add(exchange, agent_id = "agent-history", agent_type = "momentum")
+  bars <- data.frame(
+    timestamp = as.POSIXct("2026-01-01", tz = "UTC") + 0:2 * 3600,
+    open = c(100, 101, 102),
+    high = c(101, 102, 103),
+    low = c(99, 100, 101),
+    close = c(101, 102, 103)
+  )
+  for (i in seq_len(nrow(bars))) sim_exchange_step(exchange, bars[i, ])
+
+  state <- tradesimr:::.service_state(exchange)
+  expect_equal(length(state$account), 3)
+  expect_equal(length(state$account_latest), 1)
+  expect_equal(vapply(state$account, `[[`, character(1), "agent_id"), rep("agent-history", 3))
+  expect_equal(length(state$account[[1]]$agent_id), 1)
+  expect_equal(length(state$account[[1]]$equity), 1)
 })

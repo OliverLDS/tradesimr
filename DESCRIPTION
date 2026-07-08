@@ -1,6 +1,6 @@
 Package: tradesimr
 Title: Execution and Simulation Engine for Trading Strategies
-Version: 0.6.3
+Version: 0.6.4
 Authors@R: 
     person(given = "Oliver",
            family = "Lee",
