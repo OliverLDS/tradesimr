@@ -54,7 +54,10 @@ sim_schemas <- function() {
       time_in_force = character(),
       tgt_pos = numeric(),
       tol_pos = numeric(),
-      status = character()
+      status = character(),
+      price = numeric(),
+      fee = numeric(),
+      realized_pnl = numeric()
     ),
     agent_commands = data.table::data.table(
       command_id = character(),

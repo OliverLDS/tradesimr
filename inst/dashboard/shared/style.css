@@ -172,6 +172,7 @@ main {
 
 .service-box,
 .order-form,
+.human-register-form,
 .cancel-form,
 .feed-form,
 .agent-admin-form,
@@ -193,6 +194,12 @@ main {
 
 .order-form {
   grid-template-columns: repeat(8, minmax(110px, 1fr));
+}
+
+.human-register-form {
+  grid-template-columns: minmax(220px, 1fr) minmax(140px, 0.4fr) auto;
+  align-items: end;
+  margin-bottom: 0.85rem;
 }
 
 .feed-form {
@@ -289,6 +296,18 @@ main {
   color: #fff9ec;
   cursor: pointer;
   font-weight: 700;
+}
+
+.mini-button {
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent-2);
+  color: #fff9ec;
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 0.45rem 0.7rem;
 }
 
 .agent-console button:disabled,
@@ -578,6 +597,39 @@ th {
   color: var(--muted);
 }
 
+.hidden {
+  display: none !important;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(24, 33, 31, 0.42);
+}
+
+.modal-card {
+  width: min(860px, 100%);
+  max-height: min(720px, 88vh);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 1.25rem;
+  background: var(--paper);
+  box-shadow: var(--shadow);
+  padding: 1.25rem;
+}
+
+.modal-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: start;
+  margin-bottom: 1rem;
+}
+
 @media (max-width: 980px) {
   .hero,
   .manifest-panel {
@@ -591,6 +643,7 @@ th {
   .kpis,
   .grid,
   .order-form,
+  .human-register-form,
   .cancel-form,
   .feed-form,
   .agent-admin-form,

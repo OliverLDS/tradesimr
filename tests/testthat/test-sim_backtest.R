@@ -492,6 +492,45 @@ test_that("AI agents can choose among registered assets", {
   expect_true(decision$asset_id[1] %in% c(101L, 102L))
 })
 
+test_that("AI no-op decisions are not recorded as orders", {
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 1, lev = 10, auto_register_assets = TRUE))
+  sim_agent_add(exchange, agent_id = "flat-momentum", agent_type = "momentum", config = list(qty = 1))
+  bar <- data.frame(
+    timestamp = as.POSIXct("2026-01-01 00:00:00", tz = "UTC"),
+    open = 100,
+    high = 101,
+    low = 99,
+    close = 100
+  )
+
+  decisions <- sim_agents_step(exchange, bar)
+
+  expect_equal(nrow(decisions), 0)
+  expect_equal(nrow(exchange$agent_decisions), 0)
+  expect_equal(nrow(exchange$order_requests), 0)
+  expect_equal(nrow(exchange$agent_orders), 0)
+})
+
+test_that("momentum agents do not duplicate selected market bars", {
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 1, lev = 10, auto_register_assets = TRUE))
+  sim_agent_add(exchange, agent_id = "history-momentum", agent_type = "momentum", config = list(qty = 1, asset_policy = "random"))
+  bars <- data.frame(
+    timestamp = as.POSIXct("2026-01-01 00:00:00", tz = "UTC") + c(0, 3600),
+    open = c(100, 100),
+    high = c(101, 103),
+    low = c(99, 100),
+    close = c(100, 102)
+  )
+  sim_exchange_step(exchange, bars)
+
+  decisions <- sim_agents_step(exchange)
+
+  expect_equal(nrow(decisions), 1)
+  expect_equal(decisions$side[1], "buy")
+  expect_equal(decisions$intended_action[1], "open")
+  expect_equal(nrow(exchange$order_requests), 1)
+})
+
 test_that("AI flat orders do not leave stale orders that corrupt account state", {
   exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 1, lev = 10, fee_rt = 0.0005, auto_register_assets = TRUE))
   sim_agent_add(exchange, agent_id = "Momentum", agent_type = "momentum", config = list(qty = 1))
@@ -523,7 +562,7 @@ test_that("AI flat orders do not leave stale orders that corrupt account state",
   rankings <- sim_agent_rankings(exchange)
   expect_true(all(is.na(rankings$equity) | is.finite(rankings$equity)))
   expect_false(is.na(rankings$equity[1]))
-  expect_true(any(exchange$agent_orders$status == "no_op"))
+  expect_false(any(exchange$agent_orders$status == "no_op"))
 })
 
 test_that("agent rankings sort non-finite account values below finite accounts", {
@@ -579,6 +618,9 @@ test_that("AI and human agents have separate exchange accounts", {
   sim_agents_step(exchange, bar2)
   sim_exchange_process_commands(exchange)
   sim_exchange_step(exchange, bar2)
+
+  expect_true(all(c("price", "fee", "realized_pnl") %in% names(exchange$agent_orders)))
+  expect_true(is.finite(exchange$agent_orders$price[exchange$agent_orders$agent_id == "human-a"]))
 
   accounts <- sim_exchange_account(exchange)
   positions <- sim_exchange_positions(exchange)

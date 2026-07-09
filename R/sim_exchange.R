@@ -127,7 +127,10 @@ sim_exchange_place_order <- function(exchange,
     time_in_force = as.character(time_in_force),
     tgt_pos = target,
     tol_pos = as.numeric(tol_pos),
-    status = "accepted"
+    status = "accepted",
+    price = NA_real_,
+    fee = NA_real_,
+    realized_pnl = NA_real_
   )
   exchange$agent_orders <- data.table::rbindlist(list(exchange$agent_orders, row), fill = TRUE)
   exchange$event_log <- data.table::rbindlist(list(exchange$event_log, data.table::data.table(
@@ -685,13 +688,23 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
 #' @keywords internal
 .mark_orders_from_events <- function(exchange, orders, events) {
   if (nrow(orders) == 0L || nrow(events) == 0L) return(invisible(NULL))
-  filled_actions <- events$action_id[events$status_label == "filled"]
+  filled_events <- events[events$status_label == "filled"]
+  filled_actions <- filled_events$action_id
   idx <- which(orders$action_id %in% filled_actions)
   if (length(idx) == 0L) return(invisible(NULL))
-  order_idx <- match(orders$order_id[idx], exchange$agent_orders$order_id)
-  order_idx <- order_idx[!is.na(order_idx)]
-  if (length(order_idx) > 0L) {
+  for (col in c("price", "fee", "realized_pnl")) {
+    if (!col %in% names(exchange$agent_orders)) data.table::set(exchange$agent_orders, j = col, value = NA_real_)
+  }
+  for (i in idx) {
+    order_idx <- match(orders$order_id[i], exchange$agent_orders$order_id)
+    event_idx <- match(orders$action_id[i], filled_events$action_id)
+    if (is.na(order_idx) || is.na(event_idx)) next
     data.table::set(exchange$agent_orders, i = order_idx, j = "status", value = "filled")
+    for (col in c("price", "fee", "realized_pnl")) {
+      if (col %in% names(filled_events)) {
+        data.table::set(exchange$agent_orders, i = order_idx, j = col, value = as.numeric(filled_events[[col]][event_idx]))
+      }
+    }
   }
   invisible(NULL)
 }

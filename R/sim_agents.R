@@ -98,6 +98,7 @@ sim_agents_step <- function(exchange, bar = NULL) {
     agent <- agents[i]
     decision <- .agent_decide(exchange, agent, bar)
     if (is.null(decision)) next
+    if (.agent_decision_is_noop(decision)) next
     command_id <- sim_submit_order(
       exchange = exchange,
       agent_id = agent$agent_id,
@@ -117,6 +118,7 @@ sim_agents_step <- function(exchange, bar = NULL) {
     decisions[[i]] <- decision
   }
   out <- data.table::rbindlist(decisions, fill = TRUE)
+  if (nrow(out) == 0L) return(sim_schemas()$agent_decisions[0])
   if (nrow(out) > 0L) {
     data.table::setcolorder(out, names(sim_schemas()$agent_decisions))
     exchange$agent_decisions <- data.table::rbindlist(list(exchange$agent_decisions, out), fill = TRUE)
@@ -225,6 +227,10 @@ sim_agent_rankings <- function(exchange) {
   bar <- .agent_select_asset_bar(exchange, bar, config)
   bars <- data.table::rbindlist(list(exchange$market_events, bar), fill = TRUE)
   if ("asset_id" %in% names(bars)) bars <- bars[asset_id == as.integer(bar$asset_id[1L] %||% 0L)]
+  if (all(c("timestamp", "asset_id") %in% names(bars))) {
+    data.table::setorderv(bars, c("timestamp", "asset_id"))
+    bars <- unique(bars, by = c("timestamp", "asset_id"), fromLast = TRUE)
+  }
   bars <- bars[!is.na(close)]
   last_ret <- if (nrow(bars) >= 2L) tail(bars$close, 1L) / tail(bars$close, 2L)[1L] - 1 else 0
   mean_gap <- if (nrow(bars) >= 2L) tail(bars$close, 1L) / mean(tail(bars$close, min(lookback, nrow(bars))), na.rm = TRUE) - 1 else 0
@@ -256,6 +262,13 @@ sim_agent_rankings <- function(exchange) {
     command_id = NA_character_,
     status = "planned"
   )
+}
+
+#' @keywords internal
+.agent_decision_is_noop <- function(decision) {
+  nrow(decision) > 0L &&
+    identical(as.character(decision$intended_action[1L]), "no_op") &&
+    identical(as.character(decision$intended_dir[1L]), "flat")
 }
 
 #' @keywords internal

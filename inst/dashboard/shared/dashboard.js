@@ -13,7 +13,8 @@ const REQUIRED_TABLES = [
   "agents",
   "assets",
   "agent_decisions",
-  "agent_rankings"
+  "agent_rankings",
+  "positions"
 ];
 
 const state = {
@@ -68,6 +69,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bind("replay-prev", "click", replayPrev);
   bind("replay-next", "click", replayNext);
   bind("replay-play", "click", replayPlayToggle);
+  document.addEventListener("click", handleAgentExposureClick);
   applyServiceUrlParam();
   updateFeedRunMode();
   loadFromFolder();
@@ -187,7 +189,7 @@ function render() {
   renderTargets();
   renderRiskSummary();
   renderTimeline();
-  renderTable("orders-table", state.tables.orders, ["timestamp", "order_id", "agent_id", "symbol", "asset_id", "side", "qty_type", "qty", "order_type", "status", "action_label", "dir_label", "ctr_qty", "price", "status_label"]);
+  renderTable("orders-table", state.tables.orders, ["timestamp", "order_id", "agent_id", "symbol", "asset_id", "side", "qty_type", "qty", "order_type", "status", "action_label", "dir_label", "ctr_qty", "price", "fee", "realized_pnl", "status_label"]);
   renderTable("orders-fills-table", combinedOrderFillRows(), ["timestamp", "source", "order_id", "agent_id", "symbol", "asset_id", "side", "qty_type", "qty", "order_type", "status", "action_label", "dir_label", "ctr_qty", "price", "fee", "realized_pnl"], 80);
   renderTable("commands-table", state.tables.agent_commands, ["timestamp", "command_id", "agent_id", "command_type", "status", "ref_id", "message"]);
   renderTable("requests-table", state.tables.order_requests, ["timestamp", "command_id", "agent_id", "symbol", "asset_id", "side", "qty_type", "qty", "order_type", "status", "order_id", "message"]);
@@ -195,8 +197,8 @@ function render() {
   renderTable("risk-table", state.tables.risk_snapshots, ["timestamp", "equity", "abs_notional", "leverage", "maintenance_margin", "margin_buffer"], 25);
   renderTable("agents-table", state.tables.agents, ["agent_id", "agent_type", "status", "config", "created_at"], 80);
   renderTable("assets-table", state.tables.assets, ["asset_id", "symbol", "status", "asset_class", "contract_size", "tick_size", "qty_step", "base_ccy", "quote_ccy", "created_at"], 80);
-  renderTable("agent-decisions-table", state.tables.agent_decisions, ["timestamp", "agent_id", "agent_type", "symbol", "asset_id", "side", "intended_action", "intended_dir", "qty", "order_type", "reason", "command_id", "status"], 80);
-  renderTable("agent-rankings-table", state.tables.agent_rankings, ["rank", "agent_id", "agent_type", "status", "equity", "cash", "unrealized_pnl", "orders", "filled_orders", "net_qty", "last_side"], 80, { newestFirst: false });
+  renderTable("agent-decisions-table", state.tables.agent_decisions, ["timestamp", "agent_id", "agent_type", "symbol", "asset_id", "side", "intended_action", "intended_dir", "qty", "order_type", "command_id", "status"], 80);
+  renderAgentRankingsTable();
 }
 
 function applyDashboardMode() {
@@ -232,7 +234,7 @@ async function submitOrder(event) {
 }
 
 async function registerHumanAgent() {
-  const form = document.getElementById("order-form");
+  const form = document.getElementById("human-register-form") || document.getElementById("order-form");
   const data = form ? Object.fromEntries(new FormData(form).entries()) : {};
   const agentId = data.agent_id;
   if (!agentId) {
@@ -245,6 +247,9 @@ async function registerHumanAgent() {
     status: "active",
     initial_cash: numericOrDefault(data.initial_cash, 10000)
   }, "Human agent registered.");
+  document.querySelectorAll('#order-form input[name="agent_id"], #cancel-form input[name="agent_id"]').forEach(input => {
+    input.value = agentId;
+  });
   if (response?.state) applyServiceState(response.state);
 }
 
@@ -581,6 +586,8 @@ function applyServiceState(data) {
   state.tables.order_cancellations = data.order_cancellations || [];
   state.tables.agents = data.agents || [];
   state.tables.assets = data.assets || [];
+  state.tables.positions = data.positions || [];
+  state.tables.account_latest = data.account_latest || [];
   state.tables.agent_decisions = data.agent_decisions || [];
   state.tables.agent_rankings = data.agent_rankings || [];
   state.tables.events = data.events || state.tables.events || [];
@@ -1307,6 +1314,108 @@ function combinedOrderFillRows() {
   const orders = replayRows(state.tables.orders || []).map(row => ({ source: "order", ...row }));
   const fills = replayRows(state.tables.fills || []).map(row => ({ source: "fill", ...row }));
   return [...orders, ...fills].sort((a, b) => timeValue(a.timestamp) - timeValue(b.timestamp));
+}
+
+function renderAgentRankingsTable() {
+  const el = document.getElementById("agent-rankings-table");
+  if (!el) return;
+  const rows = replayRows(state.tables.agent_rankings || []);
+  if (!rows.length) {
+    el.innerHTML = "<p class=\"empty\">No rows.</p>";
+    return;
+  }
+  const columns = ["rank", "agent_id", "agent_type", "status", "equity", "cash", "unrealized_pnl", "details"];
+  el.innerHTML = `
+    <table>
+      <thead><tr>${columns.map(col => `<th>${escapeHtml(col)}</th>`).join("")}</tr></thead>
+      <tbody>${rows.map(row => `
+        <tr>
+          ${columns.map(col => {
+            if (col === "details") {
+              return `<td><button class="mini-button" type="button" data-agent-details="${escapeHtml(row.agent_id)}">Assets</button></td>`;
+            }
+            return `<td>${escapeHtml(row[col])}</td>`;
+          }).join("")}
+        </tr>
+      `).join("")}</tbody>
+    </table>`;
+}
+
+function handleAgentExposureClick(event) {
+  const detailsButton = event.target.closest("[data-agent-details]");
+  if (detailsButton) {
+    showAgentExposure(detailsButton.getAttribute("data-agent-details"));
+    return;
+  }
+  if (event.target.matches("[data-modal-close]") || event.target.classList.contains("modal-backdrop")) {
+    closeAgentExposure();
+  }
+}
+
+function showAgentExposure(agentId) {
+  let modal = document.getElementById("agent-exposure-modal");
+  if (!modal) {
+    modal = document.createElement("div");
+    modal.id = "agent-exposure-modal";
+    document.body.appendChild(modal);
+  }
+  const rows = agentExposureRows(agentId);
+  modal.className = "modal-backdrop";
+  modal.innerHTML = `
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="agent-exposure-title">
+      <div class="modal-head">
+        <h2 id="agent-exposure-title">Asset Exposure: ${escapeHtml(agentId)}</h2>
+        <button class="mini-button" type="button" data-modal-close>Close</button>
+      </div>
+      ${rows.length ? exposureTable(rows) : "<p class=\"empty\">No open asset exposure.</p>"}
+    </div>`;
+}
+
+function closeAgentExposure() {
+  const modal = document.getElementById("agent-exposure-modal");
+  if (modal) {
+    modal.className = "modal-backdrop hidden";
+    modal.innerHTML = "";
+  }
+}
+
+function exposureTable(rows) {
+  const columns = ["symbol", "asset_id", "quantity", "direction", "notional", "unrealized_pnl", "leverage"];
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead><tr>${columns.map(col => `<th>${escapeHtml(col)}</th>`).join("")}</tr></thead>
+        <tbody>${rows.map(row => `<tr>${columns.map(col => `<td>${escapeHtml(row[col])}</td>`).join("")}</tr>`).join("")}</tbody>
+      </table>
+    </div>`;
+}
+
+function agentExposureRows(agentId) {
+  const account = latestAccountForAgent(agentId);
+  const equity = number(account?.equity);
+  return replayRows(state.tables.positions || [])
+    .filter(row => String(row.agent_id) === String(agentId))
+    .filter(row => Math.abs(number(row.ctr_unit)) > 0 || number(row.pos_dir) !== 0)
+    .map(row => {
+      const notional = number(row.notional);
+      return {
+        symbol: row.symbol || "default",
+        asset_id: row.asset_id,
+        quantity: row.ctr_unit,
+        direction: row.pos_label || (number(row.pos_dir) > 0 ? "long" : number(row.pos_dir) < 0 ? "short" : "flat"),
+        notional: row.notional,
+        unrealized_pnl: row.unrealized_pnl,
+        leverage: Number.isFinite(equity) && equity > 0 && Number.isFinite(notional) ? (Math.abs(notional) / equity).toFixed(4) : ""
+      };
+    });
+}
+
+function latestAccountForAgent(agentId) {
+  const latest = replayRows(state.tables.account_latest || []).find(row => String(row.agent_id) === String(agentId));
+  if (latest) return latest;
+  return replayRows(state.tables.account_snapshots || [])
+    .filter(row => String(row.agent_id) === String(agentId))
+    .sort((a, b) => timeValue(b.timestamp) - timeValue(a.timestamp))[0];
 }
 
 function renderTable(id, rows = [], preferred = [], limit = 50, options = {}) {
