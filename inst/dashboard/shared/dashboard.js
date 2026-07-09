@@ -14,7 +14,9 @@ const REQUIRED_TABLES = [
   "assets",
   "agent_decisions",
   "agent_rankings",
-  "positions"
+  "positions",
+  "market_model",
+  "cross_asset_risk"
 ];
 
 const state = {
@@ -190,6 +192,8 @@ function render() {
   renderTargets();
   renderRiskSummary();
   renderTimeline();
+  renderMarketModelSummary();
+  renderTable("cross-asset-risk-table", state.tables.cross_asset_risk, ["timestamp", "agent_id", "symbol", "asset_id", "quantity", "direction", "notional", "abs_notional", "allocation", "unrealized_pnl", "equity", "leverage", "concentration_hhi", "portfolio_vol", "stress_loss"], 80);
   renderTable("orders-table", state.tables.orders, ["timestamp", "order_id", "agent_id", "symbol", "asset_id", "side", "qty_type", "qty", "order_type", "status", "action_label", "dir_label", "ctr_qty", "price", "fee", "realized_pnl", "status_label"]);
   renderTable("orders-fills-table", combinedOrderFillRows(), ["timestamp", "source", "order_id", "agent_id", "symbol", "asset_id", "side", "qty_type", "qty", "order_type", "status", "action_label", "dir_label", "ctr_qty", "price", "fee", "realized_pnl"], 80);
   renderTable("commands-table", state.tables.agent_commands, ["timestamp", "command_id", "agent_id", "command_type", "status", "ref_id", "message"]);
@@ -608,6 +612,8 @@ function applyServiceState(data) {
   state.tables.assets = data.assets || [];
   state.tables.positions = data.positions || [];
   state.tables.account_latest = data.account_latest || [];
+  state.tables.cross_asset_risk = data.cross_asset_risk || state.tables.cross_asset_risk || [];
+  if (data.feed?.market_model) state.tables.market_model = [data.feed.market_model];
   state.tables.agent_decisions = data.agent_decisions || [];
   state.tables.agent_rankings = data.agent_rankings || [];
   state.tables.events = data.events || state.tables.events || [];
@@ -1369,6 +1375,35 @@ function renderRiskSummary() {
   el.innerHTML = rows.map(([label, raw]) =>
     `<div><span>${label}</span><strong>${formatNumber(number(raw), label === "Leverage" ? 3 : 2)}</strong></div>`
   ).join("");
+}
+
+function renderMarketModelSummary() {
+  const el = document.getElementById("market-model-summary");
+  if (!el) return;
+  const fromTable = replayRows(state.tables.market_model || []);
+  const model = fromTable[fromTable.length - 1] || state.feed.marketModel || {};
+  if (!Object.keys(model).length) {
+    el.innerHTML = "<p class=\"empty\">No market model metadata.</p>";
+    return;
+  }
+  const rows = [
+    ["Model", scalarValue(model.model) || "independent"],
+    ["Seed", scalarValue(model.seed) ?? ""],
+    ["Regime", scalarValue(model.current_regime) || scalarValue(model.regime) || ""],
+    ["Corr", yesNo(model.has_corr)],
+    ["Cov", yesNo(model.has_cov)],
+    ["Factors", yesNo(model.has_factors)],
+    ["Regimes", yesNo(model.has_regimes)],
+    ["Last End", scalarValue(model.last_completed_end) || ""]
+  ];
+  el.innerHTML = `<div class="metric-stack">${rows.map(([label, value]) =>
+    `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`
+  ).join("")}</div>`;
+}
+
+function yesNo(value) {
+  const raw = scalarValue(value);
+  return raw === true || raw === "TRUE" || raw === "true" || raw === 1 || raw === "1" ? "yes" : "no";
 }
 
 function renderTimeline() {

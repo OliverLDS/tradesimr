@@ -90,6 +90,144 @@ sim_risk <- function(sim) {
   out[]
 }
 
+#' Compute cross-asset risk for live exchange agents
+#'
+#' @param exchange A `tradesimr_exchange`.
+#' @param stress_sigma Multiplier applied to portfolio return volatility for
+#'   the stress-loss estimate.
+#' @return A data.table with one row per agent and exposed asset.
+#' @export
+sim_cross_asset_risk <- function(exchange, stress_sigma = 2) {
+  stopifnot(inherits(exchange, "tradesimr_exchange"))
+  positions <- sim_exchange_positions(exchange)
+  if (nrow(positions) == 0L) {
+    return(data.table::data.table(
+      timestamp = as.POSIXct(character()),
+      agent_id = character(),
+      symbol = character(),
+      asset_id = integer(),
+      quantity = numeric(),
+      direction = character(),
+      notional = numeric(),
+      abs_notional = numeric(),
+      allocation = numeric(),
+      unrealized_pnl = numeric(),
+      equity = numeric(),
+      leverage = numeric(),
+      concentration_hhi = numeric(),
+      portfolio_vol = numeric(),
+      stress_loss = numeric()
+    ))
+  }
+  positions <- data.table::copy(positions)
+  positions <- positions[abs(as.numeric(ctr_unit)) > 0 | abs(as.numeric(notional)) > 0]
+  if (nrow(positions) == 0L) return(sim_cross_asset_risk_empty())
+  account <- sim_exchange_account(exchange)
+  latest_account <- if (nrow(account) > 0L && "agent_id" %in% names(account)) {
+    account[, .SD[.N], by = agent_id]
+  } else {
+    data.table::data.table(agent_id = unique(positions$agent_id), equity = NA_real_)
+  }
+  positions[, abs_notional := abs(as.numeric(notional))]
+  positions[, direction := data.table::fcase(
+    pos_dir > 0, "long",
+    pos_dir < 0, "short",
+    default = "flat"
+  )]
+  out <- merge(
+    positions[, .(timestamp, agent_id, symbol, asset_id, quantity = ctr_unit, direction, notional, abs_notional, unrealized_pnl)],
+    latest_account[, .(agent_id, equity)],
+    by = "agent_id",
+    all.x = TRUE
+  )
+  out[, total_abs_notional := sum(abs_notional, na.rm = TRUE), by = agent_id]
+  out[, allocation := data.table::fifelse(total_abs_notional > 0, abs_notional / total_abs_notional, 0)]
+  out[, leverage := data.table::fifelse(equity > 0, total_abs_notional / equity, Inf)]
+  out[, concentration_hhi := sum(allocation * allocation, na.rm = TRUE), by = agent_id]
+  stress <- .cross_asset_stress(exchange, positions, stress_sigma = stress_sigma)
+  out <- merge(out, stress, by = "agent_id", all.x = TRUE)
+  out[, total_abs_notional := NULL]
+  data.table::setcolorder(out, c("timestamp", "agent_id", "symbol", "asset_id", "quantity", "direction", "notional", "abs_notional", "allocation", "unrealized_pnl", "equity", "leverage", "concentration_hhi", "portfolio_vol", "stress_loss"))
+  out[]
+}
+
+#' @keywords internal
+sim_cross_asset_risk_empty <- function() {
+  data.table::data.table(
+    timestamp = as.POSIXct(character()),
+    agent_id = character(),
+    symbol = character(),
+    asset_id = integer(),
+    quantity = numeric(),
+    direction = character(),
+    notional = numeric(),
+    abs_notional = numeric(),
+    allocation = numeric(),
+    unrealized_pnl = numeric(),
+    equity = numeric(),
+    leverage = numeric(),
+    concentration_hhi = numeric(),
+    portfolio_vol = numeric(),
+    stress_loss = numeric()
+  )
+}
+
+#' @keywords internal
+.cross_asset_stress <- function(exchange, positions, stress_sigma = 2) {
+  assets <- sort(unique(as.integer(positions$asset_id)))
+  cov <- .cross_asset_covariance(exchange, assets)
+  rows <- lapply(unique(positions$agent_id), function(aid) {
+    pos <- positions[positions[["agent_id"]] == aid]
+    exposure <- numeric(length(assets))
+    idx <- match(as.integer(pos$asset_id), assets)
+    exposure[idx] <- as.numeric(pos$notional)
+    variance <- as.numeric(t(exposure) %*% cov %*% exposure)
+    portfolio_vol <- sqrt(max(0, variance))
+    data.table::data.table(
+      agent_id = as.character(aid),
+      portfolio_vol = portfolio_vol,
+      stress_loss = as.numeric(stress_sigma) * portfolio_vol
+    )
+  })
+  data.table::rbindlist(rows, fill = TRUE)
+}
+
+#' @keywords internal
+.cross_asset_covariance <- function(exchange, asset_ids) {
+  model <- exchange$market_model %||% sim_market_model_config()
+  requested_ids <- as.integer(asset_ids)
+  full_ids <- sort(unique(as.integer(names(exchange$feeds))))
+  if (!length(full_ids)) full_ids <- requested_ids
+  feeds <- data.table::rbindlist(lapply(full_ids, function(asset_id) {
+    selected <- .feed_select(exchange, asset_id = asset_id)
+    feed <- selected$feed
+    data.table::data.table(
+      asset_id = as.integer(asset_id),
+      vol = abs(as.numeric(feed$random_walk$vol %||% 0.02))
+    )
+  }), fill = TRUE)
+  subset_cov <- function(cov) {
+    idx <- match(requested_ids, feeds$asset_id)
+    cov[idx, idx, drop = FALSE]
+  }
+  if (identical(model$model, "factor_random_walk") && !is.null(model$factors)) {
+    factors <- model$factors
+    loadings <- .market_model_loadings(factors$loadings %||% matrix(rep(0.7, nrow(feeds)), nrow = nrow(feeds)), nrow(feeds))
+    factor_vol <- rep_len(as.numeric(factors$factor_vol %||% 0.01), ncol(loadings))
+    idio_vol <- rep_len(as.numeric(factors$idio_vol %||% feeds$vol), nrow(feeds))
+    return(subset_cov(loadings %*% diag(factor_vol^2, nrow = length(factor_vol)) %*% t(loadings) + diag(idio_vol^2, nrow = nrow(feeds))))
+  }
+  if (identical(model$model, "regime_random_walk")) {
+    regimes <- .market_model_regimes(model$regimes, nrow(feeds))
+    current <- as.integer(model$state$current_regime %||% regimes$initial_state)
+    state <- regimes$states[[current]]
+    feeds[, vol := vol * rep_len(as.numeric(state$vol_multiplier %||% 1), .N)]
+    model$corr <- state$corr %||% model$corr
+    model$cov <- state$cov %||% NULL
+  }
+  subset_cov(.market_model_covariance(model, feeds))
+}
+
 #' Export simulation tables to durable files
 #'
 #' @param sim A simulation result returned by `sim_backtest()`.

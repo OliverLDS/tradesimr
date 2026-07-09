@@ -138,6 +138,78 @@ sim_market_model_status <- function(exchange) {
   )
 }
 
+#' @keywords internal
+.market_model_table <- function(exchange) {
+  model <- exchange$market_model %||% sim_market_model_config()
+  data.table::data.table(
+    model = as.character(model$model %||% "independent"),
+    seed = as.integer(model$seed %||% 1L),
+    timeframe = as.character(model$timeframe %||% NA_character_),
+    tz = as.character(model$tz %||% NA_character_),
+    running = isTRUE(model$running),
+    last_completed_end = as.POSIXct(model$last_completed_end %||% NA, origin = "1970-01-01", tz = model$tz %||% "UTC"),
+    current_regime = as.integer(model$state$current_regime %||% NA_integer_),
+    has_corr = !is.null(model$corr),
+    has_cov = !is.null(model$cov),
+    has_factors = !is.null(model$factors),
+    has_regimes = !is.null(model$regimes),
+    corr = .serialize_field(model$corr),
+    cov = .serialize_field(model$cov),
+    factors = .serialize_field(model$factors),
+    regimes = .serialize_field(model$regimes),
+    state = .serialize_field(model$state)
+  )
+}
+
+#' @keywords internal
+.market_model_from_table <- function(x) {
+  x <- data.table::as.data.table(x)
+  if (nrow(x) == 0L) return(sim_market_model_config())
+  row <- x[1L]
+  value <- function(name, default = NA) if (name %in% names(row)) row[[name]][1L] else default
+  config <- sim_market_model_config(
+    model = value("model", "independent") %||% "independent",
+    corr = .unserialize_field(value("corr", NA_character_)),
+    cov = .unserialize_field(value("cov", NA_character_)),
+    factors = .unserialize_field(value("factors", NA_character_)),
+    regimes = .unserialize_field(value("regimes", NA_character_)),
+    seed = as.integer(value("seed", 1L) %||% 1L),
+    timeframe = .na_null(value("timeframe", NA_character_)),
+    tz = .na_null(value("tz", NA_character_)),
+    start_time = NULL
+  )
+  config$running <- .truthy(value("running", FALSE))
+  last_completed_end <- value("last_completed_end", NA)
+  config$last_completed_end <- if (!is.na(last_completed_end)) as.POSIXct(last_completed_end, tz = config$tz %||% "UTC") else NULL
+  config$state <- .unserialize_field(value("state", NA_character_)) %||% list()
+  current_regime <- value("current_regime", NA_integer_)
+  if (!is.na(current_regime)) config$state$current_regime <- as.integer(current_regime)
+  config
+}
+
+#' @keywords internal
+.serialize_field <- function(x) {
+  if (is.null(x)) return(NA_character_)
+  rawToChar(serialize(x, NULL, ascii = TRUE))
+}
+
+#' @keywords internal
+.unserialize_field <- function(x) {
+  if (is.null(x) || length(x) == 0L || is.na(x) || !nzchar(x)) return(NULL)
+  unserialize(charToRaw(as.character(x)))
+}
+
+#' @keywords internal
+.na_null <- function(x) {
+  if (is.null(x) || length(x) == 0L || is.na(x) || !nzchar(as.character(x))) return(NULL)
+  as.character(x)
+}
+
+#' @keywords internal
+.truthy <- function(x) {
+  identical(x, TRUE) || identical(x, 1L) || identical(x, 1) || as.character(x) %in% c("TRUE", "true", "1")
+}
+
 #' Configure a live exchange feed
 #'
 #' @param exchange A `tradesimr_exchange`.

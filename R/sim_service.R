@@ -251,6 +251,7 @@ sim_live_service_run <- function(exchange = sim_exchange_new(), host = "127.0.0.
     agents = .service_records(exchange$agents),
     agent_decisions = .service_records(exchange$agent_decisions),
     agent_rankings = .service_records(sim_agent_rankings(exchange)),
+    cross_asset_risk = .service_records(sim_cross_asset_risk(exchange)),
     events = .service_records(sim_exchange_new_events(exchange)),
     feed = sim_feed_status(exchange)
   )

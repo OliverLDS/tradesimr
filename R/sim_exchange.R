@@ -370,7 +370,7 @@ sim_exchange_save <- function(exchange, path, format = c("csv", "fst")) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   format <- match.arg(format)
   if (!dir.exists(path)) dir.create(path, recursive = TRUE)
-  if (!is.null(exchange$result)) {
+  if (!is.null(exchange$result) && nrow(exchange$result) > 0L && ncol(exchange$result) > 0L) {
     paths <- sim_export(exchange$result, path, format = format)
   } else {
     paths <- character()
@@ -385,6 +385,8 @@ sim_exchange_save <- function(exchange, path, format = c("csv", "fst")) {
     assets = exchange$assets,
     agent_decisions = exchange$agent_decisions,
     agent_rankings = sim_agent_rankings(exchange),
+    market_model = .market_model_table(exchange),
+    cross_asset_risk = sim_cross_asset_risk(exchange),
     feed_status = .feed_status_scalar_table(exchange),
     feed_configs = .feed_status_table(exchange),
     exchange_event_log = exchange$event_log
@@ -437,6 +439,34 @@ sim_exchange_load <- function(path) {
   if (file.exists(file.path(path, "assets.csv"))) exchange$assets <- data.table::fread(file.path(path, "assets.csv"))
   if (file.exists(file.path(path, "agent_decisions.csv"))) exchange$agent_decisions <- data.table::fread(file.path(path, "agent_decisions.csv"))
   if (file.exists(file.path(path, "agent_rankings.csv"))) exchange$agent_rankings <- data.table::fread(file.path(path, "agent_rankings.csv"))
+  if (file.exists(file.path(path, "market_model.csv"))) exchange$market_model <- .market_model_from_table(data.table::fread(file.path(path, "market_model.csv")))
+  if (file.exists(file.path(path, "feed_configs.csv"))) {
+    feed_configs <- data.table::fread(file.path(path, "feed_configs.csv"))
+    if (nrow(feed_configs) > 0L) {
+      for (i in seq_len(nrow(feed_configs))) {
+        row <- feed_configs[i]
+        value <- function(name, default = NA) if (name %in% names(row)) row[[name]][1L] else default
+        config <- list(
+          symbol = value("symbol", "default"),
+          asset_id = as.integer(value("asset_id", 0L)),
+          timeframe = value("timeframe", "4h"),
+          tz = value("tz", "UTC"),
+          feed_mode = value("feed_mode", "simulation"),
+          simulation_model = value("simulation_model", "random_walk") %||% "random_walk",
+          random_walk = list(
+            start_price = as.numeric(value("start_price", 100)),
+            drift = as.numeric(value("drift", 0)),
+            vol = as.numeric(value("vol", 0.02)),
+            seed = as.integer(value("seed", 1L))
+          ),
+          running = .truthy(value("running", FALSE)),
+          last_completed_end = if (!is.na(value("last_completed_end", NA))) as.POSIXct(value("last_completed_end", NA), tz = value("tz", "UTC") %||% "UTC") else NULL,
+          last_price = as.numeric(value("last_price", NA_real_))
+        )
+        sim_feed_configure(exchange, config)
+      }
+    }
+  }
   if (nrow(exchange$agents) > 0L) {
     for (agent_id in exchange$agents$agent_id) {
       config <- .agent_config_decode(exchange$agents$config[match(agent_id, exchange$agents$agent_id)])

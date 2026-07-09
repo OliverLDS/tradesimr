@@ -165,6 +165,8 @@ sim_agent_dashboard_open <- function(exchange = sim_exchange_new(), path = tempf
     assets = data.table::copy(exchange$assets),
     agent_decisions = data.table::copy(exchange$agent_decisions),
     agent_rankings = sim_agent_rankings(exchange),
+    market_model = .market_model_table(exchange),
+    cross_asset_risk = sim_cross_asset_risk(exchange),
     feed_status = .feed_status_scalar_table(exchange),
     feed_configs = .feed_status_table(exchange)
   )

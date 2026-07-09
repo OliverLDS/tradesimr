@@ -499,6 +499,94 @@ test_that("factor and regime market models generate synchronized correlated batc
   expect_equal(sim_market_model_status(regime_exchange)$regime, 2L)
 })
 
+test_that("market model seeds reproduce generated bars", {
+  make_exchange <- function() {
+    exchange <- sim_exchange_new()
+    sim_asset_add(exchange, "BTC-USDT-SWAP", asset_id = 101L)
+    sim_asset_add(exchange, "ETH-USDT-SWAP", asset_id = 102L)
+    sim_feed_configure(exchange, list(configs = list(
+      list(symbol = "BTC-USDT-SWAP", asset_id = 101L, timeframe = "1m", random_walk = list(start_price = 100, drift = 0, vol = 0.01, seed = 1L)),
+      list(symbol = "ETH-USDT-SWAP", asset_id = 102L, timeframe = "1m", random_walk = list(start_price = 200, drift = 0, vol = 0.015, seed = 2L))
+    )))
+    sim_market_model_configure(exchange, sim_market_model_config(
+      model = "multi_asset_random_walk",
+      corr = matrix(c(1, 0.6, 0.6, 1), nrow = 2),
+      seed = 123L
+    ))
+    exchange
+  }
+  a <- make_exchange()
+  b <- make_exchange()
+
+  bars_a <- sim_feed_warmup(a, n_bars = 12, now = as.POSIXct("2026-01-01 00:12:30", tz = "UTC"))
+  bars_b <- sim_feed_warmup(b, n_bars = 12, now = as.POSIXct("2026-01-01 00:12:30", tz = "UTC"))
+
+  expect_equal(bars_a, bars_b, ignore_attr = TRUE)
+})
+
+test_that("saved market model config loads and continues simulation", {
+  make_exchange <- function() {
+    exchange <- sim_exchange_new()
+    sim_asset_add(exchange, "AAPL", asset_id = 101L)
+    sim_asset_add(exchange, "MSFT", asset_id = 102L)
+    sim_feed_configure(exchange, list(configs = list(
+      list(symbol = "AAPL", asset_id = 101L, timeframe = "1m", random_walk = list(start_price = 100, drift = 0, vol = 0.01, seed = 1L)),
+      list(symbol = "MSFT", asset_id = 102L, timeframe = "1m", random_walk = list(start_price = 200, drift = 0, vol = 0.01, seed = 2L))
+    )))
+    sim_market_model_configure(exchange, sim_market_model_config(
+      model = "multi_asset_random_walk",
+      corr = matrix(c(1, 0.8, 0.8, 1), nrow = 2),
+      seed = 77L
+    ))
+    exchange
+  }
+  out_dir <- tempfile("tradesimr-market-model-")
+  exchange <- make_exchange()
+  control <- make_exchange()
+  sim_feed_start(exchange, now = as.POSIXct("2026-01-01 00:00:30", tz = "UTC"))
+  sim_feed_start(control, now = as.POSIXct("2026-01-01 00:00:30", tz = "UTC"))
+  sim_feed_step(exchange, now = as.POSIXct("2026-01-01 00:02:01", tz = "UTC"))
+  sim_exchange_save(exchange, out_dir)
+
+  loaded <- sim_exchange_load(out_dir)
+  continued <- sim_feed_step(loaded, now = as.POSIXct("2026-01-01 00:04:01", tz = "UTC"))
+  control_all <- sim_feed_step(control, now = as.POSIXct("2026-01-01 00:04:01", tz = "UTC"))
+
+  expect_true(file.exists(file.path(out_dir, "market_model.csv")))
+  expect_equal(loaded$market_model$model, "multi_asset_random_walk")
+  expect_equal(continued, tail(control_all, nrow(continued)), ignore_attr = TRUE)
+})
+
+test_that("dashboard export includes market model and cross-asset risk metadata", {
+  exchange <- sim_exchange_new()
+  sim_asset_add(exchange, "AAPL", asset_id = 101L)
+  sim_asset_add(exchange, "TLT", asset_id = 102L)
+  sim_feed_configure(exchange, list(configs = list(
+    list(symbol = "AAPL", asset_id = 101L, timeframe = "1m", random_walk = list(start_price = 100, vol = 0.01, seed = 1L)),
+    list(symbol = "TLT", asset_id = 102L, timeframe = "1m", random_walk = list(start_price = 90, vol = 0.01, seed = 2L))
+  )))
+  sim_market_model_configure(exchange, sim_market_model_config(
+    model = "multi_asset_random_walk",
+    corr = matrix(c(1, -0.2, -0.2, 1), nrow = 2),
+    seed = 9L
+  ))
+  sim_feed_warmup(exchange, n_bars = 2, now = as.POSIXct("2026-01-01 00:02:30", tz = "UTC"))
+  sim_submit_order(exchange, "agent-a", symbol = "AAPL", asset_id = 101L, side = "buy", qty = 1, process = TRUE)
+  sim_submit_order(exchange, "agent-a", symbol = "TLT", asset_id = 102L, side = "sell", qty = 1, process = TRUE)
+  sim_exchange_step(exchange, exchange$market_events[nrow(exchange$market_events)])
+  out_dir <- tempfile("tradesimr-dashboard-market-")
+
+  sim_state_dashboard_export(exchange, out_dir)
+  manifest <- data.table::fread(file.path(out_dir, "manifest.csv"))
+  risk <- data.table::fread(file.path(out_dir, "cross_asset_risk.csv"))
+
+  expect_true("market_model" %in% manifest$table)
+  expect_true("cross_asset_risk" %in% manifest$table)
+  expect_true(file.exists(file.path(out_dir, "market_model.csv")))
+  expect_true(nrow(risk) > 0)
+  expect_true(all(c("allocation", "concentration_hhi", "stress_loss") %in% names(risk)))
+})
+
 test_that("simulation feed uses asset-specific random streams", {
   exchange <- sim_exchange_new()
   sim_asset_add(exchange, "BTC-USDT-SWAP", asset_id = 101L)
