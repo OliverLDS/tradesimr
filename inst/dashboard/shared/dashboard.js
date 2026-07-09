@@ -26,6 +26,7 @@ const state = {
     running: false,
     starting: false,
     feeds: [],
+    marketModel: null,
     formValues: null
   },
   stateRefresh: {
@@ -342,7 +343,14 @@ async function postService(path, payload, okMessage) {
 
 async function applyFeedConfig(event) {
   event.preventDefault();
-  const data = await postFeed("/feed/config", feedConfigPayload(), "Feed config applied.");
+  let payload;
+  try {
+    payload = feedConfigPayload();
+  } catch (err) {
+    setFeedStatus(err.message);
+    return;
+  }
+  const data = await postFeed("/feed/config", payload, "Feed config applied.");
   if (data) {
     state.feed.formValues = null;
     applyFeedStatus(data);
@@ -361,7 +369,13 @@ async function refreshFeedStatus() {
 }
 
 async function feedStart() {
-  const config = feedConfigPayload();
+  let config;
+  try {
+    config = feedConfigPayload();
+  } catch (err) {
+    setFeedStatus(err.message);
+    return;
+  }
   const configData = await postFeed("/feed/config", config, "Feed config applied.");
   if (configData) {
     state.feed.formValues = null;
@@ -389,7 +403,13 @@ async function feedStep(okMessage = "Feed stepped.") {
 }
 
 async function feedWarmup() {
-  const config = feedConfigPayload();
+  let config;
+  try {
+    config = feedConfigPayload();
+  } catch (err) {
+    setFeedStatus(err.message);
+    return;
+  }
   const configs = config.configs || [];
   if (!configs.length || configs.some(item => item.feed_mode !== "simulation")) {
     setFeedStatus("Historical warmup is available for simulation mode only.");
@@ -675,6 +695,7 @@ function renderFeedConfigTable() {
       timeframe: scalarValue(feed.timeframe) || "4h",
       tz: scalarValue(feed.tz) || "UTC",
       feed_mode: scalarValue(feed.feed_mode) || "simulation",
+      simulation_model: scalarValue(feed.simulation_model) || "random_walk",
       start_price: scalarValue(feed.start_price) ?? 100,
       drift: scalarValue(feed.drift) ?? 0,
       vol: scalarValue(feed.vol) ?? 0.02,
@@ -692,6 +713,11 @@ function renderFeedConfigTable() {
             <option value="external"${values.feed_mode === "external" ? " selected" : ""}>external</option>
           </select>
         </td>
+        <td>
+          <select name="simulation_model">
+            ${["random_walk", "ar", "garch11", "ar_garch"].map(model => `<option value="${model}"${values.simulation_model === model ? " selected" : ""}>${model}</option>`).join("")}
+          </select>
+        </td>
         <td><input name="start_price" type="number" step="0.0001" value="${escapeHtml(values.start_price)}"></td>
         <td><input name="drift" type="number" step="0.000001" value="${escapeHtml(values.drift)}"></td>
         <td><input name="vol" type="number" step="0.000001" value="${escapeHtml(values.vol)}"></td>
@@ -703,7 +729,7 @@ function renderFeedConfigTable() {
     <table>
       <thead>
         <tr>
-          <th>symbol</th><th>asset_id</th><th>timeframe</th><th>tz</th><th>feed_mode</th>
+          <th>symbol</th><th>asset_id</th><th>timeframe</th><th>tz</th><th>feed_mode</th><th>simulation_model</th>
           <th>start_price</th><th>drift</th><th>vol</th><th>seed</th>
         </tr>
       </thead>
@@ -853,6 +879,7 @@ function feedConfigPayload() {
       timeframe: get("timeframe") || "4h",
       tz: get("tz") || "UTC",
       feed_mode: get("feed_mode") || "simulation",
+      simulation_model: get("simulation_model") || "random_walk",
       random_walk: {
         start_price: numericOrDefault(get("start_price"), 100),
         drift: numericOrDefault(get("drift"), 0),
@@ -861,7 +888,49 @@ function feedConfigPayload() {
       }
     });
   });
-  return { configs };
+  const payload = { configs };
+  const marketModel = marketModelPayload();
+  if (marketModel) payload.market_model = marketModel;
+  return payload;
+}
+
+function marketModelPayload() {
+  const form = document.getElementById("feed-form");
+  if (!form || !form.elements.market_model) return null;
+  const model = form.elements.market_model.value || "independent";
+  const payload = {
+    model,
+    seed: Math.trunc(numericOrDefault(form.elements.market_seed?.value, 1))
+  };
+  const corr = parseMatrixText(form.elements.market_corr?.value || "");
+  if (corr) payload.corr = corr;
+  const factors = parseJsonText(form.elements.market_factors?.value || "", "Factor JSON");
+  if (factors) payload.factors = factors;
+  const regimes = parseJsonText(form.elements.market_regimes?.value || "", "Regime JSON");
+  if (regimes) payload.regimes = regimes;
+  return payload;
+}
+
+function parseMatrixText(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return null;
+  const rows = raw.split(/\n|;/).map(row => row.trim()).filter(Boolean);
+  const matrix = rows.map(row => row.split(/[\s,]+/).filter(Boolean).map(Number));
+  const width = matrix[0]?.length || 0;
+  if (!width || matrix.some(row => row.length !== width || row.some(value => !Number.isFinite(value)))) {
+    throw new Error("Correlation matrix must be numeric with equal-width rows.");
+  }
+  return matrix;
+}
+
+function parseJsonText(text, label) {
+  const raw = String(text || "").trim();
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`${label} is invalid JSON: ${err.message}`);
+  }
 }
 
 function currentFeedFormValues() {
@@ -872,6 +941,7 @@ function currentFeedFormValues() {
       timeframe: get("timeframe") || "4h",
       tz: get("tz") || "UTC",
       feed_mode: get("feed_mode") || "simulation",
+      simulation_model: get("simulation_model") || "random_walk",
       start_price: get("start_price") || 100,
       drift: get("drift") || 0,
       vol: get("vol") || 0.02,
@@ -879,6 +949,13 @@ function currentFeedFormValues() {
     });
   });
   return out;
+}
+
+function updateMarketModelForm(model = {}) {
+  const form = document.getElementById("feed-form");
+  if (!form || !form.elements.market_model || form.querySelector(".market-model-panel:focus-within")) return;
+  form.elements.market_model.value = scalarValue(model.model) || "independent";
+  if (form.elements.market_seed) form.elements.market_seed.value = scalarValue(model.seed) ?? 1;
 }
 
 function feedConfigTimeframes() {
@@ -936,6 +1013,8 @@ function applyFeedStatus(feed = {}) {
   const running = runningValue === true || runningValue === "TRUE" || runningValue === "true" || runningValue === 1 || runningValue === "1";
   state.feed.running = running;
   state.feed.feeds = Array.isArray(feed.feeds) ? feed.feeds : state.feed.feeds || [];
+  state.feed.marketModel = feed.market_model || state.feed.marketModel;
+  if (state.feed.marketModel) updateMarketModelForm(state.feed.marketModel);
   if (!running) {
     stopFeedAutoTimer();
   } else if (!isLiveStateDashboard() && isFeedAutoMode() && !state.feed.timer) {
@@ -944,6 +1023,7 @@ function applyFeedStatus(feed = {}) {
   const details = [
     `status=${running ? "running" : "stopped"}`,
     `feeds=${state.feed.feeds.length || 1}`,
+    `market_model=${scalarValue(state.feed.marketModel?.model) || "independent"}`,
     `bars=${scalarValue(feed.bars) ?? "0"}`,
     `last_end=${scalarValue(feed.last_completed_end) || "none"}`,
     `last_prices=${formatFeedLastPrices(state.feed.feeds, feed)}`

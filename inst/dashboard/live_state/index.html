@@ -112,6 +112,28 @@
           </select>
         </label>
         <label>History Bars<input name="warmup_bars" type="number" step="1" min="0" value="100"></label>
+        <div class="market-model-panel">
+          <h3>Market Model</h3>
+          <label>Model
+            <select name="market_model">
+              <option value="independent">independent</option>
+              <option value="multi_asset_random_walk">multi_asset_random_walk</option>
+              <option value="multi_asset_ar_garch">multi_asset_ar_garch</option>
+              <option value="factor_random_walk">factor_random_walk</option>
+              <option value="regime_random_walk">regime_random_walk</option>
+            </select>
+          </label>
+          <label>Market Seed<input name="market_seed" type="number" step="1" value="1"></label>
+          <label>Correlation Matrix
+            <textarea name="market_corr" rows="4" placeholder="1,0.8&#10;0.8,1"></textarea>
+          </label>
+          <label>Factor JSON
+            <textarea name="market_factors" rows="4" placeholder='{"loadings":[[0.8],[0.9]],"factor_vol":[0.01],"idio_vol":[0.005,0.006]}'></textarea>
+          </label>
+          <label>Regime JSON
+            <textarea name="market_regimes" rows="4" placeholder='{"initial_state":1,"transition":[[0.95,0.05],[0.2,0.8]],"states":[{"corr":[[1,0.2],[0.2,1]],"vol_multiplier":1},{"corr":[[1,0.85],[0.85,1]],"vol_multiplier":2}]}'></textarea>
+          </label>
+        </div>
         <div id="feed-config-table" class="table-wrap feed-config-table"></div>
         <button type="submit">Apply Config</button>
       </form>

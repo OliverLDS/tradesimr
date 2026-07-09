@@ -371,6 +371,134 @@ test_that("live feed config set and controls apply to all registered assets", {
   expect_false(any(vapply(exchange$feeds, function(feed) isTRUE(feed$running), logical(1))))
 })
 
+test_that("market-level random walk generates correlated warmup batches", {
+  exchange <- sim_exchange_new()
+  sim_asset_add(exchange, "BTC-USDT-SWAP", asset_id = 101L)
+  sim_asset_add(exchange, "ETH-USDT-SWAP", asset_id = 102L)
+  sim_feed_configure(exchange, list(configs = list(
+    list(symbol = "BTC-USDT-SWAP", asset_id = 101L, timeframe = "1m", random_walk = list(start_price = 100, drift = 0, vol = 0.01, seed = 1L)),
+    list(symbol = "ETH-USDT-SWAP", asset_id = 102L, timeframe = "1m", random_walk = list(start_price = 100, drift = 0, vol = 0.01, seed = 2L))
+  )))
+  sim_market_model_configure(exchange, sim_market_model_config(
+    model = "multi_asset_random_walk",
+    corr = matrix(c(1, 0.9, 0.9, 1), nrow = 2),
+    seed = 42L
+  ))
+
+  bars <- sim_feed_warmup(exchange, n_bars = 240, now = as.POSIXct("2026-01-01 04:00:30", tz = "UTC"))
+  expect_equal(nrow(bars), 480)
+  expect_true(all(bars[, .N, by = timestamp]$N == 2L))
+  expect_equal(sim_feed_status(exchange)$market_model$model, "multi_asset_random_walk")
+
+  wide <- data.table::dcast(
+    bars[, .(timestamp, symbol, close)],
+    timestamp ~ symbol,
+    value.var = "close"
+  )
+  returns <- data.table::data.table(
+    btc = diff(log(wide[["BTC-USDT-SWAP"]])),
+    eth = diff(log(wide[["ETH-USDT-SWAP"]]))
+  )
+  expect_gt(stats::cor(returns$btc, returns$eth), 0.75)
+})
+
+test_that("market-level random walk live step advances assets as synchronized batches", {
+  exchange <- sim_exchange_new()
+  sim_asset_add(exchange, "AAPL", asset_id = 101L)
+  sim_asset_add(exchange, "TLT", asset_id = 102L)
+  sim_feed_configure(exchange, list(configs = list(
+    list(symbol = "AAPL", asset_id = 101L, timeframe = "1m", random_walk = list(start_price = 200, drift = 0, vol = 0.01, seed = 1L)),
+    list(symbol = "TLT", asset_id = 102L, timeframe = "1m", random_walk = list(start_price = 90, drift = 0, vol = 0.01, seed = 2L))
+  )))
+  sim_market_model_configure(exchange, sim_market_model_config(
+    model = "multi_asset_random_walk",
+    corr = matrix(c(1, -0.5, -0.5, 1), nrow = 2),
+    seed = 7L
+  ))
+
+  sim_feed_start(exchange, now = as.POSIXct("2026-01-01 00:00:30", tz = "UTC"))
+  bars <- sim_feed_step(exchange, now = as.POSIXct("2026-01-01 00:02:01", tz = "UTC"))
+
+  expect_equal(nrow(bars), 4)
+  expect_true(all(bars[, .N, by = timestamp]$N == 2L))
+  expect_equal(nrow(exchange$market_events), 4)
+  expect_true(isTRUE(exchange$market_model$running))
+  expect_equal(sim_feed_status(exchange)$market_model$running, TRUE)
+})
+
+test_that("market-level AR-GARCH updates per-asset state with correlated shocks", {
+  exchange <- sim_exchange_new()
+  sim_asset_add(exchange, "BTC-USDT-SWAP", asset_id = 101L)
+  sim_asset_add(exchange, "ETH-USDT-SWAP", asset_id = 102L)
+  sim_feed_configure(exchange, list(configs = list(
+    list(
+      symbol = "BTC-USDT-SWAP", asset_id = 101L, timeframe = "1m",
+      random_walk = list(start_price = 100, drift = 0, vol = 0.02, seed = 1L),
+      simulation = list(ar = list(a = 0.2), garch11 = list(alpha0 = 0.000001, alpha1 = 0.08, beta1 = 0.9))
+    ),
+    list(
+      symbol = "ETH-USDT-SWAP", asset_id = 102L, timeframe = "1m",
+      random_walk = list(start_price = 100, drift = 0, vol = 0.025, seed = 2L),
+      simulation = list(ar = list(a = 0.1), garch11 = list(alpha0 = 0.000001, alpha1 = 0.08, beta1 = 0.9))
+    )
+  )))
+  sim_market_model_configure(exchange, sim_market_model_config(
+    model = "multi_asset_ar_garch",
+    corr = matrix(c(1, 0.75, 0.75, 1), nrow = 2),
+    seed = 11L
+  ))
+
+  bars <- sim_feed_warmup(exchange, n_bars = 10, now = as.POSIXct("2026-01-01 00:10:30", tz = "UTC"))
+
+  expect_equal(nrow(bars), 20)
+  expect_true(is.finite(exchange$feeds[["101"]]$simulation_state$sigma2))
+  expect_true(is.finite(exchange$feeds[["102"]]$simulation_state$sigma2))
+  expect_true(length(exchange$feeds[["101"]]$simulation_state$ret_lags) >= 10)
+})
+
+test_that("factor and regime market models generate synchronized correlated batches", {
+  make_exchange <- function() {
+    exchange <- sim_exchange_new()
+    sim_asset_add(exchange, "AAPL", asset_id = 101L)
+    sim_asset_add(exchange, "MSFT", asset_id = 102L)
+    sim_feed_configure(exchange, list(configs = list(
+      list(symbol = "AAPL", asset_id = 101L, timeframe = "1m", random_walk = list(start_price = 100, drift = 0, vol = 0.01, seed = 1L)),
+      list(symbol = "MSFT", asset_id = 102L, timeframe = "1m", random_walk = list(start_price = 100, drift = 0, vol = 0.01, seed = 2L))
+    )))
+    exchange
+  }
+  realized_cor <- function(bars) {
+    wide <- data.table::dcast(bars[, .(timestamp, symbol, close)], timestamp ~ symbol, value.var = "close")
+    stats::cor(diff(log(wide[[2L]])), diff(log(wide[[3L]])))
+  }
+
+  factor_exchange <- make_exchange()
+  sim_market_model_configure(factor_exchange, sim_market_model_config(
+    model = "factor_random_walk",
+    factors = list(loadings = matrix(c(0.9, 0.85), nrow = 2), factor_vol = 0.02, idio_vol = c(0.001, 0.001)),
+    seed = 12L
+  ))
+  factor_bars <- sim_feed_warmup(factor_exchange, n_bars = 180, now = as.POSIXct("2026-01-01 03:00:30", tz = "UTC"))
+  expect_gt(realized_cor(factor_bars), 0.85)
+
+  regime_exchange <- make_exchange()
+  sim_market_model_configure(regime_exchange, sim_market_model_config(
+    model = "regime_random_walk",
+    regimes = list(
+      initial_state = 2L,
+      transition = matrix(c(1, 0, 0, 1), nrow = 2, byrow = TRUE),
+      states = list(
+        list(name = "calm", corr = diag(2), vol_multiplier = 1),
+        list(name = "stress", corr = matrix(c(1, 0.9, 0.9, 1), nrow = 2), vol_multiplier = 2)
+      )
+    ),
+    seed = 13L
+  ))
+  regime_bars <- sim_feed_warmup(regime_exchange, n_bars = 180, now = as.POSIXct("2026-01-01 03:00:30", tz = "UTC"))
+  expect_gt(realized_cor(regime_bars), 0.75)
+  expect_equal(sim_market_model_status(regime_exchange)$regime, 2L)
+})
+
 test_that("simulation feed uses asset-specific random streams", {
   exchange <- sim_exchange_new()
   sim_asset_add(exchange, "BTC-USDT-SWAP", asset_id = 101L)
@@ -388,6 +516,46 @@ test_that("simulation feed uses asset-specific random streams", {
     value.var = "close"
   )
   expect_false(isTRUE(all.equal(wide[["BTC-USDT-SWAP"]], wide[["AAPL"]])))
+})
+
+test_that("simulation feeds support deterministic AR dynamics", {
+  exchange <- sim_exchange_new(list(auto_register_assets = TRUE))
+  sim_feed_configure(exchange, sim_feed_config(
+    timeframe = "1m",
+    simulation_model = "ar",
+    random_walk = list(start_price = 100, drift = 0.01, vol = 0, seed = 1L),
+    simulation = list(ar = list(a = 0.5, sigma = 0), ohlc = list(wiggle_scale = 0))
+  ))
+
+  bars <- sim_feed_warmup(exchange, n_bars = 3, now = as.POSIXct("2026-01-01 00:03:30", tz = "UTC"))
+  observed_returns <- diff(log(c(100, bars$close)))
+
+  expect_equal(round(observed_returns, 6), c(0.01, 0.015, 0.0175))
+  expect_equal(sim_feed_status(exchange)$feeds[[1]]$simulation_model, "ar")
+})
+
+test_that("simulation feeds support GARCH and AR-GARCH state", {
+  exchange <- sim_exchange_new(list(auto_register_assets = TRUE))
+  sim_feed_configure(exchange, sim_feed_config(
+    timeframe = "1m",
+    simulation_model = "garch11",
+    random_walk = list(start_price = 100, drift = 0, vol = 0.02, seed = 2L),
+    simulation = list(garch11 = list(alpha0 = 0.000001, alpha1 = 0.1, beta1 = 0.85, z_dist = "stdt", df = 8))
+  ))
+  bars <- sim_feed_warmup(exchange, n_bars = 5, now = as.POSIXct("2026-01-01 00:05:30", tz = "UTC"))
+  expect_equal(nrow(bars), 5)
+  expect_true(is.finite(exchange$feed$simulation_state$sigma2))
+  expect_true(length(exchange$feed$simulation_state$ret_lags) > 0)
+
+  sim_feed_configure(exchange, list(
+    simulation_model = "ar_garch",
+    random_walk = list(start_price = tail(bars$close, 1), drift = 0, vol = 0.02, seed = 3L),
+    simulation = list(ar = list(a = c(0.3, -0.1)), garch11 = list(alpha0 = 0.000001, alpha1 = 0.08, beta1 = 0.9))
+  ))
+  more <- sim_feed_warmup(exchange, n_bars = 3, now = as.POSIXct("2026-01-01 00:08:30", tz = "UTC"))
+  expect_equal(nrow(more), 3)
+  expect_true(is.finite(exchange$feed$simulation_state$sigma2))
+  expect_true(length(exchange$feed$simulation_state$ret_lags) >= 3)
 })
 
 test_that("live feed accepts external adapter functions", {

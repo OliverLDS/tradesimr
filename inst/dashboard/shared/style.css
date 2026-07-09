@@ -211,6 +211,29 @@ main {
   overflow-x: auto;
 }
 
+.market-model-panel {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 0.75rem;
+  padding: 0.9rem;
+  border: 1px solid rgba(255, 249, 236, 0.28);
+  border-radius: 0.9rem;
+  background: rgba(24, 33, 31, 0.16);
+}
+
+.market-model-panel h3 {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #fff9ec;
+  letter-spacing: -0.02em;
+}
+
+.market-model-panel textarea {
+  min-height: 6rem;
+  resize: vertical;
+}
+
 .feed-config-table table {
   min-width: 980px;
 }
@@ -646,6 +669,7 @@ th {
   .human-register-form,
   .cancel-form,
   .feed-form,
+  .market-model-panel,
   .agent-admin-form,
   .agent-status-form,
   .feed-actions,

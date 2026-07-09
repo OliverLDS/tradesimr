@@ -209,7 +209,7 @@ sim_agent_rankings <- function(exchange) {
 #' @keywords internal
 .agent_current_bar <- function(exchange, bar = NULL) {
   if (!is.null(bar) && nrow(data.table::as.data.table(bar)) > 0L) {
-    return(as_market_bars(bar)[1L])
+    return(as_market_bars(bar))
   }
   if (nrow(exchange$market_events) > 0L) {
     return(exchange$market_events[nrow(exchange$market_events)])
@@ -273,8 +273,14 @@ sim_agent_rankings <- function(exchange) {
 
 #' @keywords internal
 .agent_select_asset_bar <- function(exchange, bar, config) {
+  bar <- data.table::as.data.table(bar)
   policy <- as.character(config$asset_policy %||% "random")
-  if (!identical(policy, "random")) return(bar)
+  if (!identical(policy, "random")) return(bar[1L])
+  if (nrow(bar) > 1L && "asset_id" %in% names(bar)) {
+    available <- unique(bar$asset_id)
+    selected_asset <- sample(available, 1L)
+    return(bar[asset_id == selected_asset][1L])
+  }
   assets <- exchange$assets[exchange$assets$status == "active"]
   if (nrow(assets) <= 1L || nrow(exchange$market_events) == 0L) return(bar)
   available <- unique(exchange$market_events$asset_id)

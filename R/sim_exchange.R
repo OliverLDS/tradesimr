@@ -21,6 +21,7 @@ sim_exchange_new <- function(config = list()) {
   state$agent_accounts <- list()
   state$asset_symbols <- list()
   state$feeds <- list()
+  state$market_model <- sim_market_model_config()
   state$event_log <- data.table::data.table(
     timestamp = as.POSIXct(character()),
     source = character(),

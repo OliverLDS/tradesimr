@@ -12,7 +12,9 @@ sim_feed_config(
   feed_mode = c("simulation", "external"),
   feed_adapter = NULL,
   start_time = NULL,
-  random_walk = list(start_price = 100, drift = 0, vol = 0.02, seed = 1L)
+  simulation_model = c("random_walk", "ar", "garch11", "ar_garch"),
+  random_walk = list(start_price = 100, drift = 0, vol = 0.02, seed = 1L),
+  simulation = list()
 )
 }
 \arguments{
@@ -31,8 +33,14 @@ sim_feed_config(
 
 \item{start_time}{Optional first completed boundary to process.}
 
+\item{simulation_model}{Simulation model: \code{random_walk}, \code{ar}, \code{garch11},
+or \code{ar_garch}.}
+
 \item{random_walk}{List of random-walk simulation settings: \code{start_price},
 \code{drift}, \code{vol}, and \code{seed}.}
+
+\item{simulation}{Advanced simulation settings. Supported nested lists are
+\code{ar}, \code{garch11}, and \code{ohlc}.}
 }
 \value{
 A list suitable for \code{sim_feed_configure()}.

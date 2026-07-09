@@ -9,9 +9,9 @@
 Execution and simulation engine for trading strategies, with durable event
 exports, append-only agent commands, registered tradable assets, multi-asset
 order routing, per-agent shared-cash cross-margin live accounts, AI agent
-competitors, scheduled live-feed stepping, local live-service APIs, separate
-replay, live-state, and agent dashboards, and local orchestration
-entrypoints.
+competitors, scheduled live-feed stepping, coordinated multi-asset market
+simulation, local live-service APIs, separate replay, live-state, and agent
+dashboards, and local orchestration entrypoints.
 }
 \author{
 \strong{Maintainer}: Oliver Lee \email{olee7149@gmail.com}

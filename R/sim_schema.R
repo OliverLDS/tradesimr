@@ -1,7 +1,7 @@
 #' tradesimr durable schema version
 #'
 #' @export
-TRADESIMR_SCHEMA_VERSION <- "0.8.0"
+TRADESIMR_SCHEMA_VERSION <- "0.9.0"
 
 #' Simulation table schemas
 #'

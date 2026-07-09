@@ -10,7 +10,8 @@ sim_feed_configure(exchange, config = sim_feed_config())
 \item{exchange}{A \code{tradesimr_exchange}.}
 
 \item{config}{Feed configuration list. A list with \code{configs} may be used to
-configure all registered assets in one call.}
+configure all registered assets in one call. A \code{market_model} element may
+be used to configure synchronized multi-asset simulation.}
 }
 \value{
 The feed configuration, invisibly.

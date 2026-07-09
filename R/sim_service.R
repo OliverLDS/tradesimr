@@ -120,10 +120,13 @@ sim_live_service <- function(exchange = sim_exchange_new()) {
     .service_headers(res)
     body <- .service_json_body(req)
     if (!is.null(body$random_walk)) body$random_walk <- as.list(body$random_walk)
+    if (!is.null(body$simulation)) body$simulation <- as.list(body$simulation)
+    if (!is.null(body$market_model)) body$market_model <- as.list(body$market_model)
     if (!is.null(body$configs)) {
       body$configs <- lapply(body$configs, function(config) {
         config <- as.list(config)
         if (!is.null(config$random_walk)) config$random_walk <- as.list(config$random_walk)
+        if (!is.null(config$simulation)) config$simulation <- as.list(config$simulation)
         config
       })
     }
