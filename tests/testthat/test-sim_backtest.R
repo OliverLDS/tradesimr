@@ -53,6 +53,7 @@ test_that("schemas, adapters, export, and exchange replay work", {
   )
 
   expect_true("events" %in% names(sim_schemas()))
+  expect_true("assets" %in% names(sim_schemas()))
   expect_s3_class(as_market_bars(bars), "data.table")
   expect_s3_class(as_target_positions(bars), "data.table")
 
@@ -66,7 +67,7 @@ test_that("schemas, adapters, export, and exchange replay work", {
   expect_equal(nrow(sim_read_account(out_dir)), nrow(sim_account(sim)))
   expect_equal(nrow(sim_run_from_events(out_dir)), nrow(sim))
 
-  exchange <- sim_exchange_new(list(ctr_step = 0.01, lev = 10))
+  exchange <- sim_exchange_new(list(ctr_step = 0.01, lev = 10, auto_register_assets = TRUE))
   sim_exchange_add_bars(exchange, bars[, c("timestamp", "open", "high", "low", "close")])
   order_id <- sim_exchange_place_order(exchange, "agent1", bars$timestamp[2], side = "buy", qty = 1, client_order_id = "client-1")
   expect_match(order_id, "^ORD")
@@ -79,7 +80,7 @@ test_that("schemas, adapters, export, and exchange replay work", {
   expect_s3_class(sim_exchange_account(exchange), "data.table")
   expect_s3_class(sim_exchange_positions(exchange), "data.table")
 
-  target_exchange <- sim_exchange_new(list(ctr_step = 0.01, lev = 10))
+  target_exchange <- sim_exchange_new(list(ctr_step = 0.01, lev = 10, auto_register_assets = TRUE))
   sim_exchange_add_bars(target_exchange, bars[, c("timestamp", "open", "high", "low", "close")])
   sim_exchange_place_order(target_exchange, "agent1", bars$timestamp[2], side = "target", tgt_pos = 1)
   expect_equal(sim_exchange_orders(target_exchange)$qty_type[1], "target_pos")
@@ -136,7 +137,7 @@ test_that("sim_step processes one bar and carries prior state forward", {
 })
 
 test_that("sim_exchange_step uses incremental step state", {
-  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 0.01, lev = 10))
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 0.01, lev = 10, auto_register_assets = TRUE))
   bars <- data.frame(
     timestamp = as.POSIXct("2026-01-01", tz = "UTC") + 0:1 * 86400,
     open = c(100, 101),
@@ -161,6 +162,8 @@ test_that("sim_exchange_step uses incremental step state", {
 
 test_that("sim_exchange_step routes orders and state by asset", {
   exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 1, lev = 10, fee_rt = 0))
+  sim_asset_add(exchange, "BTC-USDT-SWAP", asset_id = 1L)
+  sim_asset_add(exchange, "ETH-USDT-SWAP", asset_id = 2L)
   ts <- as.POSIXct("2026-01-01 00:00:00", tz = "UTC")
   bars <- data.frame(
     timestamp = c(ts, ts),
@@ -187,11 +190,35 @@ test_that("sim_exchange_step routes orders and state by asset", {
   expect_equal(nrow(account), 1)
   expect_equal(account$agent_id[1], "agent1")
   expect_true(all(c("equity", "cash", "unrealized_pnl") %in% names(account)))
+  expect_equal(account$cash[1], 10000)
   expect_equal(length(exchange$agent_states), 2)
 })
 
-test_that("order quantity semantics are explicit", {
+test_that("asset registry is explicit unless auto registration is enabled", {
   exchange <- sim_exchange_new()
+  bar <- data.frame(
+    timestamp = as.POSIXct("2026-01-01", tz = "UTC"),
+    symbol = "BTC-USDT-SWAP",
+    open = 100,
+    high = 101,
+    low = 99,
+    close = 100
+  )
+  expect_error(sim_exchange_step(exchange, bar), "Unregistered market bar asset")
+  sim_asset_add(exchange, "BTC-USDT-SWAP")
+  sim_exchange_step(exchange, bar)
+  expect_equal(nrow(sim_assets(exchange)), 1)
+  expect_equal(sim_assets(exchange)$symbol[1], "BTC-USDT-SWAP")
+  expect_true(sim_asset_remove(exchange, "BTC-USDT-SWAP"))
+  expect_equal(sim_assets(exchange)$status[1], "removed")
+
+  auto_exchange <- sim_exchange_new(list(auto_register_assets = TRUE))
+  sim_exchange_step(auto_exchange, bar)
+  expect_equal(sim_assets(auto_exchange)$symbol[1], "BTC-USDT-SWAP")
+})
+
+test_that("order quantity semantics are explicit", {
+  exchange <- sim_exchange_new(list(auto_register_assets = TRUE))
   ts <- as.POSIXct("2026-01-01", tz = "UTC")
   expect_error(
     sim_exchange_place_order(exchange, "agent1", ts, side = "target", qty_type = "contracts", qty = 1),
@@ -229,7 +256,7 @@ test_that("sim_dashboard_export writes static dashboard contract", {
 })
 
 test_that("agent command APIs append and process order commands", {
-  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 0.01, lev = 10))
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 0.01, lev = 10, auto_register_assets = TRUE))
   schemas <- sim_agent_command_schema()
   expect_setequal(names(schemas), c("agent_commands", "order_requests", "order_cancellations"))
 
@@ -255,7 +282,7 @@ test_that("agent command APIs append and process order commands", {
 })
 
 test_that("live feed steps completed bars on schedule", {
-  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 0.01, lev = 10))
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 0.01, lev = 10, auto_register_assets = TRUE))
   sim_feed_configure(exchange, sim_feed_config(
     timeframe = "4h",
     tz = "UTC",
@@ -274,7 +301,7 @@ test_that("live feed steps completed bars on schedule", {
 })
 
 test_that("live feed does not create a default agent before registration", {
-  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 0.01, lev = 10))
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 0.01, lev = 10, auto_register_assets = TRUE))
   sim_feed_configure(exchange, sim_feed_config(
     timeframe = "1m",
     tz = "UTC",
@@ -290,7 +317,7 @@ test_that("live feed does not create a default agent before registration", {
 })
 
 test_that("live feed config updates preserve running state", {
-  exchange <- sim_exchange_new()
+  exchange <- sim_exchange_new(list(auto_register_assets = TRUE))
   sim_feed_configure(exchange, sim_feed_config(timeframe = "4h", tz = "UTC"))
   sim_feed_start(exchange, now = as.POSIXct("2026-01-01 08:30:00", tz = "UTC"))
   before <- sim_feed_status(exchange)
@@ -303,8 +330,68 @@ test_that("live feed config updates preserve running state", {
   expect_equal(after$last_completed_end, before$last_completed_end)
 })
 
-test_that("live feed accepts external adapter functions", {
+test_that("live feed configs are keyed by registered asset", {
   exchange <- sim_exchange_new()
+  sim_asset_add(exchange, "AAPL", asset_id = 101L, asset_class = "stock", tick_size = 0.01, qty_step = 1)
+  sim_asset_add(exchange, "ES-202603", asset_id = 202L, asset_class = "commodity_future", contract_size = 50, tick_size = 0.25, qty_step = 1)
+
+  sim_feed_configure(exchange, sim_feed_config(symbol = "AAPL", asset_id = 101L, timeframe = "1m", random_walk = list(start_price = 200, seed = 1L)))
+  sim_feed_configure(exchange, sim_feed_config(symbol = "ES-202603", asset_id = 202L, timeframe = "5m", random_walk = list(start_price = 5000, seed = 2L)))
+
+  expect_equal(exchange$feeds[["101"]]$timeframe, "1m")
+  expect_equal(exchange$feeds[["202"]]$timeframe, "5m")
+
+  sim_feed_start(exchange, symbol = "AAPL", asset_id = 101L, now = as.POSIXct("2026-01-01 00:00:30", tz = "UTC"))
+  bars <- sim_feed_step(exchange, symbol = "AAPL", asset_id = 101L, now = as.POSIXct("2026-01-01 00:02:01", tz = "UTC"))
+  expect_true(nrow(bars) >= 1)
+  expect_equal(unique(bars$symbol), "AAPL")
+  expect_equal(unique(bars$asset_id), 101L)
+  expect_false(isTRUE(exchange$feeds[["202"]]$running))
+})
+
+test_that("live feed config set and controls apply to all registered assets", {
+  exchange <- sim_exchange_new()
+  sim_asset_add(exchange, "AAPL", asset_id = 101L, asset_class = "stock")
+  sim_asset_add(exchange, "TLT", asset_id = 102L, asset_class = "etf")
+
+  sim_feed_configure(exchange, list(configs = list(
+    list(symbol = "AAPL", asset_id = 101L, timeframe = "1m", random_walk = list(start_price = 200, seed = 1L)),
+    list(symbol = "TLT", asset_id = 102L, timeframe = "1m", random_walk = list(start_price = 90, seed = 2L))
+  )))
+  expect_equal(exchange$feeds[["101"]]$timeframe, "1m")
+  expect_equal(exchange$feeds[["102"]]$timeframe, "1m")
+
+  sim_feed_start(exchange, now = as.POSIXct("2026-01-01 00:00:30", tz = "UTC"))
+  expect_true(all(vapply(exchange$feeds, function(feed) isTRUE(feed$running), logical(1))))
+
+  bars <- sim_feed_step(exchange, now = as.POSIXct("2026-01-01 00:02:01", tz = "UTC"))
+  expect_setequal(unique(bars$asset_id), c(101L, 102L))
+
+  sim_feed_stop(exchange)
+  expect_false(any(vapply(exchange$feeds, function(feed) isTRUE(feed$running), logical(1))))
+})
+
+test_that("simulation feed uses asset-specific random streams", {
+  exchange <- sim_exchange_new()
+  sim_asset_add(exchange, "BTC-USDT-SWAP", asset_id = 101L)
+  sim_asset_add(exchange, "AAPL", asset_id = 102L)
+  same_walk <- list(start_price = 100, drift = 0, vol = 0.02, seed = 1L)
+  sim_feed_configure(exchange, list(configs = list(
+    list(symbol = "BTC-USDT-SWAP", asset_id = 101L, timeframe = "1m", random_walk = same_walk),
+    list(symbol = "AAPL", asset_id = 102L, timeframe = "1m", random_walk = same_walk)
+  )))
+
+  bars <- sim_feed_warmup(exchange, n_bars = 3, now = as.POSIXct("2026-01-01 00:03:30", tz = "UTC"))
+  wide <- data.table::dcast(
+    bars[, .(timestamp, symbol, close)],
+    timestamp ~ symbol,
+    value.var = "close"
+  )
+  expect_false(isTRUE(all.equal(wide[["BTC-USDT-SWAP"]], wide[["AAPL"]])))
+})
+
+test_that("live feed accepts external adapter functions", {
+  exchange <- sim_exchange_new(list(auto_register_assets = TRUE))
   adapter <- function(symbol, timeframe, start, end, tz = "UTC") {
     data.table::data.table(timestamp = start, open = 10, high = 11, low = 9, close = 10.5)
   }
@@ -320,7 +407,7 @@ test_that("live feed accepts external adapter functions", {
 })
 
 test_that("simulation feed warmup appends historical bars without stepping agents", {
-  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 0.01, lev = 10))
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 0.01, lev = 10, auto_register_assets = TRUE))
   sim_feed_configure(exchange, sim_feed_config(
     timeframe = "1h",
     tz = "UTC",
@@ -344,7 +431,7 @@ test_that("simulation feed warmup appends historical bars without stepping agent
 })
 
 test_that("AI agents submit ordinary order commands", {
-  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 0.01, lev = 10))
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 0.01, lev = 10, auto_register_assets = TRUE))
   agent_id <- sim_agent_add(exchange, agent_type = "momentum", config = list(qty = 1))
   expect_match(agent_id, "^momentum-")
   expect_equal(exchange$agents$agent_type[1], "momentum")
@@ -384,8 +471,29 @@ test_that("AI agents submit ordinary order commands", {
   expect_equal(exchange$agents$status[1], "paused")
 })
 
+test_that("AI agents can choose among registered assets", {
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 1, lev = 10, fee_rt = 0, auto_register_assets = TRUE))
+  sim_asset_add(exchange, "AAPL", asset_id = 101L, asset_class = "stock")
+  sim_asset_add(exchange, "TLT", asset_id = 102L, asset_class = "etf")
+  sim_agent_add(exchange, agent_id = "allocator", agent_type = "chaos", config = list(qty = 1, asset_policy = "random"))
+  bars <- data.frame(
+    timestamp = as.POSIXct("2026-01-01", tz = "UTC") + c(0, 0),
+    symbol = c("AAPL", "TLT"),
+    asset_id = c(101L, 102L),
+    open = c(200, 90),
+    high = c(201, 91),
+    low = c(199, 89),
+    close = c(200, 90)
+  )
+  sim_exchange_step(exchange, bars)
+  set.seed(10)
+  decision <- sim_agents_step(exchange)
+  expect_equal(nrow(decision), 1)
+  expect_true(decision$asset_id[1] %in% c(101L, 102L))
+})
+
 test_that("AI flat orders do not leave stale orders that corrupt account state", {
-  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 1, lev = 10, fee_rt = 0.0005))
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 1, lev = 10, fee_rt = 0.0005, auto_register_assets = TRUE))
   sim_agent_add(exchange, agent_id = "Momentum", agent_type = "momentum", config = list(qty = 1))
   sim_agent_add(exchange, agent_id = "Contrarian", agent_type = "contrarian", config = list(qty = 1))
   sim_agent_add(exchange, agent_id = "Reversion", agent_type = "mean_reversion", config = list(qty = 1))
@@ -419,7 +527,7 @@ test_that("AI flat orders do not leave stale orders that corrupt account state",
 })
 
 test_that("agent rankings sort non-finite account values below finite accounts", {
-  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 1, lev = 10))
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 1, lev = 10, auto_register_assets = TRUE))
   sim_agent_add(exchange, agent_id = "finite", agent_type = "momentum")
   sim_agent_add(exchange, agent_id = "broken", agent_type = "chaos")
   exchange$step_snapshots <- data.table::data.table(
@@ -445,7 +553,7 @@ test_that("agent rankings sort non-finite account values below finite accounts",
 })
 
 test_that("AI and human agents have separate exchange accounts", {
-  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 0.01, lev = 10))
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 0.01, lev = 10, auto_register_assets = TRUE))
   ai_id <- sim_agent_add(exchange, agent_id = "ai-momo", agent_type = "momentum", config = list(qty = 1))
   bar1 <- data.frame(
     timestamp = as.POSIXct("2026-01-01 00:00:00", tz = "UTC"),
@@ -485,7 +593,7 @@ test_that("AI and human agents have separate exchange accounts", {
 })
 
 test_that("live service state returns account history for equity curves", {
-  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 0.01, lev = 10))
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 0.01, lev = 10, auto_register_assets = TRUE))
   sim_agent_add(exchange, agent_id = "agent-history", agent_type = "momentum")
   bars <- data.frame(
     timestamp = as.POSIXct("2026-01-01", tz = "UTC") + 0:2 * 3600,

@@ -1,7 +1,7 @@
 #' tradesimr durable schema version
 #'
 #' @export
-TRADESIMR_SCHEMA_VERSION <- "0.7.0"
+TRADESIMR_SCHEMA_VERSION <- "0.8.0"
 
 #' Simulation table schemas
 #'
@@ -10,6 +10,18 @@ TRADESIMR_SCHEMA_VERSION <- "0.7.0"
 #' @export
 sim_schemas <- function() {
   list(
+    assets = data.table::data.table(
+      asset_id = integer(),
+      symbol = character(),
+      status = character(),
+      asset_class = character(),
+      contract_size = numeric(),
+      tick_size = numeric(),
+      qty_step = numeric(),
+      base_ccy = character(),
+      quote_ccy = character(),
+      created_at = as.POSIXct(character())
+    ),
     market_events = data.table::data.table(
       timestamp = as.POSIXct(character()),
       symbol = character(),
@@ -177,7 +189,8 @@ sim_schemas <- function() {
       cash = numeric(),
       notional = numeric(),
       abs_notional = numeric(),
-      unrealized_pnl = numeric()
+      unrealized_pnl = numeric(),
+      maintenance_margin = numeric()
     ),
     risk_snapshots = data.table::data.table(
       timestamp = as.POSIXct(character()),
@@ -294,12 +307,18 @@ as_market_bars <- function(data,
   if (is.null(symbol_col) && "symbol" %in% names(DT)) symbol_col <- "symbol"
   if (is.null(asset_id_col) && "asset_id" %in% names(DT)) asset_id_col <- "asset_id"
   if (is.null(symbol) && is.null(symbol_col) && !is.null(asset_id)) symbol <- paste0("asset-", asset_id)
-  if (is.null(symbol)) symbol <- "default"
-  if (is.null(asset_id)) asset_id <- 0L
   out <- DT[, .SD, .SDcols = c(timestamp_col, open_col, high_col, low_col, close_col)]
   data.table::setnames(out, c("timestamp", "open", "high", "low", "close"))
-  data.table::set(out, j = "symbol", value = if (!is.null(symbol_col)) as.character(DT[[symbol_col]]) else rep.int(as.character(symbol), nrow(out)))
-  data.table::set(out, j = "asset_id", value = if (!is.null(asset_id_col)) as.integer(DT[[asset_id_col]]) else rep.int(as.integer(asset_id), nrow(out)))
+  symbol_values <- if (!is.null(symbol_col)) as.character(DT[[symbol_col]]) else rep.int(as.character(symbol %||% "default"), nrow(out))
+  asset_values <- if (!is.null(asset_id_col)) {
+    as.integer(DT[[asset_id_col]])
+  } else if (!is.null(asset_id)) {
+    rep.int(as.integer(asset_id), nrow(out))
+  } else {
+    vapply(symbol_values, .asset_id_from_symbol, integer(1))
+  }
+  data.table::set(out, j = "symbol", value = symbol_values)
+  data.table::set(out, j = "asset_id", value = asset_values)
   data.table::setcolorder(out, c("timestamp", "symbol", "asset_id", "open", "high", "low", "close"))
   out[]
 }

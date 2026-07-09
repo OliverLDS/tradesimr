@@ -16,6 +16,45 @@
   </header>
 
   <main>
+    <section class="panel asset-console">
+      <div class="console-head">
+        <div>
+          <h2>Asset Registration</h2>
+          <p>Register tradable assets before feed bars or orders can reference them.</p>
+        </div>
+      </div>
+      <form id="asset-form" class="feed-form">
+        <label>Symbol<input name="symbol" value="BTC-USDT-SWAP"></label>
+        <label>Asset ID<input name="asset_id" type="number" step="1" placeholder="auto"></label>
+        <label>Status
+          <select name="status">
+            <option value="active">active</option>
+            <option value="paused">paused</option>
+          </select>
+        </label>
+        <label>Asset Class
+          <select name="asset_class">
+            <option value="other">other</option>
+            <option value="stock">stock</option>
+            <option value="bond">bond</option>
+            <option value="etf">etf</option>
+            <option value="commodity_future">commodity_future</option>
+            <option value="fx">fx</option>
+            <option value="crypto_spot">crypto_spot</option>
+            <option value="crypto_perp">crypto_perp</option>
+          </select>
+        </label>
+        <label>Contract Size<input name="contract_size" type="number" step="0.0001" value="1"></label>
+        <label>Tick Size<input name="tick_size" type="number" step="0.0001" placeholder="optional"></label>
+        <label>Qty Step<input name="qty_step" type="number" step="0.0001" value="1"></label>
+        <label>Base/Issuer<input name="base_ccy" placeholder="AAPL, US Treasury, BTC"></label>
+        <label>Quote/CCY<input name="quote_ccy" placeholder="USD, USDT, JPY"></label>
+        <button type="submit">Register Asset</button>
+      </form>
+      <p id="asset-status" class="feed-status">Asset service not contacted yet.</p>
+      <div id="assets-table" class="table-wrap"></div>
+    </section>
+
     <section class="panel ai-console">
       <div class="console-head">
         <div>
@@ -35,6 +74,12 @@
         </label>
         <label>Qty<input name="qty" type="number" step="0.0001" value="1"></label>
         <label>Lookback<input name="lookback" type="number" step="1" value="12"></label>
+        <label>Asset Policy
+          <select name="asset_policy">
+            <option value="random">random</option>
+            <option value="current_bar">current_bar</option>
+          </select>
+        </label>
         <label>Initial Cash<input name="initial_cash" type="number" step="0.01" value="10000"></label>
         <button type="submit">Add AI Agent</button>
       </form>
@@ -60,26 +105,14 @@
         <button id="feed-step" type="button">Step</button>
       </div>
       <form id="feed-form" class="feed-form">
-        <label>Symbol<input name="symbol" value="BTC-USDT-SWAP"></label>
-        <label>Timeframe<input name="timeframe" value="4h"></label>
         <label>Run Mode
           <select name="run_mode">
             <option value="manual">manual</option>
             <option value="auto">auto</option>
           </select>
         </label>
-        <label>Time Zone<input name="tz" value="UTC"></label>
-        <label>Feed Mode
-          <select name="feed_mode">
-            <option value="simulation">simulation</option>
-            <option value="external">external</option>
-          </select>
-        </label>
-        <label>Start Price<input name="start_price" type="number" step="0.0001" value="100"></label>
-        <label>Drift<input name="drift" type="number" step="0.000001" value="0"></label>
-        <label>Vol<input name="vol" type="number" step="0.000001" value="0.02"></label>
-        <label>Seed<input name="seed" type="number" step="1" value="1"></label>
         <label>History Bars<input name="warmup_bars" type="number" step="1" min="0" value="100"></label>
+        <div id="feed-config-table" class="table-wrap feed-config-table"></div>
         <button type="submit">Apply Config</button>
       </form>
       <p id="feed-status" class="feed-status">Feed service not contacted yet.</p>
@@ -93,7 +126,7 @@
         </div>
         <label class="asset-filter">Asset
           <select id="asset-filter">
-            <option value="all">All assets</option>
+            <option value="">No asset selected</option>
           </select>
         </label>
       </div>

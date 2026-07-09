@@ -44,10 +44,10 @@ sim_live_service <- function(exchange = sim_exchange_new()) {
     body <- .service_json_body(req)
     requested_id <- .null_if_missing(body$agent_id)
     agent_type <- body$agent_type %||% "chaos"
-    config <- as.list(body$config %||% list(qty = body$qty %||% 1, lookback = body$lookback %||% 12))
+    config <- as.list(body$config %||% list(qty = body$qty %||% 1, lookback = body$lookback %||% 12, asset_policy = body$asset_policy %||% "random"))
     if (!is.null(body$initial_cash)) config$initial_cash <- as.numeric(body$initial_cash)
     if (!is.null(requested_id) && requested_id %in% exchange$agents$agent_id) {
-      .ensure_agent_account(exchange, requested_id, agent_type = agent_type, config = config, status = body$status %||% "active")
+      .ensure_shared_account(exchange, requested_id, config = config)
       agent_id <- requested_id
     } else {
       agent_id <- sim_agent_add(
@@ -59,6 +59,33 @@ sim_live_service <- function(exchange = sim_exchange_new()) {
       )
     }
     list(agent_id = agent_id, state = .service_state(exchange))
+  })
+  pr <- plumber_ns$pr_get(pr, "/assets", function(res) {
+    .service_headers(res)
+    list(assets = .service_records(sim_assets(exchange)))
+  })
+  pr <- plumber_ns$pr_post(pr, "/assets", function(req, res) {
+    .service_headers(res)
+    body <- .service_json_body(req)
+    asset <- sim_asset_add(
+      exchange = exchange,
+      symbol = body$symbol,
+      asset_id = .null_if_missing(body$asset_id),
+      status = body$status %||% "active",
+      asset_class = body$asset_class %||% "other",
+      contract_size = as.numeric(body$contract_size %||% 1),
+      tick_size = as.numeric(body$tick_size %||% NA_real_),
+      qty_step = as.numeric(body$qty_step %||% 1),
+      base_ccy = body$base_ccy %||% NA_character_,
+      quote_ccy = body$quote_ccy %||% NA_character_
+    )
+    list(asset = .service_records(asset), state = .service_state(exchange))
+  })
+  pr <- plumber_ns$pr_post(pr, "/assets/remove", function(req, res) {
+    .service_headers(res)
+    body <- .service_json_body(req)
+    ok <- sim_asset_remove(exchange, symbol = .null_if_missing(body$symbol), asset_id = .null_if_missing(body$asset_id))
+    list(removed = isTRUE(ok), state = .service_state(exchange))
   })
   pr <- plumber_ns$pr_post(pr, "/agents/start", function(req, res) {
     .service_headers(res)
@@ -93,6 +120,13 @@ sim_live_service <- function(exchange = sim_exchange_new()) {
     .service_headers(res)
     body <- .service_json_body(req)
     if (!is.null(body$random_walk)) body$random_walk <- as.list(body$random_walk)
+    if (!is.null(body$configs)) {
+      body$configs <- lapply(body$configs, function(config) {
+        config <- as.list(config)
+        if (!is.null(config$random_walk)) config$random_walk <- as.list(config$random_walk)
+        config
+      })
+    }
     sim_feed_configure(exchange, body)
     sim_feed_status(exchange)
   })
@@ -102,18 +136,26 @@ sim_live_service <- function(exchange = sim_exchange_new()) {
     bars <- sim_feed_warmup(
       exchange,
       n_bars = as.integer(body$n_bars %||% 100L),
-      now = .service_timestamp(body$now %||% Sys.time())
+      now = .service_timestamp(body$now %||% Sys.time()),
+      symbol = .null_if_missing(body$symbol),
+      asset_id = .null_if_missing(body$asset_id)
     )
     list(feed = sim_feed_status(exchange), bars = .service_records(bars), state = .service_state(exchange))
   })
   pr <- plumber_ns$pr_post(pr, "/feed/start", function(req, res) {
     .service_headers(res)
     body <- .service_json_body(req)
-    sim_feed_start(exchange, now = .service_timestamp(body$now %||% Sys.time()))
+    sim_feed_start(
+      exchange,
+      now = .service_timestamp(body$now %||% Sys.time()),
+      symbol = .null_if_missing(body$symbol),
+      asset_id = .null_if_missing(body$asset_id)
+    )
   })
-  pr <- plumber_ns$pr_post(pr, "/feed/stop", function(res) {
+  pr <- plumber_ns$pr_post(pr, "/feed/stop", function(req, res) {
     .service_headers(res)
-    sim_feed_stop(exchange)
+    body <- .service_json_body(req)
+    sim_feed_stop(exchange, symbol = .null_if_missing(body$symbol), asset_id = .null_if_missing(body$asset_id))
   })
   pr <- plumber_ns$pr_post(pr, "/feed/step", function(req, res) {
     .service_headers(res)
@@ -121,7 +163,9 @@ sim_live_service <- function(exchange = sim_exchange_new()) {
     bars <- sim_feed_step(
       exchange,
       now = .service_timestamp(body$now %||% Sys.time()),
-      max_bars = as.numeric(body$max_bars %||% Inf)
+      max_bars = as.numeric(body$max_bars %||% Inf),
+      symbol = .null_if_missing(body$symbol),
+      asset_id = .null_if_missing(body$asset_id)
     )
     list(feed = sim_feed_status(exchange), bars = .service_records(bars), state = .service_state(exchange))
   })
@@ -195,6 +239,7 @@ sim_live_service_run <- function(exchange = sim_exchange_new(), host = "127.0.0.
     account = .service_records(account_history),
     account_latest = .service_records(sim_exchange_account(exchange)),
     positions = .service_records(sim_exchange_positions(exchange)),
+    assets = .service_records(sim_assets(exchange)),
     market_events = .service_records(exchange$market_events),
     agent_orders = .service_records(exchange$agent_orders),
     agent_commands = .service_records(exchange$agent_commands),

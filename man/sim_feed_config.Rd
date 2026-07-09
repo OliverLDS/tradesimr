@@ -6,6 +6,7 @@
 \usage{
 sim_feed_config(
   symbol = "BTC-USDT-SWAP",
+  asset_id = NULL,
   timeframe = "4h",
   tz = "UTC",
   feed_mode = c("simulation", "external"),
@@ -16,6 +17,8 @@ sim_feed_config(
 }
 \arguments{
 \item{symbol}{Instrument symbol.}
+
+\item{asset_id}{Optional integer asset id.}
 
 \item{timeframe}{Bar interval, such as \code{"4h"}, \code{"1h"}, or \code{"15m"}.}
 

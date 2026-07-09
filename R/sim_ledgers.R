@@ -48,7 +48,7 @@ sim_cash_ledger <- function(sim) {
 #' @export
 sim_account <- function(sim) {
   DT <- data.table::as.data.table(sim)
-  cols <- c("timestamp", "agent_id", "symbol", "asset_id", "equity", "cash", "notional", "abs_notional", "unrealized_pnl")
+  cols <- c("timestamp", "agent_id", "symbol", "asset_id", "equity", "cash", "notional", "abs_notional", "unrealized_pnl", "maintenance_margin")
   DT[, .SD, .SDcols = intersect(cols, names(DT))]
 }
 

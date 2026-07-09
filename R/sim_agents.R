@@ -8,7 +8,8 @@
 #' @param agent_type Agent type: `human`, `chaos`, `momentum`, `contrarian`, or
 #'   `mean_reversion`.
 #' @param config Named list of agent settings. Supported values include `qty`,
-#'   `order_type`, and `lookback`.
+#'   `order_type`, `lookback`, and `asset_policy`. The default asset policy is
+#'   `random`, which picks among active assets with available market bars.
 #' @param status Initial status: `active` or `paused`.
 #' @return The agent id.
 #' @export
@@ -34,7 +35,19 @@ sim_agent_add <- function(exchange,
     created_at = Sys.time()
   )
   exchange$agents <- data.table::rbindlist(list(exchange$agents, row), fill = TRUE)
-  .ensure_agent_account(exchange, agent_id, agent_type = agent_type, config = config, status = status)
+  .ensure_shared_account(exchange, agent_id, config = config)
+  if (nrow(exchange$market_events) > 0L) {
+    latest <- exchange$market_events[nrow(exchange$market_events)]
+    .ensure_agent_account(
+      exchange,
+      agent_id,
+      asset_id = latest$asset_id[1L],
+      symbol = latest$symbol[1L],
+      agent_type = agent_type,
+      config = config,
+      status = status
+    )
+  }
   invisible(agent_id)
 }
 
@@ -209,7 +222,9 @@ sim_agent_rankings <- function(exchange) {
   qty <- as.numeric(config$qty %||% 1)
   order_type <- as.character(config$order_type %||% "market")
   lookback <- as.integer(config$lookback %||% 12L)
+  bar <- .agent_select_asset_bar(exchange, bar, config)
   bars <- data.table::rbindlist(list(exchange$market_events, bar), fill = TRUE)
+  if ("asset_id" %in% names(bars)) bars <- bars[asset_id == as.integer(bar$asset_id[1L] %||% 0L)]
   bars <- bars[!is.na(close)]
   last_ret <- if (nrow(bars) >= 2L) tail(bars$close, 1L) / tail(bars$close, 2L)[1L] - 1 else 0
   mean_gap <- if (nrow(bars) >= 2L) tail(bars$close, 1L) / mean(tail(bars$close, min(lookback, nrow(bars))), na.rm = TRUE) - 1 else 0
@@ -221,7 +236,7 @@ sim_agent_rankings <- function(exchange) {
     NULL
   )
   if (is.null(side)) return(NULL)
-  reason <- sprintf("type=%s;last_ret=%.6f;mean_gap=%.6f", agent$agent_type, last_ret, mean_gap)
+  reason <- sprintf("type=%s;asset_policy=%s;last_ret=%.6f;mean_gap=%.6f", agent$agent_type, config$asset_policy %||% "random", last_ret, mean_gap)
   intent <- .agent_execution_intent(exchange, agent$agent_id, side, qty, asset_id = bar$asset_id[1L] %||% 0L)
   data.table::data.table(
     timestamp = as.POSIXct(bar$timestamp, origin = "1970-01-01"),
@@ -241,6 +256,21 @@ sim_agent_rankings <- function(exchange) {
     command_id = NA_character_,
     status = "planned"
   )
+}
+
+#' @keywords internal
+.agent_select_asset_bar <- function(exchange, bar, config) {
+  policy <- as.character(config$asset_policy %||% "random")
+  if (!identical(policy, "random")) return(bar)
+  assets <- exchange$assets[exchange$assets$status == "active"]
+  if (nrow(assets) <= 1L || nrow(exchange$market_events) == 0L) return(bar)
+  available <- unique(exchange$market_events$asset_id)
+  assets <- assets[asset_id %in% available]
+  if (nrow(assets) == 0L) return(bar)
+  selected <- assets[sample.int(nrow(assets), 1L)]
+  selected_bars <- exchange$market_events[asset_id == selected$asset_id[1L]]
+  if (nrow(selected_bars) == 0L) return(bar)
+  selected_bars[nrow(selected_bars)]
 }
 
 #' @keywords internal

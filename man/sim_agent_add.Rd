@@ -21,7 +21,8 @@ sim_agent_add(
 \code{mean_reversion}.}
 
 \item{config}{Named list of agent settings. Supported values include \code{qty},
-\code{order_type}, and \code{lookback}.}
+\code{order_type}, \code{lookback}, and \code{asset_policy}. The default asset policy is
+\code{random}, which picks among active assets with available market bars.}
 
 \item{status}{Initial status: \code{active} or \code{paused}.}
 }

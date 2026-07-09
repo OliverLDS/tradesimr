@@ -4,7 +4,13 @@
 \alias{sim_feed_warmup}
 \title{Generate historical simulation bars before starting a live feed}
 \usage{
-sim_feed_warmup(exchange, n_bars = 100L, now = Sys.time())
+sim_feed_warmup(
+  exchange,
+  n_bars = 100L,
+  now = Sys.time(),
+  symbol = NULL,
+  asset_id = NULL
+)
 }
 \arguments{
 \item{exchange}{A \code{tradesimr_exchange}.}
@@ -12,6 +18,9 @@ sim_feed_warmup(exchange, n_bars = 100L, now = Sys.time())
 \item{n_bars}{Number of historical bars to append.}
 
 \item{now}{Current time used to align the latest completed boundary.}
+
+\item{symbol, asset_id}{Optional feed asset selector. If omitted, all
+configured active asset feeds are warmed up.}
 }
 \value{
 A data.table of appended market bars.

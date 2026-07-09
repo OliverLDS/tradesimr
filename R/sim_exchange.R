@@ -16,8 +16,11 @@ sim_exchange_new <- function(config = list()) {
   state$agents <- sim_schemas()$agents[0]
   state$agent_decisions <- sim_schemas()$agent_decisions[0]
   state$agent_rankings <- sim_schemas()$agent_rankings[0]
+  state$assets <- sim_schemas()$assets[0]
   state$agent_states <- list()
+  state$agent_accounts <- list()
   state$asset_symbols <- list()
+  state$feeds <- list()
   state$event_log <- data.table::data.table(
     timestamp = as.POSIXct(character()),
     source = character(),
@@ -52,6 +55,7 @@ sim_exchange_new <- function(config = list()) {
 sim_exchange_add_bars <- function(exchange, bars) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   new_bars <- as_market_bars(bars)
+  new_bars <- .validate_market_bar_assets(exchange, new_bars)
   exchange$market_events <- data.table::rbindlist(list(exchange$market_events, new_bars), fill = TRUE)
   invisible(exchange)
 }
@@ -92,7 +96,7 @@ sim_exchange_place_order <- function(exchange,
                                      time_in_force = "gtc",
                                      client_order_id = NA_character_) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
-  asset <- .normalize_asset_key(symbol = symbol, asset_id = asset_id, exchange = exchange)
+  asset <- .asset_require_registered(exchange, symbol = symbol, asset_id = asset_id, context = "order asset")
   .ensure_agent_account(exchange, agent_id, asset_id = asset$asset_id, symbol = asset$symbol, agent_type = "human")
   order_type <- match.arg(order_type)
   side <- match.arg(side)
@@ -196,7 +200,7 @@ sim_exchange_run <- function(exchange) {
     tol_pos_col = "tol_pos",
     order_type_col = if ("order_type" %in% names(bars)) "order_type" else NULL,
     limit_price_col = if ("limit_price" %in% names(bars)) "limit_price" else NULL
-  ), exchange$config)
+  ), exchange$config[intersect(names(exchange$config), names(formals(sim_backtest)))])
   exchange$result <- do.call(sim_backtest, args)
   current_events <- sim_events(exchange$result)
   if (nrow(exchange$last_events) == 0L) {
@@ -219,6 +223,7 @@ sim_exchange_run <- function(exchange) {
 sim_exchange_step <- function(exchange, bars) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   new_bars <- as_market_bars(bars)
+  new_bars <- .validate_market_bar_assets(exchange, new_bars)
   exchange$market_events <- data.table::rbindlist(list(exchange$market_events, new_bars), fill = TRUE)
   step_results <- vector("list", nrow(new_bars))
   new_event_list <- list()
@@ -227,12 +232,13 @@ sim_exchange_step <- function(exchange, bars) {
     bar <- new_bars[i]
     asset <- .bar_asset_key(bar)
     agents <- .exchange_agents_to_step(exchange, bar$timestamp[1L], asset_id = asset$asset_id)
-    agent_snapshots <- vector("list", length(agents))
     for (j in seq_along(agents)) {
       agent_id <- agents[[j]]
       state_key <- .agent_state_key(agent_id, asset$asset_id)
       .ensure_agent_account(exchange, agent_id, asset_id = asset$asset_id, symbol = asset$symbol, agent_type = "human")
       orders <- .exchange_orders_for_bar(exchange, bar$timestamp[1L], agent_id = agent_id, asset_id = asset$asset_id)
+      exchange$agent_states[[state_key]] <- .sync_state_cash_from_account(exchange, agent_id, exchange$agent_states[[state_key]])
+      cash_before <- as.numeric(exchange$agent_states[[state_key]]$cash %||% 0)
       step_config <- exchange$config[intersect(names(exchange$config), names(formals(sim_step)))]
       step_config$init_cash <- NULL
       step_config$fill_model <- NULL
@@ -245,10 +251,11 @@ sim_exchange_step <- function(exchange, bars) {
         orders = orders
       ), step_config)
       step <- do.call(sim_step, step_args)
+      cash_after <- as.numeric(step$state$cash %||% cash_before)
+      .update_shared_cash(exchange, agent_id, cash_after - cash_before)
+      step$state <- .sync_state_cash_from_account(exchange, agent_id, step$state)
       exchange$agent_states[[state_key]] <- step$state
       if (j == 1L) exchange$step_state <- step$state
-      snapshot <- .state_to_snapshot(step$state, bar$timestamp[1L], agent_id = agent_id, symbol = asset$symbol, asset_id = asset$asset_id)
-      agent_snapshots[[j]] <- snapshot
       if (nrow(step$events) > 0L) {
         data.table::set(step$events, j = "agent_id", value = agent_id)
         data.table::set(step$events, j = "symbol", value = asset$symbol)
@@ -256,8 +263,10 @@ sim_exchange_step <- function(exchange, bars) {
         new_event_list[[length(new_event_list) + 1L]] <- step$events
         .mark_orders_from_events(exchange, orders, step$events)
       }
+      .enforce_cross_margin(exchange, agent_id, bar$timestamp[1L])
     }
-    step_results[[i]] <- data.table::rbindlist(agent_snapshots, fill = TRUE)
+    account_snapshots <- lapply(agents, function(agent_id) .agent_position_snapshots(exchange, agent_id, bar$timestamp[1L]))
+    step_results[[i]] <- data.table::rbindlist(account_snapshots, fill = TRUE)
   }
 
   new_snapshots <- data.table::rbindlist(step_results, fill = TRUE)
@@ -302,6 +311,14 @@ sim_exchange_account <- function(exchange) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   if (is.null(exchange$result)) {
     snapshots <- .agent_states_snapshot(exchange)
+    shared <- .shared_accounts_snapshot(exchange, latest = TRUE)
+    if (nrow(snapshots) == 0L) return(shared)
+    if (nrow(shared) > 0L) {
+      missing_agents <- setdiff(shared$agent_id, snapshots$agent_id)
+      if (length(missing_agents) > 0L) {
+        snapshots <- data.table::rbindlist(list(snapshots, shared[agent_id %in% missing_agents]), fill = TRUE)
+      }
+    }
     return(.aggregate_account_snapshots(sim_account(snapshots), latest = TRUE))
   }
   account <- sim_account(exchange$result)
@@ -361,9 +378,11 @@ sim_exchange_save <- function(exchange, path, format = c("csv", "fst")) {
     order_requests = exchange$order_requests,
     order_cancellations = exchange$order_cancellations,
     agents = exchange$agents,
+    assets = exchange$assets,
     agent_decisions = exchange$agent_decisions,
     agent_rankings = sim_agent_rankings(exchange),
-    feed_status = data.table::as.data.table(sim_feed_status(exchange)),
+    feed_status = .feed_status_scalar_table(exchange),
+    feed_configs = .feed_status_table(exchange),
     exchange_event_log = exchange$event_log
   )
   for (nm in names(state_tables)) {
@@ -411,15 +430,13 @@ sim_exchange_load <- function(path) {
   if (file.exists(file.path(path, "order_requests.csv"))) exchange$order_requests <- data.table::fread(file.path(path, "order_requests.csv"))
   if (file.exists(file.path(path, "order_cancellations.csv"))) exchange$order_cancellations <- data.table::fread(file.path(path, "order_cancellations.csv"))
   if (file.exists(file.path(path, "agents.csv"))) exchange$agents <- data.table::fread(file.path(path, "agents.csv"))
+  if (file.exists(file.path(path, "assets.csv"))) exchange$assets <- data.table::fread(file.path(path, "assets.csv"))
   if (file.exists(file.path(path, "agent_decisions.csv"))) exchange$agent_decisions <- data.table::fread(file.path(path, "agent_decisions.csv"))
   if (file.exists(file.path(path, "agent_rankings.csv"))) exchange$agent_rankings <- data.table::fread(file.path(path, "agent_rankings.csv"))
   if (nrow(exchange$agents) > 0L) {
     for (agent_id in exchange$agents$agent_id) {
-      .ensure_agent_account(
-        exchange,
-        agent_id,
-        agent_type = exchange$agents$agent_type[match(agent_id, exchange$agents$agent_id)]
-      )
+      config <- .agent_config_decode(exchange$agents$config[match(agent_id, exchange$agents$agent_id)])
+      .ensure_shared_account(exchange, agent_id, config = config)
     }
     if (nrow(exchange$step_snapshots) > 0L && "agent_id" %in% names(exchange$step_snapshots)) {
       by_cols <- intersect(c("agent_id", "asset_id"), names(exchange$step_snapshots))
@@ -428,6 +445,9 @@ sim_exchange_load <- function(path) {
         asset_id <- as.integer(latest$asset_id[i] %||% 0L)
         symbol <- as.character(latest$symbol[i] %||% paste0("asset-", asset_id))
         exchange$asset_symbols[[as.character(asset_id)]] <- symbol
+        if (!symbol %in% exchange$assets$symbol) {
+          sim_asset_add(exchange, symbol = symbol, asset_id = asset_id)
+        }
         exchange$agent_states[[.agent_state_key(latest$agent_id[i], asset_id)]] <- sim_state(
           cash = latest$cash[i],
           pos_dir = latest$pos_dir[i],
@@ -437,6 +457,7 @@ sim_exchange_load <- function(path) {
           asset = asset_id,
           old_timestamp = as.numeric(latest$timestamp[i])
         )
+        exchange$agent_accounts[[as.character(latest$agent_id[i])]]$cash <- as.numeric(latest$cash[i])
       }
     }
   }
@@ -607,9 +628,10 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
 .ensure_agent_account <- function(exchange, agent_id, asset_id = NULL, symbol = NULL, agent_type = "human", config = list(), status = "active") {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   agent_id <- as.character(agent_id %||% "agent")
-  asset <- .normalize_asset_key(symbol = symbol, asset_id = asset_id, exchange = exchange)
+  asset <- .asset_require_registered(exchange, symbol = symbol, asset_id = asset_id, context = "agent account asset")
   state_key <- .agent_state_key(agent_id, asset$asset_id)
   exchange$asset_symbols[[as.character(asset$asset_id)]] <- asset$symbol
+  .ensure_shared_account(exchange, agent_id, config = config)
   if (is.null(exchange$agent_states)) exchange$agent_states <- list()
   if (!agent_id %in% exchange$agents$agent_id) {
     row <- data.table::data.table(
@@ -627,8 +649,9 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
       state_config$cash <- state_config$init_cash
     }
     if (!is.null(config$initial_cash)) {
-      state_config$cash <- as.numeric(config$initial_cash)
+      state_config$cash <- as.numeric(exchange$agent_accounts[[agent_id]]$cash)
     }
+    state_config$cash <- as.numeric(exchange$agent_accounts[[agent_id]]$cash)
     asset_events <- exchange$market_events
     if (nrow(asset_events) > 0L && "asset_id" %in% names(asset_events)) asset_events <- asset_events[asset_id == asset$asset_id]
     if (nrow(asset_events) > 0L && is.null(state_config$last_px)) {
@@ -638,6 +661,25 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
     exchange$agent_states[[state_key]] <- do.call(sim_state, state_config[intersect(names(state_config), names(formals(sim_state)))])
   }
   invisible(exchange$agent_states[[state_key]])
+}
+
+#' @keywords internal
+.ensure_shared_account <- function(exchange, agent_id, config = list()) {
+  stopifnot(inherits(exchange, "tradesimr_exchange"))
+  agent_id <- as.character(agent_id %||% "agent")
+  if (is.null(exchange$agent_accounts)) exchange$agent_accounts <- list()
+  if (is.null(exchange$agent_accounts[[agent_id]])) {
+    account_config <- exchange$config
+    if (!is.null(account_config$init_cash) && is.null(account_config$cash)) account_config$cash <- account_config$init_cash
+    if (!is.null(config$initial_cash)) account_config$cash <- as.numeric(config$initial_cash)
+    cash <- as.numeric(account_config$cash %||% 10000)
+    exchange$agent_accounts[[agent_id]] <- list(
+      cash = cash,
+      initial_cash = cash,
+      liquidated = FALSE
+    )
+  }
+  invisible(exchange$agent_accounts[[agent_id]])
 }
 
 #' @keywords internal
@@ -702,24 +744,63 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
   rows <- lapply(names(exchange$agent_states), function(key) {
     parsed <- .parse_agent_state_key(key)
     symbol <- exchange$asset_symbols[[as.character(parsed$asset_id)]] %||% parsed$symbol
-    .state_to_snapshot(exchange$agent_states[[key]], timestamp, agent_id = parsed$agent_id, symbol = symbol, asset_id = parsed$asset_id)
+    .state_to_snapshot(
+      .sync_state_cash_from_account(exchange, parsed$agent_id, exchange$agent_states[[key]]),
+      timestamp,
+      agent_id = parsed$agent_id,
+      symbol = symbol,
+      asset_id = parsed$asset_id
+    )
   })
   data.table::rbindlist(rows, fill = TRUE)
+}
+
+#' @keywords internal
+.shared_accounts_snapshot <- function(exchange, timestamp = Sys.time(), latest = FALSE) {
+  if (is.null(exchange$agent_accounts) || !length(exchange$agent_accounts)) {
+    return(sim_schemas()$account_snapshots[0])
+  }
+  rows <- lapply(names(exchange$agent_accounts), function(agent_id) {
+    account <- exchange$agent_accounts[[agent_id]]
+    data.table::data.table(
+      timestamp = timestamp,
+      agent_id = agent_id,
+      symbol = NA_character_,
+      asset_id = NA_integer_,
+      equity = as.numeric(account$cash %||% 0),
+      cash = as.numeric(account$cash %||% 0),
+      notional = 0,
+      abs_notional = 0,
+      unrealized_pnl = 0,
+      maintenance_margin = 0
+    )
+  })
+  out <- data.table::rbindlist(rows, fill = TRUE)
+  if (isTRUE(latest)) return(out)
+  out[]
 }
 
 #' @keywords internal
 .aggregate_account_snapshots <- function(account, latest = FALSE) {
   if (nrow(account) == 0L || !"agent_id" %in% names(account)) return(account)
   data.table::setDT(account)
+  for (col in c("equity", "cash", "notional", "abs_notional", "unrealized_pnl", "maintenance_margin")) {
+    if (!col %in% names(account)) data.table::set(account, j = col, value = NA_real_)
+  }
   by_cols <- intersect(c("timestamp", "agent_id"), names(account))
   sum_or_na <- function(x) if (all(is.na(x))) NA_real_ else sum(x, na.rm = TRUE)
+  first_or_na <- function(x) {
+    x <- x[is.finite(x)]
+    if (!length(x)) NA_real_ else x[1L]
+  }
   out <- account[, .(
-    equity = sum_or_na(equity),
-    cash = sum_or_na(cash),
+    cash = first_or_na(cash),
     notional = sum_or_na(notional),
     abs_notional = sum_or_na(abs_notional),
-    unrealized_pnl = sum_or_na(unrealized_pnl)
+    unrealized_pnl = sum_or_na(unrealized_pnl),
+    maintenance_margin = sum_or_na(maintenance_margin)
   ), by = by_cols]
+  out[, equity := cash + unrealized_pnl]
   if (isTRUE(latest) && "timestamp" %in% names(out)) {
     data.table::setorderv(out, "timestamp")
     out <- out[, .SD[.N], by = agent_id]
@@ -728,7 +809,103 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
 }
 
 #' @keywords internal
-.normalize_asset_key <- function(symbol = NULL, asset_id = NULL, exchange = NULL) {
+.validate_market_bar_assets <- function(exchange, bars) {
+  if (nrow(bars) == 0L) return(bars)
+  for (i in seq_len(nrow(bars))) {
+    asset <- .asset_require_registered(
+      exchange,
+      symbol = bars$symbol[i],
+      asset_id = bars$asset_id[i],
+      context = "market bar asset"
+    )
+    data.table::set(bars, i = i, j = "symbol", value = asset$symbol)
+    data.table::set(bars, i = i, j = "asset_id", value = asset$asset_id)
+  }
+  bars[]
+}
+
+#' @keywords internal
+.shared_cash <- function(exchange, agent_id) {
+  account <- exchange$agent_accounts[[as.character(agent_id)]]
+  as.numeric(account$cash %||% exchange$config$cash %||% exchange$config$init_cash %||% 10000)
+}
+
+#' @keywords internal
+.sync_state_cash_from_account <- function(exchange, agent_id, state) {
+  state$cash <- .shared_cash(exchange, agent_id)
+  state
+}
+
+#' @keywords internal
+.update_shared_cash <- function(exchange, agent_id, delta) {
+  agent_id <- as.character(agent_id)
+  if (is.null(exchange$agent_accounts[[agent_id]])) {
+    exchange$agent_accounts[[agent_id]] <- list(cash = as.numeric(exchange$config$cash %||% exchange$config$init_cash %||% 10000), initial_cash = as.numeric(exchange$config$cash %||% exchange$config$init_cash %||% 10000), liquidated = FALSE)
+  }
+  cash <- as.numeric(exchange$agent_accounts[[agent_id]]$cash %||% 0) + as.numeric(delta %||% 0)
+  exchange$agent_accounts[[agent_id]]$cash <- cash
+  invisible(cash)
+}
+
+#' @keywords internal
+.agent_position_snapshots <- function(exchange, agent_id, timestamp) {
+  keys <- names(exchange$agent_states)
+  if (!length(keys)) return(data.table::data.table())
+  rows <- lapply(keys, function(key) {
+    parsed <- .parse_agent_state_key(key)
+    if (!identical(parsed$agent_id, as.character(agent_id))) return(NULL)
+    symbol <- exchange$asset_symbols[[as.character(parsed$asset_id)]] %||% parsed$symbol
+    .state_to_snapshot(
+      .sync_state_cash_from_account(exchange, agent_id, exchange$agent_states[[key]]),
+      timestamp,
+      agent_id = parsed$agent_id,
+      symbol = symbol,
+      asset_id = parsed$asset_id
+    )
+  })
+  data.table::rbindlist(rows, fill = TRUE)
+}
+
+#' @keywords internal
+.enforce_cross_margin <- function(exchange, agent_id, timestamp) {
+  snapshots <- .agent_position_snapshots(exchange, agent_id, timestamp)
+  if (nrow(snapshots) == 0L) return(invisible(FALSE))
+  account <- .aggregate_account_snapshots(snapshots, latest = TRUE)
+  if (nrow(account) == 0L) return(invisible(FALSE))
+  equity <- as.numeric(account$equity[1L] %||% NA_real_)
+  maintenance_margin <- as.numeric(account$maintenance_margin[1L] %||% 0)
+  if (!is.finite(equity) || equity >= maintenance_margin) return(invisible(FALSE))
+  agent_id <- as.character(agent_id)
+  exchange$agent_accounts[[agent_id]]$cash <- 0
+  exchange$agent_accounts[[agent_id]]$liquidated <- TRUE
+  keys <- names(exchange$agent_states)
+  for (key in keys) {
+    parsed <- .parse_agent_state_key(key)
+    if (!identical(parsed$agent_id, agent_id)) next
+    state <- exchange$agent_states[[key]]
+    state$cash <- 0
+    state$pos_dir <- 0L
+    state$ctr_unit <- 0
+    state$avg_price <- NA_real_
+    state$notional <- 0
+    state$abs_notional <- 0
+    state$unrealized_pnl <- 0
+    state$maintenance_margin <- 0
+    state$equity <- 0
+    state$liquidated <- TRUE
+    exchange$agent_states[[key]] <- state
+  }
+  exchange$event_log <- data.table::rbindlist(list(exchange$event_log, data.table::data.table(
+    timestamp = timestamp,
+    source = "risk",
+    event = "cross_margin_liquidation",
+    ref_id = agent_id
+  )), fill = TRUE)
+  invisible(TRUE)
+}
+
+#' @keywords internal
+.normalize_asset_key <- function(symbol = NULL, asset_id = NULL, exchange = NULL, validate = TRUE) {
   if (is.null(symbol) && is.null(asset_id) && !is.null(exchange) && nrow(exchange$market_events) > 0L) {
     latest <- exchange$market_events[nrow(exchange$market_events)]
     symbol <- latest$symbol[1L] %||% NULL
@@ -742,7 +919,11 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
   }
   if (is.null(asset_id)) asset_id <- .asset_id_from_symbol(symbol %||% "default")
   if (is.null(symbol)) symbol <- "default"
-  list(symbol = as.character(symbol), asset_id = as.integer(asset_id))
+  asset <- list(symbol = as.character(symbol), asset_id = as.integer(asset_id))
+  if (isTRUE(validate) && !is.null(exchange)) {
+    return(.asset_require_registered(exchange, symbol = asset$symbol, asset_id = asset$asset_id))
+  }
+  asset
 }
 
 #' @keywords internal

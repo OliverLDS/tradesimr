@@ -1,6 +1,7 @@
 #' Default live feed configuration
 #'
 #' @param symbol Instrument symbol.
+#' @param asset_id Optional integer asset id.
 #' @param timeframe Bar interval, such as `"4h"`, `"1h"`, or `"15m"`.
 #' @param tz Time zone used to align completed bar boundaries.
 #' @param feed_mode Feed mode: `simulation` or `external`.
@@ -12,6 +13,7 @@
 #' @return A list suitable for `sim_feed_configure()`.
 #' @export
 sim_feed_config <- function(symbol = "BTC-USDT-SWAP",
+                            asset_id = NULL,
                             timeframe = "4h",
                             tz = "UTC",
                             feed_mode = c("simulation", "external"),
@@ -21,6 +23,7 @@ sim_feed_config <- function(symbol = "BTC-USDT-SWAP",
   feed_mode <- match.arg(feed_mode)
   list(
     symbol = symbol,
+    asset_id = asset_id %||% .asset_id_from_symbol(symbol),
     timeframe = timeframe,
     tz = tz,
     feed_mode = feed_mode,
@@ -36,15 +39,35 @@ sim_feed_config <- function(symbol = "BTC-USDT-SWAP",
 #' Configure a live exchange feed
 #'
 #' @param exchange A `tradesimr_exchange`.
-#' @param config Feed configuration list.
+#' @param config Feed configuration list. A list with `configs` may be used to
+#'   configure all registered assets in one call.
 #' @return The feed configuration, invisibly.
 #' @export
 sim_feed_configure <- function(exchange, config = sim_feed_config()) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
+  if (!is.null(config$configs)) {
+    configured <- lapply(config$configs, function(one) sim_feed_configure(exchange, as.list(one)))
+    return(invisible(configured))
+  }
   previous <- exchange$feed
   defaults <- sim_feed_config()
   supplied <- names(config)
   config <- utils::modifyList(defaults, config)
+  if (!is.null(previous)) {
+    for (field in c("symbol", "asset_id")) {
+      if (!field %in% supplied) config[[field]] <- previous[[field]]
+    }
+  }
+  asset <- .asset_require_registered(
+    exchange,
+    symbol = config$symbol %||% NULL,
+    asset_id = config$asset_id %||% NULL,
+    context = "feed asset"
+  )
+  feed_key <- as.character(asset$asset_id)
+  previous <- if (!is.null(exchange$feeds[[feed_key]])) exchange$feeds[[feed_key]] else previous
+  config$symbol <- asset$symbol
+  config$asset_id <- asset$asset_id
   if (!is.null(previous)) {
     for (field in c("running", "last_completed_end", "last_price")) {
       if (!field %in% supplied) config[[field]] <- previous[[field]]
@@ -58,6 +81,8 @@ sim_feed_configure <- function(exchange, config = sim_feed_config()) {
   if (is.null(config$last_price)) {
     config$last_price <- as.numeric(config$random_walk$start_price)
   }
+  if (is.null(exchange$feeds)) exchange$feeds <- list()
+  exchange$feeds[[feed_key]] <- config
   exchange$feed <- config
   invisible(exchange$feed)
 }
@@ -66,20 +91,27 @@ sim_feed_configure <- function(exchange, config = sim_feed_config()) {
 #'
 #' @param exchange A `tradesimr_exchange`.
 #' @param now Current time used to initialize the schedule.
+#' @param symbol,asset_id Optional feed asset selector. If omitted, all
+#'   configured active asset feeds are started.
 #' @return Feed status.
 #' @export
-sim_feed_start <- function(exchange, now = Sys.time()) {
+sim_feed_start <- function(exchange, now = Sys.time(), symbol = NULL, asset_id = NULL) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
-  if (is.null(exchange$feed)) sim_feed_configure(exchange)
-  exchange$feed$running <- TRUE
-  now <- .feed_as_time(now, exchange$feed$tz)
-  if (is.null(exchange$feed$last_completed_end)) {
-    start_time <- exchange$feed$start_time
-    if (is.null(start_time)) {
-      exchange$feed$last_completed_end <- .feed_latest_completed_end(now, exchange$feed$timeframe, exchange$feed$tz)
-    } else {
-      exchange$feed$last_completed_end <- .feed_as_time(start_time, exchange$feed$tz)
+  keys <- .feed_request_keys(exchange, symbol = symbol, asset_id = asset_id)
+  for (key in keys) {
+    selected <- .feed_select(exchange, asset_id = as.integer(key))
+    feed <- selected$feed
+    feed$running <- TRUE
+    now_feed <- .feed_as_time(now, feed$tz)
+    if (is.null(feed$last_completed_end)) {
+      start_time <- feed$start_time
+      if (is.null(start_time)) {
+        feed$last_completed_end <- .feed_latest_completed_end(now_feed, feed$timeframe, feed$tz)
+      } else {
+        feed$last_completed_end <- .feed_as_time(start_time, feed$tz)
+      }
     }
+    .feed_store(exchange, selected$key, feed)
   }
   sim_feed_status(exchange)
 }
@@ -87,12 +119,19 @@ sim_feed_start <- function(exchange, now = Sys.time()) {
 #' Stop a configured live feed
 #'
 #' @param exchange A `tradesimr_exchange`.
+#' @param symbol,asset_id Optional feed asset selector. If omitted, all
+#'   configured active asset feeds are stopped.
 #' @return Feed status.
 #' @export
-sim_feed_stop <- function(exchange) {
+sim_feed_stop <- function(exchange, symbol = NULL, asset_id = NULL) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
-  if (is.null(exchange$feed)) sim_feed_configure(exchange)
-  exchange$feed$running <- FALSE
+  keys <- .feed_request_keys(exchange, symbol = symbol, asset_id = asset_id)
+  for (key in keys) {
+    selected <- .feed_select(exchange, asset_id = as.integer(key))
+    feed <- selected$feed
+    feed$running <- FALSE
+    .feed_store(exchange, selected$key, feed)
+  }
   sim_feed_status(exchange)
 }
 
@@ -104,12 +143,21 @@ sim_feed_stop <- function(exchange) {
 #' @param exchange A `tradesimr_exchange`.
 #' @param now Current time.
 #' @param max_bars Maximum bars to append in one call.
+#' @param symbol,asset_id Optional feed asset selector. If omitted, all
+#'   configured active asset feeds are stepped.
 #' @return A data.table of bars appended by this call.
 #' @export
-sim_feed_step <- function(exchange, now = Sys.time(), max_bars = Inf) {
+sim_feed_step <- function(exchange, now = Sys.time(), max_bars = Inf, symbol = NULL, asset_id = NULL) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
-  if (is.null(exchange$feed)) sim_feed_configure(exchange)
-  feed <- exchange$feed
+  keys <- .feed_request_keys(exchange, symbol = symbol, asset_id = asset_id)
+  out <- lapply(keys, function(key) .feed_step_one(exchange, now = now, max_bars = max_bars, asset_id = as.integer(key)))
+  data.table::rbindlist(out, fill = TRUE)
+}
+
+#' @keywords internal
+.feed_step_one <- function(exchange, now = Sys.time(), max_bars = Inf, asset_id) {
+  selected <- .feed_select(exchange, asset_id = asset_id)
+  feed <- selected$feed
   now <- .feed_as_time(now, feed$tz)
   latest_end <- .feed_latest_completed_end(now, feed$timeframe, feed$tz)
   if (is.null(feed$last_completed_end)) {
@@ -118,7 +166,7 @@ sim_feed_step <- function(exchange, now = Sys.time(), max_bars = Inf) {
   }
   step_seconds <- .feed_parse_timeframe(feed$timeframe)
   if (as.numeric(feed$last_completed_end) > as.numeric(latest_end) - step_seconds) {
-    exchange$feed <- feed
+    .feed_store(exchange, selected$key, feed)
     return(sim_schemas()$market_events[0])
   }
   starts <- seq(
@@ -127,7 +175,7 @@ sim_feed_step <- function(exchange, now = Sys.time(), max_bars = Inf) {
     by = step_seconds
   )
   if (!length(starts) || starts[1] > as.numeric(latest_end) - step_seconds) {
-    exchange$feed <- feed
+    .feed_store(exchange, selected$key, feed)
     return(sim_schemas()$market_events[0])
   }
   if (is.finite(max_bars)) starts <- utils::head(starts, max_bars)
@@ -150,7 +198,7 @@ sim_feed_step <- function(exchange, now = Sys.time(), max_bars = Inf) {
       sim_exchange_step(exchange, out[i])
     }
   }
-  exchange$feed <- feed
+  .feed_store(exchange, selected$key, feed)
   out[]
 }
 
@@ -163,12 +211,21 @@ sim_feed_step <- function(exchange, now = Sys.time(), max_bars = Inf) {
 #' @param exchange A `tradesimr_exchange`.
 #' @param n_bars Number of historical bars to append.
 #' @param now Current time used to align the latest completed boundary.
+#' @param symbol,asset_id Optional feed asset selector. If omitted, all
+#'   configured active asset feeds are warmed up.
 #' @return A data.table of appended market bars.
 #' @export
-sim_feed_warmup <- function(exchange, n_bars = 100L, now = Sys.time()) {
+sim_feed_warmup <- function(exchange, n_bars = 100L, now = Sys.time(), symbol = NULL, asset_id = NULL) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
-  if (is.null(exchange$feed)) sim_feed_configure(exchange)
-  feed <- exchange$feed
+  keys <- .feed_request_keys(exchange, symbol = symbol, asset_id = asset_id)
+  out <- lapply(keys, function(key) .feed_warmup_one(exchange, n_bars = n_bars, now = now, asset_id = as.integer(key)))
+  data.table::rbindlist(out, fill = TRUE)
+}
+
+#' @keywords internal
+.feed_warmup_one <- function(exchange, n_bars = 100L, now = Sys.time(), asset_id) {
+  selected <- .feed_select(exchange, asset_id = asset_id)
+  feed <- selected$feed
   if (!identical(feed$feed_mode, "simulation")) {
     stop("Feed warmup currently supports `feed_mode = 'simulation'` only.", call. = FALSE)
   }
@@ -193,10 +250,11 @@ sim_feed_warmup <- function(exchange, n_bars = 100L, now = Sys.time()) {
     }
   }
   out <- data.table::rbindlist(bars, fill = TRUE)
+  out <- .validate_market_bar_assets(exchange, out)
   if (nrow(out) > 0L) {
     exchange$market_events <- data.table::rbindlist(list(exchange$market_events, out), fill = TRUE)
   }
-  exchange$feed <- feed
+  .feed_store(exchange, selected$key, feed)
   out[]
 }
 
@@ -207,25 +265,138 @@ sim_feed_warmup <- function(exchange, n_bars = 100L, now = Sys.time()) {
 #' @export
 sim_feed_status <- function(exchange) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
-  if (is.null(exchange$feed)) sim_feed_configure(exchange)
+  if (is.null(exchange$feed)) exchange$feed <- sim_feed_config()
   feed <- exchange$feed
+  feeds <- .feed_status_table(exchange)
   list(
     symbol = feed$symbol,
+    asset_id = feed$asset_id %||% .asset_id_from_symbol(feed$symbol),
     timeframe = feed$timeframe,
     tz = feed$tz,
     feed_mode = feed$feed_mode,
-    running = isTRUE(feed$running),
+    running = any(feeds$running, na.rm = TRUE),
     last_completed_end = feed$last_completed_end,
     last_price = feed$last_price,
-    bars = nrow(exchange$market_events)
+    bars = nrow(exchange$market_events),
+    feeds = .feed_records(feeds)
   )
+}
+
+#' @keywords internal
+.feed_records <- function(x) {
+  if (is.null(x) || nrow(x) == 0L) return(list())
+  lapply(seq_len(nrow(x)), function(i) {
+    row <- as.list(x[i])
+    lapply(row, function(value) {
+      if (length(value) == 1L) return(value[[1L]])
+      value
+    })
+  })
+}
+
+#' @keywords internal
+.feed_status_scalar_table <- function(exchange) {
+  status <- sim_feed_status(exchange)
+  status$feeds <- NULL
+  data.table::as.data.table(status)
+}
+
+#' @keywords internal
+.feed_status_table <- function(exchange) {
+  if (is.null(exchange$feeds)) exchange$feeds <- list()
+  keys <- union(names(exchange$feeds), as.character(exchange$assets$asset_id[exchange$assets$status != "removed"]))
+  if (!length(keys)) {
+    return(data.table::data.table(
+      symbol = character(),
+      asset_id = integer(),
+      timeframe = character(),
+      tz = character(),
+      feed_mode = character(),
+      running = logical(),
+      start_price = numeric(),
+      drift = numeric(),
+      vol = numeric(),
+      seed = integer(),
+      last_completed_end = as.POSIXct(character()),
+      last_price = numeric()
+    ))
+  }
+  rows <- lapply(keys, function(key) {
+    selected <- .feed_select(exchange, asset_id = as.integer(key))
+    feed <- selected$feed
+    data.table::data.table(
+      symbol = as.character(feed$symbol),
+      asset_id = as.integer(feed$asset_id %||% key),
+      timeframe = as.character(feed$timeframe),
+      tz = as.character(feed$tz),
+      feed_mode = as.character(feed$feed_mode),
+      running = isTRUE(feed$running),
+      start_price = as.numeric(feed$random_walk$start_price %||% NA_real_),
+      drift = as.numeric(feed$random_walk$drift %||% NA_real_),
+      vol = as.numeric(feed$random_walk$vol %||% NA_real_),
+      seed = as.integer(feed$random_walk$seed %||% NA_integer_),
+      last_completed_end = feed$last_completed_end,
+      last_price = as.numeric(feed$last_price %||% NA_real_)
+    )
+  })
+  data.table::rbindlist(rows, fill = TRUE)
+}
+
+#' @keywords internal
+.feed_select <- function(exchange, symbol = NULL, asset_id = NULL) {
+  if (!is.null(symbol) || !is.null(asset_id)) {
+    asset <- .asset_require_registered(exchange, symbol = symbol, asset_id = asset_id, context = "feed asset")
+    key <- as.character(asset$asset_id)
+    if (!is.null(exchange$feeds[[key]])) {
+      feed <- exchange$feeds[[key]]
+    } else {
+      feed <- sim_feed_config(
+        symbol = asset$symbol,
+        asset_id = asset$asset_id,
+        random_walk = list(seed = .feed_asset_seed(asset$asset_id))
+      )
+      feed$last_price <- as.numeric(feed$random_walk$start_price)
+      if (is.null(exchange$feeds)) exchange$feeds <- list()
+      exchange$feeds[[key]] <- feed
+    }
+    exchange$feed <- feed
+    return(list(key = key, feed = feed))
+  }
+  if (is.null(exchange$feed)) exchange$feed <- sim_feed_config()
+  key <- as.character(exchange$feed$asset_id %||% .asset_id_from_symbol(exchange$feed$symbol))
+  if (is.null(exchange$feeds)) exchange$feeds <- list()
+  if (is.null(exchange$feeds[[key]])) exchange$feeds[[key]] <- exchange$feed
+  list(key = key, feed = exchange$feeds[[key]])
+}
+
+#' @keywords internal
+.feed_request_keys <- function(exchange, symbol = NULL, asset_id = NULL) {
+  if (!is.null(symbol) || !is.null(asset_id)) {
+    asset <- .asset_require_registered(exchange, symbol = symbol, asset_id = asset_id, context = "feed asset")
+    return(as.character(asset$asset_id))
+  }
+  if (is.null(exchange$feeds)) exchange$feeds <- list()
+  keys <- names(exchange$feeds)
+  asset_keys <- as.character(exchange$assets$asset_id[exchange$assets$status == "active"])
+  keys <- union(keys, asset_keys)
+  if (length(keys)) return(keys)
+  if (!is.null(exchange$feed)) return(as.character(exchange$feed$asset_id %||% .asset_id_from_symbol(exchange$feed$symbol)))
+  character()
+}
+
+#' @keywords internal
+.feed_store <- function(exchange, key, feed) {
+  if (is.null(exchange$feeds)) exchange$feeds <- list()
+  exchange$feeds[[as.character(key)]] <- feed
+  exchange$feed <- feed
+  invisible(feed)
 }
 
 #' @keywords internal
 .feed_get_bar <- function(feed, start, end) {
   if (identical(feed$feed_mode, "external")) {
     bar <- feed$feed_adapter(feed$symbol, feed$timeframe, start, end, tz = feed$tz)
-    return(as_market_bars(bar, symbol = feed$symbol, asset_id = .asset_id_from_symbol(feed$symbol)))
+    return(as_market_bars(bar, symbol = feed$symbol, asset_id = feed$asset_id %||% .asset_id_from_symbol(feed$symbol)))
   }
   .feed_random_walk_bar(feed, start, end)
 }
@@ -235,7 +406,7 @@ sim_feed_status <- function(exchange) {
   rw <- feed$random_walk
   seed <- as.integer(rw$seed %||% 1L)
   key <- as.integer(as.numeric(start) / max(1, .feed_parse_timeframe(feed$timeframe)))
-  set.seed(seed + key)
+  set.seed(.feed_effective_seed(seed, feed$asset_id, key))
   open <- as.numeric(feed$last_price %||% rw$start_price %||% 100)
   drift <- as.numeric(rw$drift %||% 0)
   vol <- as.numeric(rw$vol %||% 0.02)
@@ -247,12 +418,28 @@ sim_feed_status <- function(exchange) {
   data.table::data.table(
     timestamp = start,
     symbol = as.character(feed$symbol),
-    asset_id = .asset_id_from_symbol(feed$symbol),
+    asset_id = as.integer(feed$asset_id %||% .asset_id_from_symbol(feed$symbol)),
     open = open,
     high = high,
     low = low,
     close = close
   )
+}
+
+#' @keywords internal
+.feed_asset_seed <- function(asset_id) {
+  id <- abs(as.numeric(asset_id %||% 0))
+  out <- (id * 1009 + 17) %% (.Machine$integer.max - 1)
+  as.integer(if (out <= 0) 1L else out)
+}
+
+#' @keywords internal
+.feed_effective_seed <- function(seed, asset_id, key) {
+  seed <- abs(as.numeric(seed %||% 1))
+  asset_seed <- .feed_asset_seed(asset_id)
+  key <- abs(as.numeric(key %||% 0))
+  out <- (seed + asset_seed + key * 9176) %% (.Machine$integer.max - 1)
+  as.integer(if (out <= 0) 1L else out)
 }
 
 #' @keywords internal

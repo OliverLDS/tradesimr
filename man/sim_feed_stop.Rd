@@ -4,10 +4,13 @@
 \alias{sim_feed_stop}
 \title{Stop a configured live feed}
 \usage{
-sim_feed_stop(exchange)
+sim_feed_stop(exchange, symbol = NULL, asset_id = NULL)
 }
 \arguments{
 \item{exchange}{A \code{tradesimr_exchange}.}
+
+\item{symbol, asset_id}{Optional feed asset selector. If omitted, all
+configured active asset feeds are stopped.}
 }
 \value{
 Feed status.

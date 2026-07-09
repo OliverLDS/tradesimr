@@ -199,6 +199,25 @@ main {
   grid-template-columns: repeat(10, minmax(100px, 1fr));
 }
 
+.feed-config-table {
+  grid-column: 1 / -1;
+  overflow-x: auto;
+}
+
+.feed-config-table table {
+  min-width: 980px;
+}
+
+.feed-config-table input,
+.feed-config-table select {
+  min-width: 92px;
+}
+
+.feed-form button[type="submit"] {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
 .agent-admin-form {
   grid-template-columns: repeat(6, minmax(120px, 1fr));
 }

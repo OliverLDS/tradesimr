@@ -1,10 +1,11 @@
 #' tradesimr
 #'
 #' Execution and simulation engine for trading strategies, with durable event
-#' exports, append-only agent commands, multi-asset order routing, per-agent
-#' live accounts, AI agent competitors, scheduled live-feed stepping, local
-#' live-service APIs, separate replay, live-state, and agent dashboards, and
-#' local orchestration entrypoints.
+#' exports, append-only agent commands, registered tradable assets, multi-asset
+#' order routing, per-agent shared-cash cross-margin live accounts, AI agent
+#' competitors, scheduled live-feed stepping, local live-service APIs, separate
+#' replay, live-state, and agent dashboards, and local orchestration
+#' entrypoints.
 #'
 #' @keywords internal
 #' @useDynLib tradesimr, .registration = TRUE

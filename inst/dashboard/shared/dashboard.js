@@ -11,6 +11,7 @@ const REQUIRED_TABLES = [
   "order_cancellations",
   "agent_orders",
   "agents",
+  "assets",
   "agent_decisions",
   "agent_rankings"
 ];
@@ -22,7 +23,9 @@ const state = {
     timer: null,
     nextTickAt: null,
     running: false,
-    starting: false
+    starting: false,
+    feeds: [],
+    formValues: null
   },
   stateRefresh: {
     timer: null
@@ -35,7 +38,7 @@ const state = {
     windowSize: 50,
     timer: null
   },
-  selectedAsset: "all"
+  selectedCandleAsset: ""
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -47,6 +50,8 @@ document.addEventListener("DOMContentLoaded", () => {
   bind("refresh-state", "click", refreshServiceState);
   bind("agent-refresh-interval", "change", configureAgentAutoRefresh);
   bind("feed-form", "submit", applyFeedConfig);
+  bind("feed-config-table", "input", preserveFeedEdits);
+  bind("feed-config-table", "change", preserveFeedEdits);
   bind("feed-refresh", "click", refreshFeedStatus);
   bind("feed-warmup", "click", feedWarmup);
   bind("feed-start", "click", feedStart);
@@ -55,6 +60,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bind("feed-form", "change", updateFeedRunMode);
   bind("agent-admin-form", "submit", addAiAgent);
   bind("agent-status-form", "submit", setAiAgentStatus);
+  bind("asset-form", "submit", addAsset);
   bind("replay-window", "change", updateReplayWindow);
   bind("replay-step-unit", "change", renderReplayStatus);
   bind("asset-filter", "change", updateAssetFilter);
@@ -172,6 +178,7 @@ function parseCsv(text) {
 
 function render() {
   renderAssetFilter();
+  renderFeedConfigTable();
   renderManifest();
   renderReplayStatus();
   renderKpis();
@@ -180,14 +187,15 @@ function render() {
   renderTargets();
   renderRiskSummary();
   renderTimeline();
-  renderTable("orders-table", filterRowsByAsset(state.tables.orders), ["timestamp", "order_id", "agent_id", "symbol", "asset_id", "side", "qty_type", "qty", "order_type", "status", "action_label", "dir_label", "ctr_qty", "price", "status_label"]);
-  renderTable("orders-fills-table", filterRowsByAsset(combinedOrderFillRows()), ["timestamp", "source", "order_id", "agent_id", "symbol", "asset_id", "side", "qty_type", "qty", "order_type", "status", "action_label", "dir_label", "ctr_qty", "price", "fee", "realized_pnl"], 80);
+  renderTable("orders-table", state.tables.orders, ["timestamp", "order_id", "agent_id", "symbol", "asset_id", "side", "qty_type", "qty", "order_type", "status", "action_label", "dir_label", "ctr_qty", "price", "status_label"]);
+  renderTable("orders-fills-table", combinedOrderFillRows(), ["timestamp", "source", "order_id", "agent_id", "symbol", "asset_id", "side", "qty_type", "qty", "order_type", "status", "action_label", "dir_label", "ctr_qty", "price", "fee", "realized_pnl"], 80);
   renderTable("commands-table", state.tables.agent_commands, ["timestamp", "command_id", "agent_id", "command_type", "status", "ref_id", "message"]);
-  renderTable("requests-table", filterRowsByAsset(state.tables.order_requests), ["timestamp", "command_id", "agent_id", "symbol", "asset_id", "side", "qty_type", "qty", "order_type", "status", "order_id", "message"]);
+  renderTable("requests-table", state.tables.order_requests, ["timestamp", "command_id", "agent_id", "symbol", "asset_id", "side", "qty_type", "qty", "order_type", "status", "order_id", "message"]);
   renderTable("fills-table", state.tables.fills, ["timestamp", "action_label", "dir_label", "ctr_qty", "price", "fee", "realized_pnl"]);
   renderTable("risk-table", state.tables.risk_snapshots, ["timestamp", "equity", "abs_notional", "leverage", "maintenance_margin", "margin_buffer"], 25);
   renderTable("agents-table", state.tables.agents, ["agent_id", "agent_type", "status", "config", "created_at"], 80);
-  renderTable("agent-decisions-table", filterRowsByAsset(state.tables.agent_decisions), ["timestamp", "agent_id", "agent_type", "symbol", "asset_id", "side", "intended_action", "intended_dir", "qty", "order_type", "reason", "command_id", "status"], 80);
+  renderTable("assets-table", state.tables.assets, ["asset_id", "symbol", "status", "asset_class", "contract_size", "tick_size", "qty_step", "base_ccy", "quote_ccy", "created_at"], 80);
+  renderTable("agent-decisions-table", state.tables.agent_decisions, ["timestamp", "agent_id", "agent_type", "symbol", "asset_id", "side", "intended_action", "intended_dir", "qty", "order_type", "reason", "command_id", "status"], 80);
   renderTable("agent-rankings-table", state.tables.agent_rankings, ["rank", "agent_id", "agent_type", "status", "equity", "cash", "unrealized_pnl", "orders", "filled_orders", "net_qty", "last_side"], 80, { newestFirst: false });
 }
 
@@ -330,7 +338,10 @@ async function postService(path, payload, okMessage) {
 async function applyFeedConfig(event) {
   event.preventDefault();
   const data = await postFeed("/feed/config", feedConfigPayload(), "Feed config applied.");
-  if (data) applyFeedStatus(data);
+  if (data) {
+    state.feed.formValues = null;
+    applyFeedStatus(data);
+  }
   updateFeedRunMode();
 }
 
@@ -345,6 +356,12 @@ async function refreshFeedStatus() {
 }
 
 async function feedStart() {
+  const config = feedConfigPayload();
+  const configData = await postFeed("/feed/config", config, "Feed config applied.");
+  if (configData) {
+    state.feed.formValues = null;
+    applyFeedStatus(configData);
+  }
   const data = await postFeed("/feed/start", {}, "Feed started.");
   if (data) applyFeedStatus(data);
   if (isFeedAutoMode()) {
@@ -368,12 +385,16 @@ async function feedStep(okMessage = "Feed stepped.") {
 
 async function feedWarmup() {
   const config = feedConfigPayload();
-  if (config.feed_mode !== "simulation") {
+  const configs = config.configs || [];
+  if (!configs.length || configs.some(item => item.feed_mode !== "simulation")) {
     setFeedStatus("Historical warmup is available for simulation mode only.");
     return;
   }
   const configResult = await postFeed("/feed/config", config, "Feed config applied.");
-  if (configResult) applyFeedStatus(configResult);
+  if (configResult) {
+    state.feed.formValues = null;
+    applyFeedStatus(configResult);
+  }
   const form = new FormData(document.getElementById("feed-form"));
   const nBars = Math.trunc(numericOrDefault(Object.fromEntries(form.entries()).warmup_bars, 100));
   const data = await postFeed("/feed/warmup", { n_bars: nBars }, `Simulated ${nBars} historical bars.`);
@@ -402,7 +423,7 @@ function isFeedAutoMode() {
 
 function startFeedAutoTimer() {
   stopFeedAutoTimer();
-  const intervalMs = Math.max(1000, parseTimeframeMs(feedConfigPayload().timeframe));
+  const intervalMs = Math.max(1000, Math.min(...feedConfigTimeframes()));
   const schedulerMs = Math.min(5000, Math.max(1000, Math.floor(intervalMs / 10)));
   state.feed.nextTickAt = Date.now() + schedulerMs;
   state.feed.timer = window.setInterval(async () => {
@@ -428,6 +449,7 @@ async function addAiAgent(event) {
     agent_type: raw.agent_type || "chaos",
     qty: numericOrDefault(raw.qty, 1),
     lookback: Math.trunc(numericOrDefault(raw.lookback, 12)),
+    asset_policy: raw.asset_policy || "random",
     initial_cash: numericOrDefault(raw.initial_cash, 10000)
   };
   if (raw.agent_id) payload.agent_id = raw.agent_id;
@@ -450,6 +472,34 @@ async function setAiAgentStatus(event) {
   if (data) applyServiceState(data.state || data);
 }
 
+async function addAsset(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const raw = Object.fromEntries(form.entries());
+  const payload = {
+    symbol: raw.symbol || "BTC-USDT-SWAP",
+    status: raw.status || "active",
+    asset_class: raw.asset_class || "other",
+    contract_size: numericOrDefault(raw.contract_size, 1),
+    qty_step: numericOrDefault(raw.qty_step, 1)
+  };
+  if (raw.asset_id) payload.asset_id = Math.trunc(numericOrDefault(raw.asset_id, 0));
+  if (raw.tick_size) payload.tick_size = numericOrDefault(raw.tick_size, NaN);
+  if (raw.base_ccy) payload.base_ccy = raw.base_ccy;
+  if (raw.quote_ccy) payload.quote_ccy = raw.quote_ccy;
+  const data = await postAsset("/assets", payload, "Asset registered.");
+  if (data?.state) {
+    applyServiceState(data.state);
+    const asset = data.asset?.[0];
+    if (asset) {
+      const key = assetKey(asset);
+      state.selectedCandleAsset = key;
+      const feedAsset = document.getElementById("feed-asset");
+      if (feedAsset) feedAsset.value = key;
+    }
+  }
+}
+
 async function refreshAgents() {
   try {
     const response = await fetch(`${serviceBase()}/agents`, { cache: "no-store" });
@@ -467,6 +517,23 @@ async function refreshAgents() {
 async function stepAiAgents() {
   const data = await postAdmin("/agents/step", {}, "AI agents stepped.");
   if (data) applyServiceState(data.state || data);
+}
+
+async function postAsset(path, payload, okMessage) {
+  try {
+    const response = await fetch(`${serviceBase()}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    setAssetStatus(okMessage);
+    return data;
+  } catch (err) {
+    setAssetStatus(`Asset request failed: ${err.message}`);
+    return null;
+  }
 }
 
 async function postAdmin(path, payload, okMessage) {
@@ -513,6 +580,7 @@ function applyServiceState(data) {
   state.tables.order_requests = data.order_requests || [];
   state.tables.order_cancellations = data.order_cancellations || [];
   state.tables.agents = data.agents || [];
+  state.tables.assets = data.assets || [];
   state.tables.agent_decisions = data.agent_decisions || [];
   state.tables.agent_rankings = data.agent_rankings || [];
   state.tables.events = data.events || state.tables.events || [];
@@ -521,45 +589,124 @@ function applyServiceState(data) {
 }
 
 function updateAssetFilter(event) {
-  state.selectedAsset = event.currentTarget.value || "all";
+  state.selectedCandleAsset = event.currentTarget.value || "";
   render();
 }
 
 function renderAssetFilter() {
   const el = document.getElementById("asset-filter");
   if (!el) return;
-  const assets = assetOptions(state.tables.market_events || []);
-  const current = state.selectedAsset || "all";
-  const options = [`<option value="all">All assets</option>`].concat(assets.map(asset => {
+  const assets = assetOptions(state.tables.market_events || [], state.tables.assets || []);
+  if (!assets.length) {
+    el.innerHTML = `<option value="">No asset selected</option>`;
+    state.selectedCandleAsset = "";
+    return;
+  }
+  let current = state.selectedCandleAsset || assets[0].key;
+  if (!assets.some(asset => asset.key === current)) current = assets[0].key;
+  state.selectedCandleAsset = current;
+  const options = assets.map(asset => {
     const selected = asset.key === current ? " selected" : "";
     return `<option value="${escapeHtml(asset.key)}"${selected}>${escapeHtml(asset.label)}</option>`;
-  }));
+  });
   el.innerHTML = options.join("");
-  if (current !== "all" && !assets.some(asset => asset.key === current)) {
-    state.selectedAsset = "all";
-    el.value = "all";
-  }
+  el.value = current;
 }
 
-function assetOptions(rows) {
+function assetOptions(rows, registeredAssets = []) {
   const seen = new Map();
+  replayRows(registeredAssets).forEach(row => {
+    const asset = assetDescriptor(row);
+    const key = asset.key;
+    const label = `${asset.symbol} (${asset.assetId ?? "na"})`;
+    if (!seen.has(key)) seen.set(key, { key, label });
+  });
   replayRows(rows).forEach(row => {
-    const symbol = String(scalarValue(row.symbol) || "default");
-    const assetId = scalarValue(row.asset_id);
-    const key = `${symbol}|${assetId ?? ""}`;
-    if (!seen.has(key)) seen.set(key, { key, label: `${symbol} (${assetId ?? "na"})` });
+    const asset = assetDescriptor(row);
+    const key = asset.key;
+    const label = `${asset.symbol} (${asset.assetId ?? "na"})`;
+    if (!seen.has(key)) seen.set(key, { key, label });
   });
   return [...seen.values()].sort((a, b) => a.label.localeCompare(b.label));
 }
 
+function assetKey(row) {
+  return assetDescriptor(row).key;
+}
+
+function assetDescriptor(row) {
+  const symbol = String(scalarValue(row.symbol) || "default");
+  const assetId = scalarValue(row.asset_id);
+  return { symbol, assetId, key: `${symbol}|${assetId ?? ""}` };
+}
+
 function filterRowsByAsset(rows = []) {
-  const selected = state.selectedAsset || "all";
-  if (selected === "all") return rows;
+  const selected = state.selectedCandleAsset || "";
+  if (!selected) return rows;
   return rows.filter(row => {
-    const symbol = String(scalarValue(row.symbol) || "default");
-    const assetId = scalarValue(row.asset_id);
-    return `${symbol}|${assetId ?? ""}` === selected;
+    return assetKey(row) === selected;
   });
+}
+
+function renderFeedConfigTable() {
+  const el = document.getElementById("feed-config-table");
+  if (!el) return;
+  if (el.matches(":focus-within")) return;
+  const assets = (state.tables.assets || []).filter(asset => scalarValue(asset.status) !== "removed");
+  if (!assets.length) {
+    el.innerHTML = `<p class="empty">Register assets before configuring feeds.</p>`;
+    return;
+  }
+  const current = state.feed.formValues || currentFeedFormValues();
+  const feedByAsset = new Map((state.feed.feeds || []).map(feed => [String(scalarValue(feed.asset_id)), feed]));
+  const rows = assets.map((asset, index) => {
+    const assetId = scalarValue(asset.asset_id);
+    const symbol = scalarValue(asset.symbol) || "default";
+    const key = String(assetId);
+    const feed = feedByAsset.get(key) || {};
+    const values = current.get(key) || {
+      timeframe: scalarValue(feed.timeframe) || "4h",
+      tz: scalarValue(feed.tz) || "UTC",
+      feed_mode: scalarValue(feed.feed_mode) || "simulation",
+      start_price: scalarValue(feed.start_price) ?? 100,
+      drift: scalarValue(feed.drift) ?? 0,
+      vol: scalarValue(feed.vol) ?? 0.02,
+      seed: scalarValue(feed.seed) ?? index + 1
+    };
+    return `
+      <tr data-asset-id="${escapeHtml(key)}" data-symbol="${escapeHtml(symbol)}">
+        <td>${escapeHtml(symbol)}</td>
+        <td>${escapeHtml(String(assetId ?? ""))}</td>
+        <td><input name="timeframe" value="${escapeHtml(values.timeframe)}"></td>
+        <td><input name="tz" value="${escapeHtml(values.tz)}"></td>
+        <td>
+          <select name="feed_mode">
+            <option value="simulation"${values.feed_mode === "simulation" ? " selected" : ""}>simulation</option>
+            <option value="external"${values.feed_mode === "external" ? " selected" : ""}>external</option>
+          </select>
+        </td>
+        <td><input name="start_price" type="number" step="0.0001" value="${escapeHtml(values.start_price)}"></td>
+        <td><input name="drift" type="number" step="0.000001" value="${escapeHtml(values.drift)}"></td>
+        <td><input name="vol" type="number" step="0.000001" value="${escapeHtml(values.vol)}"></td>
+        <td><input name="seed" type="number" step="1" value="${escapeHtml(values.seed)}"></td>
+      </tr>
+    `;
+  }).join("");
+  el.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>symbol</th><th>asset_id</th><th>timeframe</th><th>tz</th><th>feed_mode</th>
+          <th>start_price</th><th>drift</th><th>vol</th><th>seed</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+function preserveFeedEdits() {
+  state.feed.formValues = currentFeedFormValues();
 }
 
 function initializeReplayCursor() {
@@ -667,8 +814,8 @@ function replayRows(rows) {
   });
 }
 
-function replayVisibleBars() {
-  const bars = normalizeBars(state.tables.market_events || []);
+function replayVisibleBars(inputBars = null) {
+  const bars = inputBars || normalizeBars(state.tables.market_events || []);
   if (!isReplayDashboard() || !bars.length || state.replay.cursor === null) return bars.slice(-80);
   const end = Math.max(1, Math.min(bars.length, state.replay.cursor));
   const start = Math.max(0, end - state.replay.windowSize);
@@ -683,28 +830,55 @@ function renderReplayStatus() {
     el.textContent = "Waiting for exported market data.";
     return;
   }
-  const visible = replayVisibleBars();
+  const visible = replayVisibleBars(bars);
   const first = visible[0]?.timestamp || "n/a";
   const last = visible[visible.length - 1]?.timestamp || "n/a";
   el.textContent = `Showing bars ${Math.max(1, state.replay.cursor - visible.length + 1)}-${state.replay.cursor} of ${bars.length}: ${first} to ${last}.`;
 }
 
 function feedConfigPayload() {
-  const form = new FormData(document.getElementById("feed-form"));
-  const raw = Object.fromEntries(form.entries());
-  const randomWalk = {
-    start_price: numericOrDefault(raw.start_price, 100),
-    drift: numericOrDefault(raw.drift, 0),
-    vol: numericOrDefault(raw.vol, 0.02),
-    seed: Math.trunc(numericOrDefault(raw.seed, 1))
-  };
-  return {
-    symbol: raw.symbol || "BTC-USDT-SWAP",
-    timeframe: raw.timeframe || "4h",
-    tz: raw.tz || "UTC",
-    feed_mode: raw.feed_mode || "simulation",
-    random_walk: randomWalk
-  };
+  const configs = [];
+  document.querySelectorAll("#feed-config-table tbody tr").forEach(row => {
+    const get = name => row.querySelector(`[name="${name}"]`)?.value;
+    configs.push({
+      symbol: row.dataset.symbol || "default",
+      asset_id: Number(row.dataset.assetId),
+      timeframe: get("timeframe") || "4h",
+      tz: get("tz") || "UTC",
+      feed_mode: get("feed_mode") || "simulation",
+      random_walk: {
+        start_price: numericOrDefault(get("start_price"), 100),
+        drift: numericOrDefault(get("drift"), 0),
+        vol: numericOrDefault(get("vol"), 0.02),
+        seed: Math.trunc(numericOrDefault(get("seed"), 1))
+      }
+    });
+  });
+  return { configs };
+}
+
+function currentFeedFormValues() {
+  const out = new Map();
+  document.querySelectorAll("#feed-config-table tbody tr").forEach(row => {
+    const get = name => row.querySelector(`[name="${name}"]`)?.value;
+    out.set(String(row.dataset.assetId), {
+      timeframe: get("timeframe") || "4h",
+      tz: get("tz") || "UTC",
+      feed_mode: get("feed_mode") || "simulation",
+      start_price: get("start_price") || 100,
+      drift: get("drift") || 0,
+      vol: get("vol") || 0.02,
+      seed: get("seed") || 1
+    });
+  });
+  return out;
+}
+
+function feedConfigTimeframes() {
+  const intervals = (feedConfigPayload().configs || [])
+    .map(config => parseTimeframeMs(config.timeframe))
+    .filter(Number.isFinite);
+  return intervals.length ? intervals : [4 * 60 * 60 * 1000];
 }
 
 function parseTimeframeMs(timeframe) {
@@ -754,6 +928,7 @@ function applyFeedStatus(feed = {}) {
   const runningValue = scalarValue(feed.running);
   const running = runningValue === true || runningValue === "TRUE" || runningValue === "true" || runningValue === 1 || runningValue === "1";
   state.feed.running = running;
+  state.feed.feeds = Array.isArray(feed.feeds) ? feed.feeds : state.feed.feeds || [];
   if (!running) {
     stopFeedAutoTimer();
   } else if (!isLiveStateDashboard() && isFeedAutoMode() && !state.feed.timer) {
@@ -761,15 +936,23 @@ function applyFeedStatus(feed = {}) {
   }
   const details = [
     `status=${running ? "running" : "stopped"}`,
-    `mode=${scalarValue(feed.feed_mode) || "unknown"}`,
-    `symbol=${scalarValue(feed.symbol) || "unknown"}`,
-    `timeframe=${scalarValue(feed.timeframe) || "unknown"}`,
-    `tz=${scalarValue(feed.tz) || "unknown"}`,
+    `feeds=${state.feed.feeds.length || 1}`,
     `bars=${scalarValue(feed.bars) ?? "0"}`,
     `last_end=${scalarValue(feed.last_completed_end) || "none"}`,
-    `last_price=${scalarValue(feed.last_price) ?? "n/a"}`
+    `last_prices=${formatFeedLastPrices(state.feed.feeds, feed)}`
   ];
   setFeedStatus(details.join(" | "));
+}
+
+function formatFeedLastPrices(feeds = [], fallback = {}) {
+  if (feeds.length) {
+    return feeds.map(feed => {
+      const symbol = scalarValue(feed.symbol) || "asset";
+      const price = scalarValue(feed.last_price);
+      return `${symbol}:${price ?? "n/a"}`;
+    }).join(", ");
+  }
+  return String(scalarValue(fallback.last_price) ?? "n/a");
 }
 
 function isLiveStateDashboard() {
@@ -836,6 +1019,11 @@ function setAiStatus(message) {
   if (el) el.textContent = message;
 }
 
+function setAssetStatus(message) {
+  const el = document.getElementById("asset-status");
+  if (el) el.textContent = message;
+}
+
 function renderManifest() {
   const summary = document.getElementById("manifest-summary");
   const counts = document.getElementById("table-counts");
@@ -884,7 +1072,7 @@ function renderCandles() {
     return;
   }
 
-  const shown = replayVisibleBars();
+  const shown = replayVisibleBars(bars);
   const fills = normalizeMarkers(replayRows(filterRowsByAsset(state.tables.fills || [])), "fill");
   const orders = normalizeMarkers(replayRows(filterRowsByAsset(state.tables.orders || [])), "order");
   const visibleTimes = new Set(shown.map(row => String(row.timestamp)));

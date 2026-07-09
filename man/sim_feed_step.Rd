@@ -4,7 +4,13 @@
 \alias{sim_feed_step}
 \title{Step a live feed through completed bars}
 \usage{
-sim_feed_step(exchange, now = Sys.time(), max_bars = Inf)
+sim_feed_step(
+  exchange,
+  now = Sys.time(),
+  max_bars = Inf,
+  symbol = NULL,
+  asset_id = NULL
+)
 }
 \arguments{
 \item{exchange}{A \code{tradesimr_exchange}.}
@@ -12,6 +18,9 @@ sim_feed_step(exchange, now = Sys.time(), max_bars = Inf)
 \item{now}{Current time.}
 
 \item{max_bars}{Maximum bars to append in one call.}
+
+\item{symbol, asset_id}{Optional feed asset selector. If omitted, all
+configured active asset feeds are stepped.}
 }
 \value{
 A data.table of bars appended by this call.
