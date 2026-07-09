@@ -11,9 +11,9 @@ exports, append-only agent commands, registered tradable assets, multi-asset
 order routing, per-agent shared-cash cross-margin live accounts, AI agent
 competitors, strategy-backed agent diagnostics, scheduled live-feed stepping,
 calibrated multi-asset market simulation, durable per-feed simulation state,
-optional portfolio-margin enforcement, local live-service APIs, separate
-replay, live-state, and agent dashboards, and local orchestration
-entrypoints.
+optional portfolio-margin enforcement through a multi-asset C++ step kernel,
+local live-service APIs, separate replay, live-state, and agent dashboards,
+and local orchestration entrypoints.
 }
 \author{
 \strong{Maintainer}: Oliver Lee \email{olee7149@gmail.com}

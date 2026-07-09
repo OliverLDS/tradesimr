@@ -690,6 +690,76 @@ test_that("optional portfolio margin uses correlation-aware maintenance", {
 
   expect_false(isTRUE(exchange$agent_accounts[["hedged"]]$liquidated))
   expect_true(tradesimr:::.portfolio_margin_required(exchange, "hedged", tradesimr:::.agent_position_snapshots(exchange, "hedged", Sys.time())) < 100)
+
+  reject_exchange <- sim_exchange_new(list(cash = 100, ctr_step = 1, lev = 1, mmr = 0.4, portfolio_margin = TRUE, portfolio_margin_sigma = 2, portfolio_margin_floor = 0))
+  sim_asset_add(reject_exchange, "VOL", asset_id = 33L)
+  sim_feed_configure(reject_exchange, list(symbol = "VOL", asset_id = 33L, random_walk = list(start_price = 100, vol = 0.1)))
+  reject_bar <- data.frame(
+    timestamp = as.POSIXct("2026-01-01", tz = "UTC"),
+    symbol = "VOL",
+    asset_id = 33L,
+    open = 100,
+    high = 100,
+    low = 100,
+    close = 100
+  )
+  sim_exchange_add_bars(reject_exchange, reject_bar)
+  sim_submit_order(reject_exchange, "risk-limited", symbol = "VOL", asset_id = 33L, side = "buy", qty = 8, process = TRUE)
+  sim_exchange_step(reject_exchange, reject_bar)
+  expect_equal(sim_exchange_orders(reject_exchange)$status, "failed")
+})
+
+test_that("C++ portfolio step applies shared-cash portfolio margin before accepting orders", {
+  bars <- data.frame(
+    timestamp = as.POSIXct("2026-01-01", tz = "UTC"),
+    symbol = c("AAA", "BBB"),
+    asset_id = c(11L, 22L),
+    open = c(100, 100),
+    high = c(100, 100),
+    low = c(100, 100),
+    close = c(100, 100)
+  )
+  states <- list(
+    `11` = sim_state(cash = 1000, asset = 11L, last_px = 100),
+    `22` = sim_state(cash = 1000, asset = 22L, last_px = 100)
+  )
+  hedge_orders <- data.frame(
+    order_id = c("a", "b"),
+    asset_id = c(11L, 22L),
+    action = c("open", "open"),
+    dir = c("long", "long"),
+    order_type = c("market", "market"),
+    ctr_qty = c(8, 8),
+    price = c(NA_real_, NA_real_),
+    strat_id = c(0L, 0L),
+    action_id = c(1L, 1L)
+  )
+  hedged <- sim_portfolio_step(
+    states,
+    bars,
+    hedge_orders,
+    cov = matrix(c(0.01, -0.0095, -0.0095, 0.01), nrow = 2),
+    shared_cash = 1000,
+    portfolio_margin_sigma = 1,
+    portfolio_margin_floor = 0,
+    fee_rt = 0
+  )
+  expect_equal(hedged$states[["11"]]$ctr_unit, 8)
+  expect_equal(hedged$states[["22"]]$ctr_unit, 8)
+  expect_false(isTRUE(hedged$liquidated))
+
+  concentrated <- sim_portfolio_step(
+    states[1],
+    bars[1, ],
+    hedge_orders[1, ],
+    cov = matrix(0.01, nrow = 1),
+    shared_cash = 100,
+    portfolio_margin_sigma = 2,
+    portfolio_margin_floor = 0,
+    fee_rt = 0
+  )
+  expect_equal(concentrated$states[["11"]]$ctr_unit, 0)
+  expect_true(any(concentrated$events$status_label == "failed"))
 })
 
 test_that("simulation feed uses asset-specific random streams", {

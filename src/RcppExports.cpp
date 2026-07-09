@@ -83,10 +83,41 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// portfolio_step_rcpp
+Rcpp::List portfolio_step_rcpp(const Rcpp::List& states, const Rcpp::DataFrame& bars, const Rcpp::DataFrame& orders, const Rcpp::NumericMatrix& cov, double shared_cash, double ctr_size, double ctr_step, double lev, double fee_rt, double maker_fee_rt, double taker_fee_rt, double fund_rt, double funding_interval_hours, double mmr, double portfolio_margin_sigma, double portfolio_margin_floor, double old_timestamp, double slippage, double spread, bool rec);
+RcppExport SEXP _tradesimr_portfolio_step_rcpp(SEXP statesSEXP, SEXP barsSEXP, SEXP ordersSEXP, SEXP covSEXP, SEXP shared_cashSEXP, SEXP ctr_sizeSEXP, SEXP ctr_stepSEXP, SEXP levSEXP, SEXP fee_rtSEXP, SEXP maker_fee_rtSEXP, SEXP taker_fee_rtSEXP, SEXP fund_rtSEXP, SEXP funding_interval_hoursSEXP, SEXP mmrSEXP, SEXP portfolio_margin_sigmaSEXP, SEXP portfolio_margin_floorSEXP, SEXP old_timestampSEXP, SEXP slippageSEXP, SEXP spreadSEXP, SEXP recSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::List& >::type states(statesSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::DataFrame& >::type bars(barsSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::DataFrame& >::type orders(ordersSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type cov(covSEXP);
+    Rcpp::traits::input_parameter< double >::type shared_cash(shared_cashSEXP);
+    Rcpp::traits::input_parameter< double >::type ctr_size(ctr_sizeSEXP);
+    Rcpp::traits::input_parameter< double >::type ctr_step(ctr_stepSEXP);
+    Rcpp::traits::input_parameter< double >::type lev(levSEXP);
+    Rcpp::traits::input_parameter< double >::type fee_rt(fee_rtSEXP);
+    Rcpp::traits::input_parameter< double >::type maker_fee_rt(maker_fee_rtSEXP);
+    Rcpp::traits::input_parameter< double >::type taker_fee_rt(taker_fee_rtSEXP);
+    Rcpp::traits::input_parameter< double >::type fund_rt(fund_rtSEXP);
+    Rcpp::traits::input_parameter< double >::type funding_interval_hours(funding_interval_hoursSEXP);
+    Rcpp::traits::input_parameter< double >::type mmr(mmrSEXP);
+    Rcpp::traits::input_parameter< double >::type portfolio_margin_sigma(portfolio_margin_sigmaSEXP);
+    Rcpp::traits::input_parameter< double >::type portfolio_margin_floor(portfolio_margin_floorSEXP);
+    Rcpp::traits::input_parameter< double >::type old_timestamp(old_timestampSEXP);
+    Rcpp::traits::input_parameter< double >::type slippage(slippageSEXP);
+    Rcpp::traits::input_parameter< double >::type spread(spreadSEXP);
+    Rcpp::traits::input_parameter< bool >::type rec(recSEXP);
+    rcpp_result_gen = Rcpp::wrap(portfolio_step_rcpp(states, bars, orders, cov, shared_cash, ctr_size, ctr_step, lev, fee_rt, maker_fee_rt, taker_fee_rt, fund_rt, funding_interval_hours, mmr, portfolio_margin_sigma, portfolio_margin_floor, old_timestamp, slippage, spread, rec));
+    return rcpp_result_gen;
+END_RCPP
+}
 
 static const R_CallMethodDef CallEntries[] = {
     {"_tradesimr_backtest_rcpp", (DL_FUNC) &_tradesimr_backtest_rcpp, 26},
     {"_tradesimr_step_rcpp", (DL_FUNC) &_tradesimr_step_rcpp, 27},
+    {"_tradesimr_portfolio_step_rcpp", (DL_FUNC) &_tradesimr_portfolio_step_rcpp, 20},
     {NULL, NULL, 0}
 };
 

@@ -9,3 +9,7 @@ step_rcpp <- function(state, timestamp, open, high, low, close, action, dir, ord
     .Call(`_tradesimr_step_rcpp`, state, timestamp, open, high, low, close, action, dir, order_type, ctr_qty, price, strat_id, action_id, asset, ctr_size, ctr_step, lev, fee_rt, maker_fee_rt, taker_fee_rt, fund_rt, funding_interval_hours, mmr, old_timestamp, slippage, spread, rec)
 }
 
+portfolio_step_rcpp <- function(states, bars, orders, cov, shared_cash = 10000.0, ctr_size = 1.0, ctr_step = 1.0, lev = 10.0, fee_rt = 0.0, maker_fee_rt = NA_real_, taker_fee_rt = NA_real_, fund_rt = 0.0, funding_interval_hours = 8.0, mmr = 0.02, portfolio_margin_sigma = 3.0, portfolio_margin_floor = 0.02, old_timestamp = NA_real_, slippage = 0.0, spread = 0.0, rec = TRUE) {
+    .Call(`_tradesimr_portfolio_step_rcpp`, states, bars, orders, cov, shared_cash, ctr_size, ctr_step, lev, fee_rt, maker_fee_rt, taker_fee_rt, fund_rt, funding_interval_hours, mmr, portfolio_margin_sigma, portfolio_margin_floor, old_timestamp, slippage, spread, rec)
+}
+

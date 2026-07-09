@@ -230,6 +230,9 @@ sim_exchange_step <- function(exchange, bars) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   new_bars <- as_market_bars(bars)
   new_bars <- .validate_market_bar_assets(exchange, new_bars)
+  if (isTRUE(exchange$config$portfolio_margin %||% FALSE)) {
+    return(.sim_exchange_step_portfolio(exchange, new_bars))
+  }
   exchange$market_events <- data.table::rbindlist(list(exchange$market_events, new_bars), fill = TRUE)
   step_results <- vector("list", nrow(new_bars))
   new_event_list <- list()
@@ -273,6 +276,86 @@ sim_exchange_step <- function(exchange, bars) {
     }
     account_snapshots <- lapply(agents, function(agent_id) .agent_position_snapshots(exchange, agent_id, bar$timestamp[1L]))
     step_results[[i]] <- data.table::rbindlist(account_snapshots, fill = TRUE)
+  }
+
+  new_snapshots <- data.table::rbindlist(step_results, fill = TRUE)
+  exchange$step_snapshots <- data.table::rbindlist(list(exchange$step_snapshots, new_snapshots), fill = TRUE)
+  exchange$new_events <- data.table::rbindlist(new_event_list, fill = TRUE)
+  exchange$step_events <- data.table::rbindlist(list(exchange$step_events, exchange$new_events), fill = TRUE)
+  exchange$result <- exchange$step_snapshots
+  data.table::setattr(exchange$result, "market_events", exchange$market_events)
+  data.table::setattr(exchange$result, "events", exchange$step_events)
+  data.table::setattr(exchange$result, "orders", sim_orders(exchange$step_events))
+  exchange$last_events <- exchange$step_events
+  exchange$last_bar_count <- nrow(exchange$market_events)
+  exchange$result
+}
+
+#' @keywords internal
+.sim_exchange_step_portfolio <- function(exchange, new_bars) {
+  exchange$market_events <- data.table::rbindlist(list(exchange$market_events, new_bars), fill = TRUE)
+  data.table::setorderv(new_bars, intersect(c("timestamp", "asset_id"), names(new_bars)))
+  step_results <- list()
+  new_event_list <- list()
+  timestamps <- unique(new_bars$timestamp)
+
+  for (ts_val in timestamps) {
+    batch <- new_bars[timestamp == ts_val]
+    asset_ids <- as.integer(batch$asset_id)
+    agents <- unique(unlist(lapply(asset_ids, function(asset_id) {
+      .exchange_agents_to_step(exchange, batch$timestamp[1L], asset_id = asset_id)
+    }), use.names = FALSE))
+    if (!length(agents)) next
+
+    for (agent_id in agents) {
+      states <- list()
+      orders_all <- list()
+      for (i in seq_len(nrow(batch))) {
+        asset <- .bar_asset_key(batch[i])
+        .ensure_agent_account(exchange, agent_id, asset_id = asset$asset_id, symbol = asset$symbol, agent_type = "human")
+        state_key <- .agent_state_key(agent_id, asset$asset_id)
+        states[[as.character(asset$asset_id)]] <- .sync_state_cash_from_account(exchange, agent_id, exchange$agent_states[[state_key]])
+        orders <- .exchange_orders_for_bar(exchange, batch$timestamp[i], agent_id = agent_id, asset_id = asset$asset_id)
+        if (nrow(orders) > 0L) {
+          data.table::set(orders, j = "asset_id", value = asset$asset_id)
+          data.table::set(orders, j = "symbol", value = asset$symbol)
+          orders_all[[length(orders_all) + 1L]] <- orders
+        }
+      }
+
+      orders <- data.table::rbindlist(orders_all, fill = TRUE)
+      cov <- .cross_asset_covariance(exchange, asset_ids)
+      step_config <- exchange$config[intersect(names(exchange$config), names(formals(sim_portfolio_step)))]
+      step_config$cov <- cov
+      step_config$shared_cash <- .shared_cash(exchange, agent_id)
+      step_config$portfolio_margin_floor <- as.numeric(exchange$config$portfolio_margin_floor %||% exchange$config$mmr %||% 0.02)
+      step_args <- c(list(states = states, bars = batch, orders = orders), step_config)
+      step <- do.call(sim_portfolio_step, step_args)
+
+      exchange$agent_accounts[[as.character(agent_id)]]$cash <- as.numeric(step$cash %||% 0)
+      exchange$agent_accounts[[as.character(agent_id)]]$liquidated <- isTRUE(step$liquidated)
+      for (asset_id in names(step$states)) {
+        state_key <- .agent_state_key(agent_id, as.integer(asset_id))
+        exchange$agent_states[[state_key]] <- step$states[[asset_id]]
+        exchange$agent_states[[state_key]]$cash <- as.numeric(step$cash %||% 0)
+      }
+      if (nrow(step$events) > 0L) {
+        data.table::set(step$events, j = "agent_id", value = agent_id)
+        if ("asset_id" %in% names(step$events)) {
+          symbols <- vapply(as.integer(step$events$asset_id), function(asset_id) {
+            exchange$asset_symbols[[as.character(asset_id)]] %||% paste0("asset-", asset_id)
+          }, character(1L))
+          data.table::set(step$events, j = "symbol", value = symbols)
+        }
+        new_event_list[[length(new_event_list) + 1L]] <- step$events
+        .mark_orders_from_events(exchange, orders, step$events)
+      }
+      account_snapshots <- .agent_position_snapshots(exchange, agent_id, batch$timestamp[1L])
+      if (nrow(account_snapshots) > 0L) {
+        data.table::set(account_snapshots, j = "maintenance_margin", value = as.numeric(step$maintenance_margin %||% 0))
+      }
+      step_results[[length(step_results) + 1L]] <- account_snapshots
+    }
   }
 
   new_snapshots <- data.table::rbindlist(step_results, fill = TRUE)
@@ -748,9 +831,10 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
 .mark_orders_from_events <- function(exchange, orders, events) {
   if (nrow(orders) == 0L || nrow(events) == 0L) return(invisible(NULL))
   filled_events <- events[events$status_label == "filled"]
+  failed_events <- events[events$status_label == "failed"]
   filled_actions <- filled_events$action_id
+  failed_actions <- failed_events$action_id
   idx <- which(orders$action_id %in% filled_actions)
-  if (length(idx) == 0L) return(invisible(NULL))
   for (col in c("price", "fee", "realized_pnl")) {
     if (!col %in% names(exchange$agent_orders)) data.table::set(exchange$agent_orders, j = col, value = NA_real_)
   }
@@ -763,6 +847,16 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
       if (col %in% names(filled_events)) {
         data.table::set(exchange$agent_orders, i = order_idx, j = col, value = as.numeric(filled_events[[col]][event_idx]))
       }
+    }
+  }
+  failed_idx <- which(orders$action_id %in% failed_actions)
+  for (i in failed_idx) {
+    order_idx <- match(orders$order_id[i], exchange$agent_orders$order_id)
+    event_idx <- match(orders$action_id[i], failed_events$action_id)
+    if (is.na(order_idx) || is.na(event_idx)) next
+    data.table::set(exchange$agent_orders, i = order_idx, j = "status", value = "failed")
+    if ("price" %in% names(failed_events)) {
+      data.table::set(exchange$agent_orders, i = order_idx, j = "price", value = as.numeric(failed_events$price[event_idx]))
     }
   }
   invisible(NULL)

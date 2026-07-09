@@ -108,6 +108,95 @@ sim_step <- function(state,
   list(state = out$state, events = events)
 }
 
+#' Step the C++ portfolio-margin kernel once
+#'
+#' Processes one timestamp batch of bars and explicit orders for one agent under
+#' one shared cash balance. This is the multi-asset primitive used by live
+#' exchanges when `portfolio_margin = TRUE`.
+#'
+#' @param states Named list of prior `sim_state()` objects keyed by `asset_id`.
+#' @param bars One timestamp batch of market bars.
+#' @param orders Order data frame with `asset_id`, `action`, `dir`,
+#'   `order_type`, `ctr_qty`, `price`, `strat_id`, and `action_id`.
+#' @param cov Return covariance matrix aligned to `bars$asset_id`.
+#' @param shared_cash Shared account cash before this step.
+#' @param portfolio_margin_sigma Sigma multiplier for covariance margin.
+#' @param portfolio_margin_floor Floor margin rate applied to gross exposure.
+#' @inheritParams sim_step
+#' @return A list with `states`, `cash`, `equity`, `maintenance_margin`,
+#'   `liquidated`, and `events`.
+#' @export
+sim_portfolio_step <- function(states,
+                               bars,
+                               orders = data.frame(),
+                               cov = diag(nrow(as_market_bars(bars))),
+                               shared_cash = 10000,
+                               ctr_size = 1,
+                               ctr_step = 1,
+                               lev = 10,
+                               fee_rt = 0,
+                               maker_fee_rt = NA_real_,
+                               taker_fee_rt = NA_real_,
+                               fund_rt = 0,
+                               funding_interval_hours = 8,
+                               mmr = 0.02,
+                               portfolio_margin_sigma = 3,
+                               portfolio_margin_floor = mmr,
+                               slippage = 0,
+                               spread = 0,
+                               record = TRUE) {
+  bars <- as_market_bars(bars)
+  if (nrow(bars) == 0L) stop("`bars` must contain at least one row.", call. = FALSE)
+  if (length(unique(bars$timestamp)) != 1L) {
+    stop("`bars` must contain one timestamp batch.", call. = FALSE)
+  }
+  if (!"asset_id" %in% names(bars)) stop("`bars` must contain `asset_id`.", call. = FALSE)
+  order_batch <- .normalize_portfolio_step_orders(orders)
+  cov <- as.matrix(cov)
+  if (!all(dim(cov) == c(nrow(bars), nrow(bars)))) {
+    stop("`cov` must be aligned to `bars` and have dimension nrow(bars) x nrow(bars).", call. = FALSE)
+  }
+  out <- portfolio_step_rcpp(
+    states = states,
+    bars = data.frame(
+      asset_id = as.integer(bars$asset_id),
+      timestamp = as.numeric(bars$timestamp),
+      open = as.numeric(bars$open),
+      high = as.numeric(bars$high),
+      low = as.numeric(bars$low),
+      close = as.numeric(bars$close)
+    ),
+    orders = order_batch,
+    cov = cov,
+    shared_cash = as.numeric(shared_cash),
+    ctr_size = as.numeric(ctr_size),
+    ctr_step = as.numeric(ctr_step),
+    lev = as.numeric(lev),
+    fee_rt = as.numeric(fee_rt),
+    maker_fee_rt = as.numeric(maker_fee_rt),
+    taker_fee_rt = as.numeric(taker_fee_rt),
+    fund_rt = as.numeric(fund_rt),
+    funding_interval_hours = as.numeric(funding_interval_hours),
+    mmr = as.numeric(mmr),
+    portfolio_margin_sigma = as.numeric(portfolio_margin_sigma),
+    portfolio_margin_floor = as.numeric(portfolio_margin_floor),
+    old_timestamp = as.numeric(if (length(states)) states[[1L]]$old_timestamp %||% NA_real_ else NA_real_),
+    slippage = as.numeric(slippage),
+    spread = as.numeric(spread),
+    rec = isTRUE(record)
+  )
+  events <- sim_events(out$events)
+  if (inherits(bars$timestamp, "POSIXt") && nrow(events) > 0L) {
+    data.table::set(
+      events,
+      j = "timestamp",
+      value = as.POSIXct(events$timestamp, origin = "1970-01-01", tz = attr(bars$timestamp, "tzone") %||% "UTC")
+    )
+  }
+  out$events <- events
+  out
+}
+
 #' @keywords internal
 .normalize_step_orders <- function(orders, state) {
   DT <- data.table::as.data.table(orders)
@@ -135,6 +224,45 @@ sim_step <- function(state,
     data.table::set(DT, j = "action_id", value = seq.int(start, length.out = nrow(DT)))
   }
   data.table::data.table(
+    action = .encode_step_action(DT$action),
+    dir = .encode_step_dir(DT$dir),
+    order_type = .encode_step_order_type(DT$order_type),
+    ctr_qty = as.numeric(DT$ctr_qty),
+    price = as.numeric(DT$price),
+    strat_id = as.integer(DT$strat_id),
+    action_id = as.integer(DT$action_id)
+  )
+}
+
+#' @keywords internal
+.normalize_portfolio_step_orders <- function(orders) {
+  DT <- data.table::as.data.table(orders)
+  if (nrow(DT) == 0L) {
+    return(data.frame(
+      order_id = character(),
+      asset_id = integer(),
+      action = integer(),
+      dir = integer(),
+      order_type = integer(),
+      ctr_qty = numeric(),
+      price = numeric(),
+      strat_id = integer(),
+      action_id = integer()
+    ))
+  }
+  required <- c("asset_id", "action", "dir", "ctr_qty")
+  missing <- setdiff(required, names(DT))
+  if (length(missing) > 0L) {
+    stop("Missing portfolio step order column(s): ", paste(missing, collapse = ", "), call. = FALSE)
+  }
+  if (!"order_id" %in% names(DT)) data.table::set(DT, j = "order_id", value = rep.int(NA_character_, nrow(DT)))
+  if (!"order_type" %in% names(DT)) data.table::set(DT, j = "order_type", value = rep.int("market", nrow(DT)))
+  if (!"price" %in% names(DT)) data.table::set(DT, j = "price", value = rep.int(NA_real_, nrow(DT)))
+  if (!"strat_id" %in% names(DT)) data.table::set(DT, j = "strat_id", value = rep.int(0L, nrow(DT)))
+  if (!"action_id" %in% names(DT)) data.table::set(DT, j = "action_id", value = seq_len(nrow(DT)))
+  data.frame(
+    order_id = as.character(DT$order_id),
+    asset_id = as.integer(DT$asset_id),
     action = .encode_step_action(DT$action),
     dir = .encode_step_dir(DT$dir),
     order_type = .encode_step_order_type(DT$order_type),
