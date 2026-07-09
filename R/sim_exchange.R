@@ -15,11 +15,13 @@ sim_exchange_new <- function(config = list()) {
   state$order_cancellations <- sim_schemas()$order_cancellations[0]
   state$agents <- sim_schemas()$agents[0]
   state$agent_decisions <- sim_schemas()$agent_decisions[0]
+  state$agent_strategy_events <- sim_schemas()$agent_strategy_events[0]
   state$agent_rankings <- sim_schemas()$agent_rankings[0]
   state$assets <- sim_schemas()$assets[0]
   state$agent_states <- list()
   state$agent_accounts <- list()
   state$asset_symbols <- list()
+  state$strategy_registry <- new.env(parent = emptyenv())
   state$feeds <- list()
   state$market_model <- sim_market_model_config()
   state$event_log <- data.table::data.table(
@@ -384,6 +386,7 @@ sim_exchange_save <- function(exchange, path, format = c("csv", "fst")) {
     agents = exchange$agents,
     assets = exchange$assets,
     agent_decisions = exchange$agent_decisions,
+    agent_strategy_events = exchange$agent_strategy_events,
     agent_rankings = sim_agent_rankings(exchange),
     market_model = .market_model_table(exchange),
     cross_asset_risk = sim_cross_asset_risk(exchange),
@@ -438,6 +441,7 @@ sim_exchange_load <- function(path) {
   if (file.exists(file.path(path, "agents.csv"))) exchange$agents <- data.table::fread(file.path(path, "agents.csv"))
   if (file.exists(file.path(path, "assets.csv"))) exchange$assets <- data.table::fread(file.path(path, "assets.csv"))
   if (file.exists(file.path(path, "agent_decisions.csv"))) exchange$agent_decisions <- data.table::fread(file.path(path, "agent_decisions.csv"))
+  if (file.exists(file.path(path, "agent_strategy_events.csv"))) exchange$agent_strategy_events <- data.table::fread(file.path(path, "agent_strategy_events.csv"))
   if (file.exists(file.path(path, "agent_rankings.csv"))) exchange$agent_rankings <- data.table::fread(file.path(path, "agent_rankings.csv"))
   if (file.exists(file.path(path, "market_model.csv"))) exchange$market_model <- .market_model_from_table(data.table::fread(file.path(path, "market_model.csv")))
   if (file.exists(file.path(path, "feed_configs.csv"))) {

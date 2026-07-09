@@ -909,3 +909,154 @@ test_that("live service state returns account history for equity curves", {
   expect_equal(length(state$account[[1]]$agent_id), 1)
   expect_equal(length(state$account[[1]]$equity), 1)
 })
+
+test_that("strategy-backed agents submit explicit multi-asset order intents", {
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 1, lev = 10))
+  sim_asset_add(exchange, "AAPL", asset_id = 101L, asset_class = "stock")
+  sim_asset_add(exchange, "ETH-USDT-SWAP", asset_id = 202L, asset_class = "crypto_perp")
+  sim_strategy_register(exchange, "pair-orders", function(market, bar, ...) {
+    data.table::data.table(
+      symbol = c("AAPL", "ETH-USDT-SWAP"),
+      asset_id = c(101L, 202L),
+      side = c("buy", "sell"),
+      qty = c(1, 2),
+      order_type = "market"
+    )
+  })
+  sim_agent_add(exchange, agent_id = "strategy-a", agent_type = "strategy", config = list(strategy_id = "pair-orders"))
+
+  bars <- data.frame(
+    timestamp = as.POSIXct("2026-01-01 00:00:00", tz = "UTC"),
+    symbol = c("AAPL", "ETH-USDT-SWAP"),
+    asset_id = c(101L, 202L),
+    open = c(100, 2000),
+    high = c(101, 2010),
+    low = c(99, 1990),
+    close = c(100, 2000)
+  )
+  sim_exchange_add_bars(exchange, bars)
+  decisions <- sim_agents_step(exchange, bars)
+
+  expect_equal(nrow(decisions), 2)
+  expect_setequal(decisions$symbol, c("AAPL", "ETH-USDT-SWAP"))
+  expect_setequal(exchange$order_requests$side, c("buy", "sell"))
+  expect_equal(exchange$order_requests$qty_type, rep("contracts", 2))
+  expect_equal(sim_strategy_list(exchange), "pair-orders")
+  expect_true(sim_strategy_unregister(exchange, "pair-orders"))
+})
+
+test_that("strategy-backed agents consume strategyr target-position strategies when available", {
+  skip_if_not_installed("strategyr")
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 1, lev = 10))
+  sim_asset_add(exchange, "BTC-USDT-SWAP", asset_id = 303L, asset_class = "crypto_perp")
+  sim_agent_add(
+    exchange,
+    agent_id = "buy-hold",
+    agent_type = "strategy",
+    config = list(
+      strategy_fun = "strategyr::strat_buy_and_hold_tgt_pos",
+      param_value = 1
+    )
+  )
+  bars <- data.frame(
+    timestamp = as.POSIXct("2026-01-01 00:00:00", tz = "UTC") + 0:2 * 3600,
+    symbol = "BTC-USDT-SWAP",
+    asset_id = 303L,
+    open = c(100, 101, 102),
+    high = c(101, 102, 103),
+    low = c(99, 100, 101),
+    close = c(100, 101, 102)
+  )
+  sim_exchange_add_bars(exchange, bars)
+  decisions <- sim_agents_step(exchange, bars[3, ])
+
+  expect_equal(nrow(decisions), 1)
+  expect_equal(decisions$side, "target")
+  expect_equal(decisions$qty_type, "target_pos")
+  expect_equal(decisions$tgt_pos, 1)
+  expect_equal(exchange$order_requests$tgt_pos, 1)
+  expect_equal(exchange$order_requests$side, "target")
+})
+
+test_that("strategy-backed agents isolate errors and record diagnostics", {
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 1, lev = 10))
+  sim_asset_add(exchange, "AAPL", asset_id = 101L, asset_class = "stock")
+  sim_strategy_register(exchange, "broken", function(...) stop("strategy exploded", call. = FALSE))
+  sim_strategy_register(exchange, "valid", function(DT, ...) rep(1, nrow(DT)))
+  sim_agent_add(exchange, "broken-agent", "strategy", list(strategy_id = "broken"))
+  sim_agent_add(exchange, "valid-agent", "strategy", list(strategy_id = "valid"))
+
+  bars <- data.frame(
+    timestamp = as.POSIXct("2026-01-01 00:00:00", tz = "UTC") + 0:1 * 3600,
+    symbol = "AAPL",
+    asset_id = 101L,
+    open = c(100, 101),
+    high = c(101, 102),
+    low = c(99, 100),
+    close = c(100, 101)
+  )
+  sim_exchange_add_bars(exchange, bars)
+  decisions <- sim_agents_step(exchange, bars[2, ])
+
+  expect_equal(nrow(decisions), 1)
+  expect_equal(decisions$agent_id, "valid-agent")
+  expect_equal(nrow(exchange$order_requests), 1)
+  expect_true(any(exchange$agent_strategy_events$agent_id == "broken-agent" & exchange$agent_strategy_events$status == "error"))
+  expect_true(any(grepl("strategy exploded", exchange$agent_strategy_events$message)))
+  expect_true(any(exchange$agent_strategy_events$stage == "submitted_order"))
+})
+
+test_that("strategy config validation rejects unknown params", {
+  exchange <- sim_exchange_new()
+  sim_strategy_register(exchange, "strict", function(DT, fast = 10) rep(0, nrow(DT)))
+
+  ok <- sim_strategy_validate_config(exchange, list(strategy_id = "strict", param_fast = 5))
+  bad <- sim_strategy_validate_config(exchange, list(strategy_id = "strict", param_slow = 20))
+
+  expect_true(ok$valid)
+  expect_false(bad$valid)
+  expect_match(bad$message, "Unknown strategy parameter")
+  expect_error(
+    sim_agent_add(exchange, "bad-strategy", "strategy", list(strategy_id = "strict", param_slow = 20)),
+    "Unknown strategy parameter"
+  )
+})
+
+test_that("strategy-backed agents consume strategyr-style multi-asset order intents", {
+  skip_if_not_installed("strategyr")
+  exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 1, lev = 10))
+  sim_asset_add(exchange, "AAPL", asset_id = 101L, asset_class = "stock")
+  sim_asset_add(exchange, "ETH-USDT-SWAP", asset_id = 202L, asset_class = "crypto_perp")
+  sim_strategy_register(exchange, "strategyr-intents", function(market, account, ...) {
+    latest <- market[order(timestamp), .SD[.N], by = symbol]
+    portfolio <- data.table::data.table(
+      asset = latest$symbol,
+      price = latest$close,
+      current_units = 0,
+      target_weight = c(0.25, -0.25),
+      contract_size = 1,
+      lot_step = 1
+    )
+    plan <- strategyr::plan_portfolio_adjustment(portfolio, equity = 10000)
+    strategyr::build_order_intents(plan, pricing_method = "market")
+  })
+  sim_agent_add(exchange, "allocator", "strategy", list(strategy_id = "strategyr-intents"))
+
+  bars <- data.frame(
+    timestamp = as.POSIXct("2026-01-01 00:00:00", tz = "UTC"),
+    symbol = c("AAPL", "ETH-USDT-SWAP"),
+    asset_id = c(101L, 202L),
+    open = c(100, 2000),
+    high = c(101, 2010),
+    low = c(99, 1990),
+    close = c(100, 2000)
+  )
+  sim_exchange_add_bars(exchange, bars)
+  decisions <- sim_agents_step(exchange, bars)
+
+  expect_equal(nrow(decisions), 2)
+  expect_setequal(decisions$symbol, c("AAPL", "ETH-USDT-SWAP"))
+  expect_true(all(decisions$decision_type == "order"))
+  expect_true(any(exchange$agent_strategy_events$output_type == "order_intent_table"))
+  expect_equal(nrow(exchange$order_requests), 2)
+})

@@ -70,6 +70,17 @@
             <option value="momentum">momentum</option>
             <option value="contrarian">contrarian</option>
             <option value="mean_reversion">mean_reversion</option>
+            <option value="strategy">strategy</option>
+          </select>
+        </label>
+        <label>Strategy Preset
+          <select name="strategy_preset">
+            <option value="">custom / none</option>
+            <option value="buy_hold">strategyr buy-and-hold</option>
+            <option value="ema_cross">strategyr EMA cross</option>
+            <option value="macd_cross">strategyr MACD cross</option>
+            <option value="bollinger_revert">strategyr Bollinger revert</option>
+            <option value="portfolio_intents">order-intent table example</option>
           </select>
         </label>
         <label>Qty<input name="qty" type="number" step="0.0001" value="1"></label>
@@ -80,10 +91,14 @@
             <option value="current_bar">current_bar</option>
           </select>
         </label>
+        <label>Strategy ID<input name="strategy_id" placeholder="registered strategy id"></label>
+        <label>Strategy Function<input name="strategy_fun" placeholder="e.g. strategyr::strat_buy_and_hold_tgt_pos"></label>
+        <label>Strategy Params<textarea name="strategy_params" rows="2" placeholder="param_value=1; param_fast=20"></textarea></label>
         <label>Initial Cash<input name="initial_cash" type="number" step="0.01" value="10000"></label>
         <button type="submit">Add AI Agent</button>
       </form>
       <p id="ai-status" class="feed-status">AI service not contacted yet.</p>
+      <p id="strategy-validation-status" class="feed-status">Strategy validation not run.</p>
       <div id="agents-table" class="table-wrap"></div>
     </section>
 
@@ -174,6 +189,10 @@
       <article class="panel">
         <h2>Agent Decisions</h2>
         <div id="agent-decisions-table" class="table-wrap"></div>
+      </article>
+      <article class="panel">
+        <h2>Strategy Lifecycle</h2>
+        <div id="strategy-events-table" class="table-wrap"></div>
       </article>
       <article class="panel">
         <h2>Agent Rankings</h2>

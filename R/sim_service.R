@@ -39,6 +39,12 @@ sim_live_service <- function(exchange = sim_exchange_new()) {
     .service_headers(res)
     .service_records(sim_agent_rankings(exchange))
   })
+  pr <- plumber_ns$pr_post(pr, "/strategies/validate", function(req, res) {
+    .service_headers(res)
+    body <- .service_json_body(req)
+    config <- as.list(body$config %||% body)
+    sim_strategy_validate_config(exchange, config)
+  })
   pr <- plumber_ns$pr_post(pr, "/agents", function(req, res) {
     .service_headers(res)
     body <- .service_json_body(req)
@@ -250,6 +256,7 @@ sim_live_service_run <- function(exchange = sim_exchange_new(), host = "127.0.0.
     order_cancellations = .service_records(exchange$order_cancellations),
     agents = .service_records(exchange$agents),
     agent_decisions = .service_records(exchange$agent_decisions),
+    agent_strategy_events = .service_records(exchange$agent_strategy_events),
     agent_rankings = .service_records(sim_agent_rankings(exchange)),
     cross_asset_risk = .service_records(sim_cross_asset_risk(exchange)),
     events = .service_records(sim_exchange_new_events(exchange)),

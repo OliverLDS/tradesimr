@@ -13,6 +13,7 @@ const REQUIRED_TABLES = [
   "agents",
   "assets",
   "agent_decisions",
+  "agent_strategy_events",
   "agent_rankings",
   "positions",
   "market_model",
@@ -63,6 +64,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bind("feed-step", "click", feedStep);
   bind("feed-form", "change", updateFeedRunMode);
   bind("agent-admin-form", "submit", addAiAgent);
+  bind("agent-admin-form", "change", handleStrategyPresetChange);
   bind("agent-status-form", "submit", setAiAgentStatus);
   bind("asset-form", "submit", addAsset);
   bind("replay-window", "change", updateReplayWindow);
@@ -200,9 +202,10 @@ function render() {
   renderTable("requests-table", state.tables.order_requests, ["timestamp", "command_id", "agent_id", "symbol", "asset_id", "side", "qty_type", "qty", "order_type", "status", "order_id", "message"]);
   renderTable("fills-table", state.tables.fills, ["timestamp", "action_label", "dir_label", "ctr_qty", "price", "fee", "realized_pnl"]);
   renderTable("risk-table", state.tables.risk_snapshots, ["timestamp", "equity", "abs_notional", "leverage", "maintenance_margin", "margin_buffer"], 25);
-  renderTable("agents-table", state.tables.agents, ["agent_id", "agent_type", "status", "config", "created_at"], 80);
+  renderTable("agents-table", agentRowsWithStrategyConfig(), ["agent_id", "agent_type", "status", "strategy_id", "strategy_fun", "strategy_params", "strategy_status", "strategy_message", "created_at"], 80);
   renderTable("assets-table", state.tables.assets, ["asset_id", "symbol", "status", "asset_class", "contract_size", "tick_size", "qty_step", "base_ccy", "quote_ccy", "created_at"], 80);
   renderTable("agent-decisions-table", state.tables.agent_decisions, ["timestamp", "agent_id", "agent_type", "symbol", "asset_id", "side", "intended_action", "intended_dir", "qty", "order_type", "command_id", "status"], 80);
+  renderTable("strategy-events-table", state.tables.agent_strategy_events, ["timestamp", "agent_id", "strategy_id", "strategy_fun", "stage", "output_type", "symbol", "asset_id", "target", "status", "message"], 80);
   renderAgentRankingsTable();
 }
 
@@ -470,20 +473,165 @@ function stopFeedAutoTimer() {
   }
 }
 
+const STRATEGY_PRESETS = {
+  buy_hold: {
+    strategy_fun: "strategyr::strat_buy_and_hold_tgt_pos",
+    params: "param_value=1"
+  },
+  ema_cross: {
+    strategy_fun: "strategyr::strat_ema_cross_tgt_pos",
+    params: "param_fast=20; param_slow=50; param_low_atr_threshold=5; param_atr_window=300"
+  },
+  macd_cross: {
+    strategy_fun: "strategyr::strat_macd_cross_tgt_pos",
+    params: "param_fast=12; param_slow=26; param_signal=9; param_target_size=1"
+  },
+  bollinger_revert: {
+    strategy_fun: "strategyr::strat_bollinger_revert_tgt_pos",
+    params: "param_n=20; param_k=2; param_target_size=1"
+  },
+  portfolio_intents: {
+    strategy_id: "portfolio-intents-demo",
+    params: "param_note=register matching R strategy function with sim_strategy_register()"
+  }
+};
+
+function handleStrategyPresetChange(event) {
+  if (!event.target || event.target.name !== "strategy_preset") return;
+  const form = event.currentTarget;
+  const preset = STRATEGY_PRESETS[event.target.value];
+  if (!preset) return;
+  const type = form.querySelector('[name="agent_type"]');
+  const strategyId = form.querySelector('[name="strategy_id"]');
+  const strategyFun = form.querySelector('[name="strategy_fun"]');
+  const strategyParams = form.querySelector('[name="strategy_params"]');
+  if (type) type.value = "strategy";
+  if (strategyId) strategyId.value = preset.strategy_id || "";
+  if (strategyFun) strategyFun.value = preset.strategy_fun || "";
+  if (strategyParams) strategyParams.value = preset.params || "";
+  setStrategyValidationStatus("Preset loaded. Validate by submitting the agent.", false);
+}
+
 async function addAiAgent(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const raw = Object.fromEntries(form.entries());
-  const payload = {
-    agent_type: raw.agent_type || "chaos",
+  const validation = validateAgentForm(raw);
+  setStrategyValidationStatus(validation.message, !validation.ok);
+  if (!validation.ok) return;
+  const config = {
     qty: numericOrDefault(raw.qty, 1),
     lookback: Math.trunc(numericOrDefault(raw.lookback, 12)),
-    asset_policy: raw.asset_policy || "random",
+    asset_policy: raw.asset_policy || "random"
+  };
+  if (raw.strategy_id) config.strategy_id = raw.strategy_id;
+  if (raw.strategy_fun) config.strategy_fun = raw.strategy_fun;
+  Object.assign(config, parseStrategyParams(raw.strategy_params));
+  if ((raw.agent_type || "chaos") === "strategy") {
+    const backendValidation = await validateStrategyBackend(config);
+    if (!backendValidation?.valid) {
+      setStrategyValidationStatus(backendValidation?.message || "Backend strategy validation failed.", true);
+      return;
+    }
+    setStrategyValidationStatus(backendValidation.message || "Strategy config passed backend validation.", false);
+  }
+  const payload = {
+    agent_type: raw.agent_type || "chaos",
+    config,
     initial_cash: numericOrDefault(raw.initial_cash, 10000)
   };
   if (raw.agent_id) payload.agent_id = raw.agent_id;
   const data = await postAdmin("/agents", payload, "AI agent added.");
   if (data?.state) applyServiceState(data.state);
+}
+
+function validateAgentForm(raw) {
+  if ((raw.agent_type || "chaos") !== "strategy") return { ok: true, message: "Built-in AI agent config is valid." };
+  if (!raw.strategy_id && !raw.strategy_fun) {
+    return { ok: false, message: "Strategy agents require Strategy ID or Strategy Function." };
+  }
+  const params = parseStrategyParams(raw.strategy_params);
+  const badKeys = Object.keys(params).filter((key) => !key.startsWith("param_"));
+  if (badKeys.length) {
+    return { ok: false, message: `Strategy params must use param_ prefixes: ${badKeys.join(", ")}` };
+  }
+  if (raw.strategy_fun && raw.strategy_fun.includes("::")) {
+    const parts = raw.strategy_fun.split("::");
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      return { ok: false, message: "Strategy Function must look like package::function or a local function name." };
+    }
+  }
+  return { ok: true, message: "Strategy config passed browser validation; backend will validate function availability." };
+}
+
+async function validateStrategyBackend(config) {
+  try {
+    const response = await fetch(`${serviceBase()}/strategies/validate`, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify({ config })
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
+  } catch (err) {
+    return { valid: false, message: `Backend strategy validation failed: ${err.message}` };
+  }
+}
+
+function setStrategyValidationStatus(message, isError) {
+  const el = document.getElementById("strategy-validation-status");
+  if (!el) return;
+  el.textContent = message || "";
+  el.classList.toggle("error", Boolean(isError));
+}
+
+function parseStrategyParams(text) {
+  const out = {};
+  if (!text) return out;
+  text.split(/[;\n]/).forEach((part) => {
+    const idx = part.indexOf("=");
+    if (idx < 0) return;
+    const key = part.slice(0, idx).trim();
+    if (!key) return;
+    out[key] = part.slice(idx + 1).trim();
+  });
+  return out;
+}
+
+function parseConfigString(config) {
+  const out = {};
+  if (!config) return out;
+  String(config).split(";").forEach((part) => {
+    const idx = part.indexOf("=");
+    if (idx < 0) return;
+    const key = part.slice(0, idx).trim();
+    if (!key) return;
+    out[key] = part.slice(idx + 1).trim();
+  });
+  return out;
+}
+
+function agentRowsWithStrategyConfig() {
+  const latestEvents = {};
+  (state.tables.agent_strategy_events || []).forEach((event) => {
+    latestEvents[event.agent_id] = event;
+  });
+  return (state.tables.agents || []).map((agent) => {
+    const config = parseConfigString(agent.config);
+    const params = Object.keys(config)
+      .filter((key) => key.startsWith("param_"))
+      .map((key) => `${key}=${config[key]}`)
+      .join("; ");
+    const event = latestEvents[agent.agent_id] || {};
+    return {
+      ...agent,
+      strategy_id: config.strategy_id || config.strategy || "",
+      strategy_fun: config.strategy_fun || "",
+      strategy_params: params,
+      strategy_status: event.status || "",
+      strategy_message: event.message || ""
+    };
+  });
 }
 
 async function setAiAgentStatus(event) {

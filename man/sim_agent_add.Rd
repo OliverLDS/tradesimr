@@ -7,7 +7,8 @@
 sim_agent_add(
   exchange,
   agent_id = NULL,
-  agent_type = c("chaos", "momentum", "contrarian", "mean_reversion", "human"),
+  agent_type = c("chaos", "momentum", "contrarian", "mean_reversion", "strategy",
+    "human"),
   config = list(),
   status = c("active", "paused")
 )
@@ -17,12 +18,13 @@ sim_agent_add(
 
 \item{agent_id}{Agent identifier. If omitted, one is generated.}
 
-\item{agent_type}{Agent type: \code{human}, \code{chaos}, \code{momentum}, \code{contrarian}, or
-\code{mean_reversion}.}
+\item{agent_type}{Agent type: \code{human}, \code{chaos}, \code{momentum}, \code{contrarian},
+\code{mean_reversion}, or \code{strategy}.}
 
 \item{config}{Named list of agent settings. Supported values include \code{qty},
-\code{order_type}, \code{lookback}, and \code{asset_policy}. The default asset policy is
-\code{random}, which picks among active assets with available market bars.}
+\code{order_type}, \code{lookback}, \code{asset_policy}, and for strategy agents
+\code{strategy_id} or \code{strategy_fun}. Strategy parameters can be supplied with
+\code{param_} prefixes, for example \code{param_fast = 10}.}
 
 \item{status}{Initial status: \code{active} or \code{paused}.}
 }

@@ -10,8 +10,7 @@ sim_market_model_status(exchange)
 \item{exchange}{A \code{tradesimr_exchange}.}
 }
 \value{
-A list describing the market-level simulation model, including whether
-correlation, covariance, factor, or regime settings are present.
+A list describing the market-level simulation model.
 }
 \description{
 Get market-level simulation model status

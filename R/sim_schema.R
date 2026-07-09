@@ -1,7 +1,7 @@
 #' tradesimr durable schema version
 #'
 #' @export
-TRADESIMR_SCHEMA_VERSION <- "0.9.0"
+TRADESIMR_SCHEMA_VERSION <- "0.10.0"
 
 #' Simulation table schemas
 #'
@@ -117,9 +117,25 @@ sim_schemas <- function() {
       qty = numeric(),
       order_type = character(),
       limit_price = numeric(),
+      tgt_pos = numeric(),
       reason = character(),
       command_id = character(),
       status = character()
+    ),
+    agent_strategy_events = data.table::data.table(
+      timestamp = as.POSIXct(character()),
+      agent_id = character(),
+      strategy_id = character(),
+      strategy_fun = character(),
+      stage = character(),
+      output_type = character(),
+      symbol = character(),
+      asset_id = integer(),
+      signal = character(),
+      target = numeric(),
+      status = character(),
+      message = character(),
+      raw = character()
     ),
     agent_rankings = data.table::data.table(
       timestamp = as.POSIXct(character()),
