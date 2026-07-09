@@ -1,6 +1,6 @@
 Package: tradesimr
 Title: Execution and Simulation Engine for Trading Strategies
-Version: 0.10.0
+Version: 0.11.0
 Authors@R: 
     person(given = "Oliver",
            family = "Lee",
@@ -16,9 +16,11 @@ Description:
     historical replay, incremental exchange stepping, durable event schemas,
     append-only agent command logs, registered tradable assets, per-agent
     shared-cash cross-margin live accounts, AI agent competitors, scheduled
-    live-feed stepping, strategy-backed AI agents with diagnostics, coordinated
-    multi-asset market simulation with static covariance, AR-GARCH, factor, and
-    regime models, local live-service APIs, import/export helpers, separate
+    live-feed stepping, strategy-backed AI agents with diagnostics, calibrated
+    and coordinated multi-asset market simulation with static covariance,
+    AR-GARCH, factor, and regime models, durable per-feed simulation state,
+    optional portfolio-margin enforcement, local live-service APIs,
+    import/export helpers, separate
     replay, live-state, and agent dashboard exports, and installed local
     orchestration scripts. It is designed to consume signals, order intents, or
     target exposure decisions from strategy packages such as strategyr and

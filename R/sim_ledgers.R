@@ -106,20 +106,32 @@ sim_cross_asset_risk <- function(exchange, stress_sigma = 2) {
       agent_id = character(),
       symbol = character(),
       asset_id = integer(),
+      asset_class = character(),
       quantity = numeric(),
       direction = character(),
       notional = numeric(),
       abs_notional = numeric(),
       allocation = numeric(),
+      asset_class_allocation = numeric(),
       unrealized_pnl = numeric(),
       equity = numeric(),
       leverage = numeric(),
       concentration_hhi = numeric(),
+      factor_exposure = numeric(),
+      max_drawdown = numeric(),
+      risk_contribution = numeric(),
       portfolio_vol = numeric(),
       stress_loss = numeric()
     ))
   }
   positions <- data.table::copy(positions)
+  assets <- sim_assets(exchange)
+  if (!"asset_id" %in% names(positions)) positions[, asset_id := NA_integer_]
+  if (nrow(assets) > 0L && "asset_id" %in% names(assets)) {
+    positions <- merge(positions, assets[, .(asset_id, asset_class)], by = "asset_id", all.x = TRUE)
+  } else {
+    positions[, asset_class := NA_character_]
+  }
   positions <- positions[abs(as.numeric(ctr_unit)) > 0 | abs(as.numeric(notional)) > 0]
   if (nrow(positions) == 0L) return(sim_cross_asset_risk_empty())
   account <- sim_exchange_account(exchange)
@@ -135,19 +147,25 @@ sim_cross_asset_risk <- function(exchange, stress_sigma = 2) {
     default = "flat"
   )]
   out <- merge(
-    positions[, .(timestamp, agent_id, symbol, asset_id, quantity = ctr_unit, direction, notional, abs_notional, unrealized_pnl)],
+    positions[, .(timestamp, agent_id, symbol, asset_id, asset_class, quantity = ctr_unit, direction, notional, abs_notional, unrealized_pnl)],
     latest_account[, .(agent_id, equity)],
     by = "agent_id",
     all.x = TRUE
   )
   out[, total_abs_notional := sum(abs_notional, na.rm = TRUE), by = agent_id]
   out[, allocation := data.table::fifelse(total_abs_notional > 0, abs_notional / total_abs_notional, 0)]
+  out[, asset_class_allocation := sum(allocation, na.rm = TRUE), by = .(agent_id, asset_class)]
   out[, leverage := data.table::fifelse(equity > 0, total_abs_notional / equity, Inf)]
   out[, concentration_hhi := sum(allocation * allocation, na.rm = TRUE), by = agent_id]
+  factor <- .cross_asset_factor_exposure(exchange, positions)
+  drawdown <- .cross_asset_drawdown(exchange)
   stress <- .cross_asset_stress(exchange, positions, stress_sigma = stress_sigma)
   out <- merge(out, stress, by = "agent_id", all.x = TRUE)
+  out <- merge(out, factor, by = c("agent_id", "asset_id"), all.x = TRUE)
+  out <- merge(out, drawdown, by = "agent_id", all.x = TRUE)
+  out[, risk_contribution := data.table::fifelse(portfolio_vol > 0, abs_notional * abs(factor_exposure %||% 0) / portfolio_vol, 0)]
   out[, total_abs_notional := NULL]
-  data.table::setcolorder(out, c("timestamp", "agent_id", "symbol", "asset_id", "quantity", "direction", "notional", "abs_notional", "allocation", "unrealized_pnl", "equity", "leverage", "concentration_hhi", "portfolio_vol", "stress_loss"))
+  data.table::setcolorder(out, c("timestamp", "agent_id", "symbol", "asset_id", "asset_class", "quantity", "direction", "notional", "abs_notional", "allocation", "asset_class_allocation", "unrealized_pnl", "equity", "leverage", "concentration_hhi", "factor_exposure", "max_drawdown", "risk_contribution", "portfolio_vol", "stress_loss"))
   out[]
 }
 
@@ -158,15 +176,20 @@ sim_cross_asset_risk_empty <- function() {
     agent_id = character(),
     symbol = character(),
     asset_id = integer(),
+    asset_class = character(),
     quantity = numeric(),
     direction = character(),
     notional = numeric(),
     abs_notional = numeric(),
     allocation = numeric(),
+    asset_class_allocation = numeric(),
     unrealized_pnl = numeric(),
     equity = numeric(),
     leverage = numeric(),
     concentration_hhi = numeric(),
+    factor_exposure = numeric(),
+    max_drawdown = numeric(),
+    risk_contribution = numeric(),
     portfolio_vol = numeric(),
     stress_loss = numeric()
   )
@@ -190,6 +213,50 @@ sim_cross_asset_risk_empty <- function() {
     )
   })
   data.table::rbindlist(rows, fill = TRUE)
+}
+
+#' @keywords internal
+.cross_asset_factor_exposure <- function(exchange, positions) {
+  assets <- sort(unique(as.integer(positions$asset_id)))
+  model <- exchange$market_model %||% sim_market_model_config()
+  loadings <- NULL
+  if (identical(model$model, "factor_random_walk") && !is.null(model$factors)) {
+    feeds <- data.table::data.table(asset_id = assets, symbol = positions$symbol[match(assets, positions$asset_id)])
+    loadings <- .market_model_loadings(model$factors$loadings %||% matrix(rep(0.7, length(assets)), nrow = length(assets)), length(assets))
+  } else if (!is.null(model$calibration$factors$loadings)) {
+    loadings <- .market_model_loadings(model$calibration$factors$loadings, length(assets))
+  }
+  if (is.null(loadings)) {
+    return(data.table::data.table(agent_id = positions$agent_id, asset_id = positions$asset_id, factor_exposure = 0)[0])
+  }
+  rows <- lapply(unique(positions$agent_id), function(aid) {
+    pos <- positions[positions[["agent_id"]] == aid]
+    idx <- match(as.integer(pos$asset_id), assets)
+    exposure <- as.numeric(pos$notional) * loadings[idx, 1L]
+    data.table::data.table(agent_id = as.character(aid), asset_id = as.integer(pos$asset_id), factor_exposure = exposure)
+  })
+  data.table::rbindlist(rows, fill = TRUE)
+}
+
+#' @keywords internal
+.cross_asset_drawdown <- function(exchange) {
+  history <- if (!is.null(exchange$result) && nrow(exchange$result) > 0L) {
+    sim_account(exchange$result)
+  } else if (!is.null(exchange$step_snapshots) && nrow(exchange$step_snapshots) > 0L) {
+    .aggregate_account_snapshots(exchange$step_snapshots)
+  } else {
+    sim_exchange_account(exchange)
+  }
+  if (nrow(history) == 0L || !"agent_id" %in% names(history)) {
+    return(data.table::data.table(agent_id = character(), max_drawdown = numeric()))
+  }
+  history <- data.table::copy(history)
+  history <- history[is.finite(equity)]
+  if (nrow(history) == 0L) return(data.table::data.table(agent_id = character(), max_drawdown = numeric()))
+  data.table::setorderv(history, intersect(c("agent_id", "timestamp"), names(history)))
+  history[, peak := cummax(equity), by = agent_id]
+  history[, drawdown := data.table::fifelse(peak > 0, 1 - equity / peak, 0)]
+  history[, .(max_drawdown = max(drawdown, na.rm = TRUE)), by = agent_id]
 }
 
 #' @keywords internal

@@ -9,7 +9,7 @@
 #'   `function(symbol, timeframe, start, end, tz = "UTC")`.
 #' @param start_time Optional first completed boundary to process.
 #' @param simulation_model Simulation model: `random_walk`, `ar`, `garch11`,
-#'   or `ar_garch`.
+#'   `ar_garch`, or `regime`.
 #' @param random_walk List of random-walk simulation settings: `start_price`,
 #'   `drift`, `vol`, and `seed`.
 #' @param simulation Advanced simulation settings. Supported nested lists are
@@ -23,7 +23,7 @@ sim_feed_config <- function(symbol = "BTC-USDT-SWAP",
                             feed_mode = c("simulation", "external"),
                             feed_adapter = NULL,
                             start_time = NULL,
-                            simulation_model = c("random_walk", "ar", "garch11", "ar_garch"),
+                            simulation_model = c("random_walk", "ar", "garch11", "ar_garch", "regime"),
                             random_walk = list(start_price = 100, drift = 0, vol = 0.02, seed = 1L),
                             simulation = list()) {
   feed_mode <- match.arg(feed_mode)
@@ -55,6 +55,8 @@ sim_feed_config <- function(symbol = "BTC-USDT-SWAP",
 #'   precedence over `corr` and per-asset `vol`.
 #' @param factors Optional factor model settings for `factor_random_walk`.
 #' @param regimes Optional regime settings for `regime_random_walk`.
+#' @param calibration Optional calibration object from
+#'   `sim_market_model_calibrate()`.
 #' @param seed Base random seed for synchronized draws.
 #' @param timeframe Optional common timeframe. If omitted, all selected feeds
 #'   must share the same timeframe.
@@ -74,6 +76,7 @@ sim_market_model_config <- function(model = c(
                                     cov = NULL,
                                     factors = NULL,
                                     regimes = NULL,
+                                    calibration = NULL,
                                     seed = 1L,
                                     timeframe = NULL,
                                     tz = NULL,
@@ -85,6 +88,7 @@ sim_market_model_config <- function(model = c(
     cov = cov,
     factors = factors,
     regimes = regimes,
+    calibration = calibration,
     seed = as.integer(seed %||% 1L),
     timeframe = timeframe,
     tz = tz,
@@ -115,6 +119,88 @@ sim_market_model_configure <- function(exchange, config = sim_market_model_confi
   invisible(exchange$market_model)
 }
 
+#' Calibrate a market model from historical OHLC bars
+#'
+#' Estimates per-asset drift, volatility, AR coefficients, GARCH-like variance
+#' persistence, covariance/correlation, one-factor loadings, and simple
+#' low/high-volatility regime covariance from historical closes.
+#'
+#' @param bars Market bars coercible by `as_market_bars()`.
+#' @param model Market model to configure from the calibration.
+#' @param ar_order Number of autoregressive lags to estimate per asset.
+#' @param seed Simulation seed recorded in the returned config.
+#' @param timeframe,tz Optional scheduling metadata for the returned config.
+#' @return A `sim_market_model_config()` list with calibration metadata.
+#' @export
+sim_market_model_calibrate <- function(bars,
+                                       model = c("multi_asset_random_walk", "multi_asset_ar_garch", "factor_random_walk", "regime_random_walk"),
+                                       ar_order = 1L,
+                                       seed = 1L,
+                                       timeframe = NULL,
+                                       tz = "UTC") {
+  model <- match.arg(model)
+  bars <- as_market_bars(bars)
+  if (nrow(bars) == 0L) stop("`bars` must contain historical market bars.", call. = FALSE)
+  returns <- .calibration_returns(bars)
+  if (nrow(returns) < 2L) stop("Calibration requires at least two return rows.", call. = FALSE)
+  asset_cols <- setdiff(names(returns), "timestamp")
+  ret_mat <- as.matrix(returns[, .SD, .SDcols = asset_cols])
+  storage.mode(ret_mat) <- "double"
+  ret_mat[!is.finite(ret_mat)] <- 0
+  corr <- stats::cor(ret_mat, use = "pairwise.complete.obs")
+  corr[!is.finite(corr)] <- 0
+  diag(corr) <- 1
+  cov <- stats::cov(ret_mat, use = "pairwise.complete.obs")
+  cov[!is.finite(cov)] <- 0
+  cov <- .calibration_near_pd(cov)
+  dimnames(corr) <- list(asset_cols, asset_cols)
+  dimnames(cov) <- list(asset_cols, asset_cols)
+  asset_stats <- .calibration_asset_stats(ret_mat, asset_cols, ar_order = ar_order)
+  factors <- .calibration_factor_model(ret_mat)
+  regimes <- .calibration_regimes(ret_mat)
+  calibration <- list(
+    created_at = Sys.time(),
+    n_returns = nrow(ret_mat),
+    assets = asset_stats,
+    corr = corr,
+    cov = cov,
+    factors = factors,
+    regimes = regimes,
+    method = list(ar_order = as.integer(ar_order), garch = "moment-heuristic", factor = "first_pc", regimes = "median_abs_market_return")
+  )
+  sim_market_model_config(
+    model = model,
+    corr = corr,
+    cov = cov,
+    factors = factors,
+    regimes = regimes,
+    calibration = calibration,
+    seed = seed,
+    timeframe = timeframe,
+    tz = tz
+  )
+}
+
+#' Configure an exchange market model from historical bars
+#'
+#' @param exchange A `tradesimr_exchange`.
+#' @inheritParams sim_market_model_calibrate
+#' @return The calibrated market model config, invisibly.
+#' @export
+sim_market_model_calibrate_exchange <- function(exchange,
+                                                bars,
+                                                model = c("multi_asset_random_walk", "multi_asset_ar_garch", "factor_random_walk", "regime_random_walk"),
+                                                ar_order = 1L,
+                                                seed = 1L,
+                                                timeframe = NULL,
+                                                tz = "UTC") {
+  stopifnot(inherits(exchange, "tradesimr_exchange"))
+  config <- sim_market_model_calibrate(bars, model = model, ar_order = ar_order, seed = seed, timeframe = timeframe, tz = tz)
+  sim_market_model_configure(exchange, config)
+  .apply_calibration_to_feeds(exchange, config$calibration)
+  invisible(exchange$market_model)
+}
+
 #' Get market-level simulation model status
 #'
 #' @param exchange A `tradesimr_exchange`.
@@ -134,6 +220,7 @@ sim_market_model_status <- function(exchange) {
     has_cov = !is.null(model$cov),
     has_factors = !is.null(model$factors),
     has_regimes = !is.null(model$regimes),
+    calibrated = !is.null(model$calibration),
     regime = model$state$current_regime %||% NA_integer_
   )
 }
@@ -153,10 +240,12 @@ sim_market_model_status <- function(exchange) {
     has_cov = !is.null(model$cov),
     has_factors = !is.null(model$factors),
     has_regimes = !is.null(model$regimes),
+    calibrated = !is.null(model$calibration),
     corr = .serialize_field(model$corr),
     cov = .serialize_field(model$cov),
     factors = .serialize_field(model$factors),
     regimes = .serialize_field(model$regimes),
+    calibration = .serialize_field(model$calibration),
     state = .serialize_field(model$state)
   )
 }
@@ -173,6 +262,7 @@ sim_market_model_status <- function(exchange) {
     cov = .unserialize_field(value("cov", NA_character_)),
     factors = .unserialize_field(value("factors", NA_character_)),
     regimes = .unserialize_field(value("regimes", NA_character_)),
+    calibration = .unserialize_field(value("calibration", NA_character_)),
     seed = as.integer(value("seed", 1L) %||% 1L),
     timeframe = .na_null(value("timeframe", NA_character_)),
     tz = .na_null(value("tz", NA_character_)),
@@ -257,7 +347,7 @@ sim_feed_configure <- function(exchange, config = sim_feed_config()) {
     }
   }
   config$feed_mode <- match.arg(config$feed_mode, c("simulation", "external"))
-  config$simulation_model <- match.arg(config$simulation_model, c("random_walk", "ar", "garch11", "ar_garch"))
+  config$simulation_model <- match.arg(config$simulation_model, c("random_walk", "ar", "garch11", "ar_garch", "regime"))
   config$simulation <- utils::modifyList(.feed_default_simulation_config(), config$simulation %||% list())
   .feed_parse_timeframe(config$timeframe)
   if (identical(config$feed_mode, "external") && !is.function(config$feed_adapter)) {
@@ -522,6 +612,16 @@ sim_feed_status <- function(exchange) {
       drift = numeric(),
       vol = numeric(),
       seed = integer(),
+      ar = character(),
+      alpha1 = numeric(),
+      beta1 = numeric(),
+      z_dist = character(),
+      jump_intensity = numeric(),
+      jump_mean = numeric(),
+      jump_sd = numeric(),
+      ohlc_model = character(),
+      bridge_steps = integer(),
+      simulation_state = character(),
       last_completed_end = as.POSIXct(character()),
       last_price = numeric()
     ))
@@ -541,6 +641,16 @@ sim_feed_status <- function(exchange) {
       drift = as.numeric(feed$random_walk$drift %||% NA_real_),
       vol = as.numeric(feed$random_walk$vol %||% NA_real_),
       seed = as.integer(feed$random_walk$seed %||% NA_integer_),
+      ar = paste(as.numeric(feed$simulation$ar$a %||% numeric()), collapse = ","),
+      alpha1 = as.numeric(feed$simulation$garch11$alpha1 %||% NA_real_),
+      beta1 = as.numeric(feed$simulation$garch11$beta1 %||% NA_real_),
+      z_dist = as.character(feed$simulation$garch11$z_dist %||% "norm"),
+      jump_intensity = as.numeric(feed$simulation$shock$jump_intensity %||% 0),
+      jump_mean = as.numeric(feed$simulation$shock$jump_mean %||% 0),
+      jump_sd = as.numeric(feed$simulation$shock$jump_sd %||% 0),
+      ohlc_model = as.character(feed$simulation$ohlc$model %||% "wiggle"),
+      bridge_steps = as.integer(feed$simulation$ohlc$bridge_steps %||% 12L),
+      simulation_state = .serialize_field(feed$simulation_state),
       last_completed_end = feed$last_completed_end,
       last_price = as.numeric(feed$last_price %||% NA_real_)
     )
@@ -563,6 +673,158 @@ sim_feed_status <- function(exchange) {
     "factor_random_walk",
     "regime_random_walk"
   ))
+}
+
+#' @keywords internal
+.calibration_returns <- function(bars) {
+  DT <- data.table::copy(bars)
+  data.table::setorderv(DT, c("asset_id", "timestamp"))
+  DT[, log_close := log(pmax(.Machine$double.eps, close))]
+  DT[, ret := log_close - data.table::shift(log_close), by = asset_id]
+  DT <- DT[is.finite(ret)]
+  DT[, asset_key := paste(symbol, asset_id, sep = "\r")]
+  wide <- data.table::dcast(DT[, .(timestamp, asset_key, ret)], timestamp ~ asset_key, value.var = "ret")
+  for (nm in setdiff(names(wide), "timestamp")) {
+    data.table::set(wide, which(!is.finite(wide[[nm]])), nm, 0)
+  }
+  wide[]
+}
+
+#' @keywords internal
+.calibration_asset_stats <- function(ret_mat, asset_cols, ar_order = 1L) {
+  rows <- lapply(seq_along(asset_cols), function(i) {
+    key <- strsplit(asset_cols[i], "\r", fixed = TRUE)[[1L]]
+    r <- as.numeric(ret_mat[, i])
+    r <- r[is.finite(r)]
+    ar <- .calibration_ar(r, ar_order)
+    g <- .calibration_garch(r)
+    data.table::data.table(
+      symbol = key[1L],
+      asset_id = as.integer(key[2L]),
+      drift = mean(r, na.rm = TRUE),
+      vol = stats::sd(r, na.rm = TRUE),
+      ar = list(ar),
+      garch11 = list(g)
+    )
+  })
+  out <- data.table::rbindlist(rows, fill = TRUE)
+  out[!is.finite(vol) | vol <= 0, vol := 0.02]
+  out[!is.finite(drift), drift := 0]
+  out[]
+}
+
+#' @keywords internal
+.calibration_ar <- function(r, ar_order = 1L) {
+  ar_order <- as.integer(ar_order %||% 1L)
+  if (is.na(ar_order) || ar_order <= 0L || length(r) <= ar_order + 2L) return(numeric())
+  y <- r[(ar_order + 1L):length(r)]
+  x <- sapply(seq_len(ar_order), function(k) r[(ar_order + 1L - k):(length(r) - k)])
+  fit <- tryCatch(stats::lm.fit(cbind(1, x), y), error = function(e) NULL)
+  if (is.null(fit)) return(rep(0, ar_order))
+  coef <- as.numeric(fit$coefficients[-1L])
+  coef[!is.finite(coef)] <- 0
+  pmax(pmin(coef, 0.95), -0.95)
+}
+
+#' @keywords internal
+.calibration_garch <- function(r) {
+  v <- stats::var(r, na.rm = TRUE)
+  if (!is.finite(v) || v <= 0) v <- 0.02^2
+  centered <- r - mean(r, na.rm = TRUE)
+  ac <- suppressWarnings(stats::acf(centered^2, plot = FALSE, lag.max = 1, na.action = stats::na.pass)$acf[2L])
+  persistence <- pmax(pmin(as.numeric(ac %||% 0.90), 0.98), 0.50)
+  alpha1 <- pmax(pmin((1 - persistence) * 0.75, 0.18), 0.03)
+  beta1 <- pmax(pmin(persistence - alpha1, 0.94), 0.50)
+  alpha0 <- v * max(1e-8, 1 - alpha1 - beta1)
+  list(alpha0 = alpha0, alpha1 = alpha1, beta1 = beta1, sigma2_0 = v)
+}
+
+#' @keywords internal
+.calibration_factor_model <- function(ret_mat) {
+  cov <- .calibration_near_pd(stats::cov(ret_mat, use = "pairwise.complete.obs"))
+  eig <- eigen(cov, symmetric = TRUE)
+  value <- max(eig$values[1L], .Machine$double.eps)
+  loading <- eig$vectors[, 1L, drop = FALSE]
+  if (sum(loading) < 0) loading <- -loading
+  factor_vol <- sqrt(value)
+  common <- loading %*% t(loading) * value
+  idio_var <- pmax(diag(cov - common), .Machine$double.eps)
+  list(n_factors = 1L, loadings = loading, factor_vol = factor_vol, idio_vol = sqrt(idio_var))
+}
+
+#' @keywords internal
+.calibration_regimes <- function(ret_mat) {
+  market <- rowMeans(ret_mat, na.rm = TRUE)
+  split <- abs(market) > stats::median(abs(market), na.rm = TRUE)
+  make_state <- function(idx, name, vol_multiplier) {
+    sub <- ret_mat[idx, , drop = FALSE]
+    corr <- if (nrow(sub) >= 3L) stats::cor(sub, use = "pairwise.complete.obs") else diag(ncol(ret_mat))
+    corr[!is.finite(corr)] <- 0
+    diag(corr) <- 1
+    list(name = name, corr = corr, vol_multiplier = vol_multiplier)
+  }
+  transition <- .calibration_regime_transition(split)
+  list(
+    initial_state = if (tail(split, 1L)) 2L else 1L,
+    transition = transition,
+    states = list(
+      make_state(!split, "low_vol", 1),
+      make_state(split, "high_vol", 2)
+    )
+  )
+}
+
+#' @keywords internal
+.calibration_regime_transition <- function(high) {
+  state <- ifelse(high, 2L, 1L)
+  mat <- matrix(1, nrow = 2, ncol = 2)
+  if (length(state) >= 2L) {
+    for (i in seq_len(length(state) - 1L)) mat[state[i], state[i + 1L]] <- mat[state[i], state[i + 1L]] + 1
+  }
+  mat / rowSums(mat)
+}
+
+#' @keywords internal
+.calibration_near_pd <- function(cov) {
+  cov <- as.matrix(cov)
+  cov[!is.finite(cov)] <- 0
+  cov <- (cov + t(cov)) / 2
+  eig <- eigen(cov, symmetric = TRUE)
+  eig$values <- pmax(eig$values, .Machine$double.eps)
+  out <- eig$vectors %*% diag(eig$values, nrow = length(eig$values)) %*% t(eig$vectors)
+  (out + t(out)) / 2
+}
+
+#' @keywords internal
+.market_model_asset_calibration <- function(model, symbol, asset_id) {
+  assets <- model$calibration$assets
+  if (is.null(assets) || nrow(assets) == 0L) return(list())
+  assets <- data.table::as.data.table(assets)
+  row <- assets[asset_id == as.integer(asset_id)]
+  if (nrow(row) == 0L) row <- assets[symbol == as.character(symbol)]
+  if (nrow(row) == 0L) return(list())
+  list(
+    drift = row$drift[1L],
+    vol = row$vol[1L],
+    ar = row$ar[[1L]],
+    garch11 = row$garch11[[1L]]
+  )
+}
+
+#' @keywords internal
+.apply_calibration_to_feeds <- function(exchange, calibration) {
+  if (is.null(calibration$assets) || nrow(calibration$assets) == 0L) return(invisible(FALSE))
+  assets <- data.table::as.data.table(calibration$assets)
+  for (i in seq_len(nrow(assets))) {
+    selected <- .feed_select(exchange, symbol = assets$symbol[i], asset_id = assets$asset_id[i])
+    feed <- selected$feed
+    feed$random_walk$drift <- as.numeric(assets$drift[i])
+    feed$random_walk$vol <- abs(as.numeric(assets$vol[i]))
+    feed$simulation$ar$a <- assets$ar[[i]]
+    feed$simulation$garch11 <- utils::modifyList(feed$simulation$garch11, assets$garch11[[i]])
+    .feed_store(exchange, selected$key, feed)
+  }
+  invisible(TRUE)
 }
 
 #' @keywords internal
@@ -677,11 +939,12 @@ sim_feed_status <- function(exchange) {
   if (is.null(timeframe)) stop("Set `market_model$timeframe` when selected feeds have different timeframes.", call. = FALSE)
   if (is.null(tz)) stop("Set `market_model$tz` when selected feeds have different time zones.", call. = FALSE)
   feeds <- data.table::rbindlist(lapply(selected, function(feed) {
+    calib <- .market_model_asset_calibration(model, feed$symbol, feed$asset_id)
     data.table::data.table(
       symbol = as.character(feed$symbol),
       asset_id = as.integer(feed$asset_id),
-      drift = as.numeric(feed$random_walk$drift %||% 0),
-      vol = abs(as.numeric(feed$random_walk$vol %||% 0.02)),
+      drift = as.numeric(calib$drift %||% feed$random_walk$drift %||% 0),
+      vol = abs(as.numeric(calib$vol %||% feed$random_walk$vol %||% 0.02)),
       start_price = as.numeric(feed$random_walk$start_price %||% 100),
       last_price = as.numeric(feed$last_price %||% feed$random_walk$start_price %||% 100)
     )
@@ -753,6 +1016,9 @@ sim_feed_status <- function(exchange) {
     selected <- .feed_select(exchange, asset_id = feeds$asset_id[i])
     feed <- selected$feed
     cfg <- utils::modifyList(.feed_default_simulation_config(), feed$simulation %||% list())
+    calib <- .market_model_asset_calibration(model, feed$symbol, feed$asset_id)
+    if (!is.null(calib$ar)) cfg$ar$a <- calib$ar
+    if (!is.null(calib$garch11)) cfg$garch11 <- utils::modifyList(cfg$garch11, calib$garch11)
     state <- .feed_simulation_state(feed)
     ar <- cfg$ar
     g <- cfg$garch11
@@ -824,13 +1090,24 @@ sim_feed_status <- function(exchange) {
 .market_model_covariance <- function(model, feeds) {
   n <- nrow(feeds)
   if (!is.null(model$cov)) {
-    cov <- .market_model_matrix(model$cov, n, "cov")
+    cov <- .market_model_aligned_matrix(model$cov, feeds, "cov")
   } else {
-    corr <- if (!is.null(model$corr)) .market_model_matrix(model$corr, n, "corr") else diag(n)
+    corr <- if (!is.null(model$corr)) .market_model_aligned_matrix(model$corr, feeds, "corr") else diag(n)
     cov <- diag(feeds$vol, nrow = n) %*% corr %*% diag(feeds$vol, nrow = n)
   }
   if (!isSymmetric(cov, tol = 1e-8)) stop("Market model covariance/correlation must be symmetric.", call. = FALSE)
   cov
+}
+
+#' @keywords internal
+.market_model_aligned_matrix <- function(x, feeds, name) {
+  n <- nrow(feeds)
+  mat <- .market_model_matrix(x, n, name)
+  keys <- paste(feeds$symbol, feeds$asset_id, sep = "\r")
+  if (!is.null(rownames(mat)) && all(keys %in% rownames(mat))) {
+    mat <- mat[keys, keys, drop = FALSE]
+  }
+  mat
 }
 
 #' @keywords internal
@@ -971,10 +1248,18 @@ sim_feed_status <- function(exchange) {
   feed <- simulated$feed
   vol <- abs(as.numeric(simulated$sigma %||% rw$vol %||% 0.02))
   close <- max(.Machine$double.eps, open * exp(ret))
-  wiggle_scale <- as.numeric((feed$simulation %||% list())$ohlc$wiggle_scale %||% 0.5)
-  wiggle <- abs(stats::rnorm(2L, mean = 0, sd = vol * wiggle_scale))
-  high <- max(open, close) * (1 + wiggle[1])
-  low <- min(open, close) * max(.Machine$double.eps, 1 - wiggle[2])
+  ohlc <- utils::modifyList(.feed_default_simulation_config()$ohlc, (feed$simulation %||% list())$ohlc %||% list())
+  bridge_steps <- as.integer(ohlc$bridge_steps %||% 0L)
+  if (identical(as.character(ohlc$model %||% "wiggle"), "brownian_bridge") && bridge_steps > 2L) {
+    bridge <- .feed_brownian_bridge(open, close, vol, bridge_steps)
+    high <- max(open, close, bridge)
+    low <- min(open, close, bridge)
+  } else {
+    wiggle_scale <- as.numeric(ohlc$wiggle_scale %||% 0.5)
+    wiggle <- abs(stats::rnorm(2L, mean = 0, sd = vol * wiggle_scale))
+    high <- max(open, close) * (1 + wiggle[1])
+    low <- min(open, close) * max(.Machine$double.eps, 1 - wiggle[2])
+  }
   bar <- data.table::data.table(
     timestamp = start,
     symbol = as.character(feed$symbol),
@@ -997,20 +1282,20 @@ sim_feed_status <- function(exchange) {
   vol <- abs(as.numeric(rw$vol %||% 0.02))
 
   if (model == "random_walk") {
-    shock <- stats::rnorm(1L, mean = 0, sd = vol)
+    shock <- .feed_draw_shock(cfg$shock, vol)
     ret <- drift + shock
     sigma <- vol
   } else if (model == "ar") {
     ar <- cfg$ar
     a <- as.numeric(ar$a %||% 0.25)
     sigma <- abs(as.numeric(ar$sigma %||% vol))
-    shock <- stats::rnorm(1L, mean = 0, sd = sigma)
+    shock <- .feed_draw_shock(cfg$shock, sigma)
     ret <- drift + sum(a * .feed_lags(state$ret_lags, length(a)), na.rm = TRUE) + shock
   } else if (model == "garch11") {
     g <- cfg$garch11
     sigma2 <- .feed_garch_sigma2(state, g, vol)
     z <- .feed_draw_standardized(g)
-    shock <- sqrt(sigma2) * z
+    shock <- sqrt(sigma2) * z + .feed_draw_jump(cfg$shock, sqrt(sigma2))
     ret <- drift + shock
     sigma <- sqrt(sigma2)
     state$sigma2 <- .feed_garch_next_sigma2(g, shock, sigma2, vol)
@@ -1020,10 +1305,22 @@ sim_feed_status <- function(exchange) {
     a <- as.numeric(ar$a %||% 0.25)
     sigma2 <- .feed_garch_sigma2(state, g, vol)
     z <- .feed_draw_standardized(g)
-    shock <- sqrt(sigma2) * z
+    shock <- sqrt(sigma2) * z + .feed_draw_jump(cfg$shock, sqrt(sigma2))
     ret <- drift + sum(a * .feed_lags(state$ret_lags, length(a)), na.rm = TRUE) + shock
     sigma <- sqrt(sigma2)
     state$sigma2 <- .feed_garch_next_sigma2(g, shock, sigma2, vol)
+  } else if (model == "regime") {
+    regimes <- .feed_single_asset_regimes(cfg$regime)
+    current <- as.integer(state$current_regime %||% regimes$initial_state)
+    probs <- regimes$transition[current, ]
+    next_state <- sample.int(nrow(regimes$transition), 1L, prob = probs)
+    state$current_regime <- next_state
+    regime <- regimes$states[[next_state]]
+    regime_vol <- abs(as.numeric(regime$vol %||% vol * as.numeric(regime$vol_multiplier %||% 1)))
+    regime_drift <- drift + as.numeric(regime$drift %||% 0)
+    shock <- .feed_draw_shock(cfg$shock, regime_vol)
+    ret <- regime_drift + shock
+    sigma <- regime_vol
   } else {
     stop("Unsupported simulation model: ", model, call. = FALSE)
   }
@@ -1039,7 +1336,13 @@ sim_feed_status <- function(exchange) {
   list(
     ar = list(a = 0.25, sigma = NULL),
     garch11 = list(alpha0 = NULL, alpha1 = 0.08, beta1 = 0.90, sigma2_0 = NULL, z_dist = "norm", df = 8),
-    ohlc = list(wiggle_scale = 0.5)
+    regime = list(
+      initial_state = 1L,
+      transition = matrix(c(0.96, 0.04, 0.15, 0.85), nrow = 2, byrow = TRUE),
+      states = list(list(name = "normal", drift = 0, vol_multiplier = 1), list(name = "stress", drift = -0.001, vol_multiplier = 2))
+    ),
+    shock = list(jump_intensity = 0, jump_mean = 0, jump_sd = 0, skew = 0),
+    ohlc = list(model = "wiggle", wiggle_scale = 0.5, bridge_steps = 12L)
   )
 }
 
@@ -1055,8 +1358,11 @@ sim_feed_status <- function(exchange) {
 #' @keywords internal
 .feed_garch_sigma2 <- function(state, g, vol) {
   alpha1 <- as.numeric(g$alpha1 %||% 0.08)
+  if (!is.finite(alpha1)) alpha1 <- 0.08
   beta1 <- as.numeric(g$beta1 %||% 0.90)
+  if (!is.finite(beta1)) beta1 <- 0.90
   alpha0 <- as.numeric(g$alpha0 %||% (vol * vol * max(1e-8, 1 - alpha1 - beta1)))
+  if (!is.finite(alpha0) || alpha0 < 0) alpha0 <- vol * vol * max(1e-8, 1 - alpha1 - beta1)
   sigma2 <- as.numeric(state$sigma2 %||% g$sigma2_0 %||% NA_real_)
   if (!is.finite(sigma2) || sigma2 <= 0) {
     denom <- 1 - alpha1 - beta1
@@ -1068,8 +1374,11 @@ sim_feed_status <- function(exchange) {
 #' @keywords internal
 .feed_garch_next_sigma2 <- function(g, shock, sigma2, vol) {
   alpha1 <- as.numeric(g$alpha1 %||% 0.08)
+  if (!is.finite(alpha1)) alpha1 <- 0.08
   beta1 <- as.numeric(g$beta1 %||% 0.90)
+  if (!is.finite(beta1)) beta1 <- 0.90
   alpha0 <- as.numeric(g$alpha0 %||% (vol * vol * max(1e-8, 1 - alpha1 - beta1)))
+  if (!is.finite(alpha0) || alpha0 < 0) alpha0 <- vol * vol * max(1e-8, 1 - alpha1 - beta1)
   out <- alpha0 + alpha1 * shock * shock + beta1 * sigma2
   max(.Machine$double.eps, out)
 }
@@ -1085,11 +1394,55 @@ sim_feed_status <- function(exchange) {
 
 #' @keywords internal
 .feed_draw_standardized <- function(g) {
-  z_dist <- match.arg(as.character(g$z_dist %||% "norm"), c("norm", "stdt"))
+  z_dist <- as.character(g$z_dist %||% "norm")
+  if (is.na(z_dist) || !nzchar(z_dist)) z_dist <- "norm"
+  z_dist <- match.arg(z_dist, c("norm", "stdt"))
   if (z_dist == "norm") return(stats::rnorm(1L))
   df <- as.numeric(g$df %||% 8)
   if (!is.finite(df) || df <= 2) stop("Student-t GARCH innovations require `df > 2`.", call. = FALSE)
   stats::rt(1L, df = df) / sqrt(df / (df - 2))
+}
+
+#' @keywords internal
+.feed_draw_shock <- function(shock_cfg, sigma) {
+  cfg <- shock_cfg %||% list()
+  z <- stats::rnorm(1L)
+  skew <- as.numeric(cfg$skew %||% 0)
+  if (is.finite(skew) && skew != 0) z <- z + skew * (abs(stats::rnorm(1L)) - sqrt(2 / pi))
+  sigma * z + .feed_draw_jump(cfg, sigma)
+}
+
+#' @keywords internal
+.feed_draw_jump <- function(shock_cfg, sigma) {
+  cfg <- shock_cfg %||% list()
+  intensity <- as.numeric(cfg$jump_intensity %||% 0)
+  if (is.finite(intensity) && intensity > 0 && stats::runif(1L) < min(1, intensity)) {
+    return(stats::rnorm(1L, mean = as.numeric(cfg$jump_mean %||% 0), sd = abs(as.numeric(cfg$jump_sd %||% sigma))))
+  }
+  0
+}
+
+#' @keywords internal
+.feed_brownian_bridge <- function(open, close, sigma, steps) {
+  steps <- max(3L, as.integer(steps))
+  t <- seq(0, 1, length.out = steps)
+  log_open <- log(max(.Machine$double.eps, open))
+  log_close <- log(max(.Machine$double.eps, close))
+  increments <- stats::rnorm(steps - 1L, sd = abs(sigma) / sqrt(steps))
+  path <- c(0, cumsum(increments))
+  bridge <- path - t * tail(path, 1L)
+  exp(log_open + t * (log_close - log_open) + bridge)
+}
+
+#' @keywords internal
+.feed_single_asset_regimes <- function(regime_cfg) {
+  cfg <- regime_cfg %||% .feed_default_simulation_config()$regime
+  states <- lapply(cfg$states %||% list(list(name = "normal", vol_multiplier = 1)), as.list)
+  transition <- cfg$transition %||% diag(length(states))
+  transition <- .market_model_matrix(transition, length(states), "single_asset_regime_transition")
+  transition <- transition / rowSums(transition)
+  initial_state <- as.integer(cfg$initial_state %||% 1L)
+  list(initial_state = initial_state, transition = transition, states = states)
 }
 
 #' @keywords internal

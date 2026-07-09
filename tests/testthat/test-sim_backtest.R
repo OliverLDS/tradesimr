@@ -524,6 +524,80 @@ test_that("market model seeds reproduce generated bars", {
   expect_equal(bars_a, bars_b, ignore_attr = TRUE)
 })
 
+test_that("market model calibration estimates dynamics and persists metadata", {
+  set.seed(42)
+  n <- 80L
+  eps1 <- stats::rnorm(n, sd = 0.01)
+  eps2 <- 0.6 * eps1 + stats::rnorm(n, sd = 0.008)
+  bars <- data.table::rbindlist(list(
+    data.table::data.table(
+      timestamp = as.POSIXct("2026-01-01", tz = "UTC") + seq_len(n) * 60,
+      symbol = "AAPL",
+      asset_id = 101L,
+      close = 100 * exp(cumsum(eps1))
+    ),
+    data.table::data.table(
+      timestamp = as.POSIXct("2026-01-01", tz = "UTC") + seq_len(n) * 60,
+      symbol = "MSFT",
+      asset_id = 102L,
+      close = 90 * exp(cumsum(eps2))
+    )
+  ), fill = TRUE)
+  bars[, `:=`(open = close, high = close * 1.001, low = close * 0.999)]
+
+  config <- sim_market_model_calibrate(bars, model = "multi_asset_ar_garch", ar_order = 1L, seed = 99L, timeframe = "1m")
+
+  expect_equal(config$model, "multi_asset_ar_garch")
+  expect_true(!is.null(config$calibration))
+  expect_equal(nrow(config$calibration$assets), 2)
+  expect_true(all(c("drift", "vol", "ar", "garch11") %in% names(config$calibration$assets)))
+  expect_gt(config$corr[1, 2], 0.3)
+  expect_true(!is.null(config$factors$loadings))
+  expect_true(!is.null(config$regimes$states))
+
+  exchange <- sim_exchange_new()
+  sim_asset_add(exchange, "AAPL", asset_id = 101L, asset_class = "stock")
+  sim_asset_add(exchange, "MSFT", asset_id = 102L, asset_class = "stock")
+  sim_feed_configure(exchange, list(configs = list(
+    list(symbol = "AAPL", asset_id = 101L, timeframe = "1m", random_walk = list(start_price = 100, vol = 0.5)),
+    list(symbol = "MSFT", asset_id = 102L, timeframe = "1m", random_walk = list(start_price = 90, vol = 0.5))
+  )))
+  sim_market_model_configure(exchange, config)
+  tradesimr:::.apply_calibration_to_feeds(exchange, config$calibration)
+  expect_lt(exchange$feeds[["101"]]$random_walk$vol, 0.1)
+
+  out_dir <- tempfile("tradesimr-calibration-")
+  sim_exchange_save(exchange, out_dir)
+  loaded <- sim_exchange_load(out_dir)
+  expect_true(sim_market_model_status(loaded)$calibrated)
+  expect_equal(nrow(loaded$market_model$calibration$assets), 2)
+})
+
+test_that("calibrated covariance drives synchronized market simulation", {
+  set.seed(44)
+  n <- 100L
+  x <- stats::rnorm(n, sd = 0.012)
+  y <- 0.8 * x + stats::rnorm(n, sd = 0.004)
+  bars <- data.table::rbindlist(list(
+    data.table::data.table(timestamp = as.POSIXct("2026-01-01", tz = "UTC") + seq_len(n) * 60, symbol = "AAA", asset_id = 11L, close = 100 * exp(cumsum(x))),
+    data.table::data.table(timestamp = as.POSIXct("2026-01-01", tz = "UTC") + seq_len(n) * 60, symbol = "BBB", asset_id = 22L, close = 80 * exp(cumsum(y)))
+  ))
+  bars[, `:=`(open = close, high = close * 1.001, low = close * 0.999)]
+  exchange <- sim_exchange_new()
+  sim_asset_add(exchange, "AAA", asset_id = 11L)
+  sim_asset_add(exchange, "BBB", asset_id = 22L)
+  sim_feed_configure(exchange, list(configs = list(
+    list(symbol = "AAA", asset_id = 11L, timeframe = "1m", random_walk = list(start_price = 100)),
+    list(symbol = "BBB", asset_id = 22L, timeframe = "1m", random_walk = list(start_price = 80))
+  )))
+  sim_market_model_calibrate_exchange(exchange, bars, model = "multi_asset_random_walk", seed = 77L, timeframe = "1m")
+
+  generated <- sim_feed_warmup(exchange, n_bars = 120, now = as.POSIXct("2026-01-01 02:00:30", tz = "UTC"))
+  wide <- data.table::dcast(generated[, .(timestamp, symbol, close)], timestamp ~ symbol, value.var = "close")
+  realized <- stats::cor(diff(log(wide$AAA)), diff(log(wide$BBB)))
+  expect_gt(realized, 0.45)
+})
+
 test_that("saved market model config loads and continues simulation", {
   make_exchange <- function() {
     exchange <- sim_exchange_new()
@@ -584,7 +658,38 @@ test_that("dashboard export includes market model and cross-asset risk metadata"
   expect_true("cross_asset_risk" %in% manifest$table)
   expect_true(file.exists(file.path(out_dir, "market_model.csv")))
   expect_true(nrow(risk) > 0)
-  expect_true(all(c("allocation", "concentration_hhi", "stress_loss") %in% names(risk)))
+  expect_true(all(c("allocation", "asset_class_allocation", "factor_exposure", "max_drawdown", "risk_contribution", "concentration_hhi", "stress_loss") %in% names(risk)))
+})
+
+test_that("optional portfolio margin uses correlation-aware maintenance", {
+  exchange <- sim_exchange_new(list(cash = 1000, ctr_step = 1, lev = 1, mmr = 0.4, portfolio_margin = TRUE, portfolio_margin_sigma = 1, portfolio_margin_floor = 0))
+  sim_asset_add(exchange, "AAA", asset_id = 11L)
+  sim_asset_add(exchange, "BBB", asset_id = 22L)
+  sim_feed_configure(exchange, list(configs = list(
+    list(symbol = "AAA", asset_id = 11L, timeframe = "1m", random_walk = list(start_price = 100, vol = 0.01)),
+    list(symbol = "BBB", asset_id = 22L, timeframe = "1m", random_walk = list(start_price = 100, vol = 0.01))
+  )))
+  sim_market_model_configure(exchange, sim_market_model_config(
+    model = "multi_asset_random_walk",
+    corr = matrix(c(1, -0.95, -0.95, 1), nrow = 2),
+    seed = 1L
+  ))
+  bars <- data.frame(
+    timestamp = as.POSIXct("2026-01-01", tz = "UTC"),
+    symbol = c("AAA", "BBB"),
+    asset_id = c(11L, 22L),
+    open = c(100, 100),
+    high = c(100, 100),
+    low = c(100, 100),
+    close = c(100, 100)
+  )
+  sim_exchange_add_bars(exchange, bars)
+  sim_submit_order(exchange, "hedged", symbol = "AAA", asset_id = 11L, side = "buy", qty = 1, process = TRUE)
+  sim_submit_order(exchange, "hedged", symbol = "BBB", asset_id = 22L, side = "buy", qty = 1, process = TRUE)
+  sim_exchange_step(exchange, bars)
+
+  expect_false(isTRUE(exchange$agent_accounts[["hedged"]]$liquidated))
+  expect_true(tradesimr:::.portfolio_margin_required(exchange, "hedged", tradesimr:::.agent_position_snapshots(exchange, "hedged", Sys.time())) < 100)
 })
 
 test_that("simulation feed uses asset-specific random streams", {
@@ -644,6 +749,53 @@ test_that("simulation feeds support GARCH and AR-GARCH state", {
   expect_equal(nrow(more), 3)
   expect_true(is.finite(exchange$feed$simulation_state$sigma2))
   expect_true(length(exchange$feed$simulation_state$ret_lags) >= 3)
+})
+
+test_that("feed simulation state persists and restores AR-GARCH continuation state", {
+  exchange <- sim_exchange_new()
+  sim_asset_add(exchange, "AAPL", asset_id = 101L)
+  sim_feed_configure(exchange, sim_feed_config(
+    symbol = "AAPL",
+    asset_id = 101L,
+    timeframe = "1m",
+    simulation_model = "ar_garch",
+    random_walk = list(start_price = 100, drift = 0, vol = 0.02, seed = 7L),
+    simulation = list(ar = list(a = c(0.2)), garch11 = list(alpha1 = 0.08, beta1 = 0.9))
+  ))
+  sim_feed_warmup(exchange, n_bars = 4, now = as.POSIXct("2026-01-01 00:04:30", tz = "UTC"))
+  expect_true(length(exchange$feeds[["101"]]$simulation_state$ret_lags) > 0)
+  out_dir <- tempfile("tradesimr-feed-state-")
+  sim_exchange_save(exchange, out_dir)
+  loaded <- sim_exchange_load(out_dir)
+  expect_equal(loaded$feeds[["101"]]$simulation_state$ret_lags, exchange$feeds[["101"]]$simulation_state$ret_lags)
+  expect_equal(loaded$feeds[["101"]]$simulation_state$sigma2, exchange$feeds[["101"]]$simulation_state$sigma2)
+})
+
+test_that("single-asset regime, jump shocks, and Brownian bridge OHLC are configurable", {
+  exchange <- sim_exchange_new()
+  sim_asset_add(exchange, "JUMP", asset_id = 303L)
+  sim_feed_configure(exchange, sim_feed_config(
+    symbol = "JUMP",
+    asset_id = 303L,
+    timeframe = "1m",
+    simulation_model = "regime",
+    random_walk = list(start_price = 100, drift = 0, vol = 0.001, seed = 33L),
+    simulation = list(
+      regime = list(
+        initial_state = 2L,
+        transition = matrix(c(1, 0, 0, 1), nrow = 2, byrow = TRUE),
+        states = list(list(name = "normal", vol_multiplier = 1), list(name = "crash", drift = -0.05, vol_multiplier = 1))
+      ),
+      shock = list(jump_intensity = 1, jump_mean = -0.02, jump_sd = 0),
+      ohlc = list(model = "brownian_bridge", bridge_steps = 16L)
+    )
+  ))
+  bars <- sim_feed_warmup(exchange, n_bars = 2, now = as.POSIXct("2026-01-01 00:02:30", tz = "UTC"))
+  expect_equal(exchange$feeds[["303"]]$simulation_state$current_regime, 2L)
+  expect_true(all(bars$high >= pmax(bars$open, bars$close)))
+  expect_true(all(bars$low <= pmin(bars$open, bars$close)))
+  expect_true(all(is.finite(bars$close)))
+  expect_true(any(abs(diff(log(c(100, bars$close)))) > 0.01))
 })
 
 test_that("live feed accepts external adapter functions", {

@@ -11,6 +11,7 @@ sim_market_model_config(
   cov = NULL,
   factors = NULL,
   regimes = NULL,
+  calibration = NULL,
   seed = 1L,
   timeframe = NULL,
   tz = NULL,
@@ -29,6 +30,9 @@ precedence over \code{corr} and per-asset \code{vol}.}
 \item{factors}{Optional factor model settings for \code{factor_random_walk}.}
 
 \item{regimes}{Optional regime settings for \code{regime_random_walk}.}
+
+\item{calibration}{Optional calibration object from
+\code{sim_market_model_calibrate()}.}
 
 \item{seed}{Base random seed for synchronized draws.}
 

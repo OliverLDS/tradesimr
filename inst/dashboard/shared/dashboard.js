@@ -853,7 +853,16 @@ function renderFeedConfigTable() {
       start_price: scalarValue(feed.start_price) ?? 100,
       drift: scalarValue(feed.drift) ?? 0,
       vol: scalarValue(feed.vol) ?? 0.02,
-      seed: scalarValue(feed.seed) ?? index + 1
+      seed: scalarValue(feed.seed) ?? index + 1,
+      ar: scalarValue(feed.ar) ?? "",
+      alpha1: scalarValue(feed.alpha1) ?? "",
+      beta1: scalarValue(feed.beta1) ?? "",
+      z_dist: scalarValue(feed.z_dist) ?? "norm",
+      jump_intensity: scalarValue(feed.jump_intensity) ?? 0,
+      jump_mean: scalarValue(feed.jump_mean) ?? 0,
+      jump_sd: scalarValue(feed.jump_sd) ?? 0,
+      ohlc_model: scalarValue(feed.ohlc_model) ?? "wiggle",
+      bridge_steps: scalarValue(feed.bridge_steps) ?? 12
     };
     return `
       <tr data-asset-id="${escapeHtml(key)}" data-symbol="${escapeHtml(symbol)}">
@@ -869,13 +878,30 @@ function renderFeedConfigTable() {
         </td>
         <td>
           <select name="simulation_model">
-            ${["random_walk", "ar", "garch11", "ar_garch"].map(model => `<option value="${model}"${values.simulation_model === model ? " selected" : ""}>${model}</option>`).join("")}
+            ${["random_walk", "ar", "garch11", "ar_garch", "regime"].map(model => `<option value="${model}"${values.simulation_model === model ? " selected" : ""}>${model}</option>`).join("")}
           </select>
         </td>
         <td><input name="start_price" type="number" step="0.0001" value="${escapeHtml(values.start_price)}"></td>
         <td><input name="drift" type="number" step="0.000001" value="${escapeHtml(values.drift)}"></td>
         <td><input name="vol" type="number" step="0.000001" value="${escapeHtml(values.vol)}"></td>
         <td><input name="seed" type="number" step="1" value="${escapeHtml(values.seed)}"></td>
+        <td><input name="ar" placeholder="0.2,-0.1" value="${escapeHtml(values.ar)}"></td>
+        <td><input name="alpha1" type="number" step="0.0001" value="${escapeHtml(values.alpha1)}"></td>
+        <td><input name="beta1" type="number" step="0.0001" value="${escapeHtml(values.beta1)}"></td>
+        <td>
+          <select name="z_dist">
+            ${["norm", "stdt"].map(value => `<option value="${value}"${values.z_dist === value ? " selected" : ""}>${value}</option>`).join("")}
+          </select>
+        </td>
+        <td><input name="jump_intensity" type="number" step="0.0001" value="${escapeHtml(values.jump_intensity)}"></td>
+        <td><input name="jump_mean" type="number" step="0.0001" value="${escapeHtml(values.jump_mean)}"></td>
+        <td><input name="jump_sd" type="number" step="0.0001" value="${escapeHtml(values.jump_sd)}"></td>
+        <td>
+          <select name="ohlc_model">
+            ${["wiggle", "brownian_bridge"].map(value => `<option value="${value}"${values.ohlc_model === value ? " selected" : ""}>${value}</option>`).join("")}
+          </select>
+        </td>
+        <td><input name="bridge_steps" type="number" step="1" value="${escapeHtml(values.bridge_steps)}"></td>
       </tr>
     `;
   }).join("");
@@ -884,12 +910,14 @@ function renderFeedConfigTable() {
       <thead>
         <tr>
           <th>symbol</th><th>asset_id</th><th>timeframe</th><th>tz</th><th>feed_mode</th><th>simulation_model</th>
-          <th>start_price</th><th>drift</th><th>vol</th><th>seed</th>
+          <th>start_price</th><th>drift</th><th>vol</th><th>seed</th><th>AR</th><th>alpha1</th><th>beta1</th><th>z_dist</th>
+          <th>jump_intensity</th><th>jump_mean</th><th>jump_sd</th><th>OHLC</th><th>bridge_steps</th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>
   `;
+  renderMarketCorrGrid();
 }
 
 function preserveFeedEdits() {
@@ -1039,6 +1067,23 @@ function feedConfigPayload() {
         drift: numericOrDefault(get("drift"), 0),
         vol: numericOrDefault(get("vol"), 0.02),
         seed: Math.trunc(numericOrDefault(get("seed"), 1))
+      },
+      simulation: {
+        ar: { a: parseNumberList(get("ar")) },
+        garch11: {
+          alpha1: optionalNumber(get("alpha1")),
+          beta1: optionalNumber(get("beta1")),
+          z_dist: get("z_dist") || "norm"
+        },
+        shock: {
+          jump_intensity: numericOrDefault(get("jump_intensity"), 0),
+          jump_mean: numericOrDefault(get("jump_mean"), 0),
+          jump_sd: numericOrDefault(get("jump_sd"), 0)
+        },
+        ohlc: {
+          model: get("ohlc_model") || "wiggle",
+          bridge_steps: Math.trunc(numericOrDefault(get("bridge_steps"), 12))
+        }
       }
     });
   });
@@ -1057,12 +1102,30 @@ function marketModelPayload() {
     seed: Math.trunc(numericOrDefault(form.elements.market_seed?.value, 1))
   };
   const corr = parseMatrixText(form.elements.market_corr?.value || "");
-  if (corr) payload.corr = corr;
+  if (corr) {
+    const validation = validateMatrix(corr, marketMatrixAssets().length || corr.length);
+    setMarketMatrixStatus(validation.message, !validation.ok);
+    if (!validation.ok) throw new Error(validation.message);
+    payload.corr = corr;
+  }
   const factors = parseJsonText(form.elements.market_factors?.value || "", "Factor JSON");
   if (factors) payload.factors = factors;
   const regimes = parseJsonText(form.elements.market_regimes?.value || "", "Regime JSON");
   if (regimes) payload.regimes = regimes;
   return payload;
+}
+
+function parseNumberList(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return [];
+  return raw.split(/[\s,;]+/).filter(Boolean).map(Number).filter(Number.isFinite);
+}
+
+function optionalNumber(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  const out = Number(raw);
+  return Number.isFinite(out) ? out : null;
 }
 
 function parseMatrixText(text) {
@@ -1075,6 +1138,100 @@ function parseMatrixText(text) {
     throw new Error("Correlation matrix must be numeric with equal-width rows.");
   }
   return matrix;
+}
+
+function marketMatrixAssets() {
+  return (state.tables.assets || [])
+    .filter(asset => scalarValue(asset.status) !== "removed")
+    .map(asset => ({ symbol: scalarValue(asset.symbol), asset_id: scalarValue(asset.asset_id) }));
+}
+
+function renderMarketCorrGrid() {
+  const el = document.getElementById("market-corr-grid");
+  if (!el || el.matches(":focus-within")) return;
+  const assets = marketMatrixAssets();
+  if (assets.length < 2) {
+    el.innerHTML = `<p class="empty">Register at least two assets to edit a correlation matrix.</p>`;
+    return;
+  }
+  let current = identityMatrix(assets.length);
+  try {
+    current = parseMatrixText(document.querySelector('[name="market_corr"]')?.value || "") || current;
+  } catch (err) {
+    setMarketMatrixStatus(err.message, true);
+  }
+  const rows = assets.map((asset, i) => `
+    <tr>
+      <th>${escapeHtml(asset.symbol)}<br><small>${escapeHtml(String(asset.asset_id))}</small></th>
+      ${assets.map((_, j) => `<td><input class="matrix-cell" data-i="${i}" data-j="${j}" type="number" step="0.0001" value="${escapeHtml(current[i]?.[j] ?? (i === j ? 1 : 0))}"></td>`).join("")}
+    </tr>
+  `).join("");
+  el.innerHTML = `
+    <div class="matrix-order">Matrix order: ${assets.map(asset => `${escapeHtml(asset.symbol)} (${escapeHtml(String(asset.asset_id))})`).join(" | ")}</div>
+    <table class="matrix-table">
+      <thead><tr><th></th>${assets.map(asset => `<th>${escapeHtml(asset.symbol)}</th>`).join("")}</tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+  el.querySelectorAll(".matrix-cell").forEach(input => input.addEventListener("input", syncMarketMatrixFromGrid));
+  syncMarketMatrixFromGrid();
+}
+
+function identityMatrix(n) {
+  return Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => i === j ? 1 : 0));
+}
+
+function syncMarketMatrixFromGrid() {
+  const assets = marketMatrixAssets();
+  const n = assets.length;
+  if (n < 2) return;
+  const matrix = identityMatrix(n);
+  document.querySelectorAll("#market-corr-grid .matrix-cell").forEach(input => {
+    const i = Number(input.dataset.i);
+    const j = Number(input.dataset.j);
+    matrix[i][j] = Number(input.value);
+  });
+  const field = document.querySelector('[name="market_corr"]');
+  if (field) field.value = matrix.map(row => row.join(",")).join("\n");
+  const validation = validateMatrix(matrix, n);
+  setMarketMatrixStatus(validation.message, !validation.ok);
+}
+
+function validateMatrix(matrix, n) {
+  if (!Array.isArray(matrix) || matrix.length !== n || matrix.some(row => !Array.isArray(row) || row.length !== n)) {
+    return { ok: false, message: `Matrix must be ${n}x${n} for current asset order.` };
+  }
+  for (let i = 0; i < n; i += 1) {
+    for (let j = 0; j < n; j += 1) {
+      if (!Number.isFinite(matrix[i][j])) return { ok: false, message: "Matrix contains non-numeric cells." };
+      if (Math.abs(matrix[i][j] - matrix[j][i]) > 1e-8) return { ok: false, message: `Matrix is not symmetric at (${i + 1}, ${j + 1}).` };
+    }
+  }
+  const psd = isPositiveSemidefinite(matrix);
+  if (!psd) return { ok: false, message: "Matrix is not positive semidefinite." };
+  return { ok: true, message: `Matrix valid for ${n} assets in displayed order.` };
+}
+
+function isPositiveSemidefinite(matrix) {
+  const n = matrix.length;
+  const a = matrix.map(row => row.slice());
+  for (let i = 0; i < n; i += 1) {
+    let pivot = a[i][i];
+    if (pivot < -1e-8) return false;
+    pivot = Math.max(pivot, 1e-12);
+    for (let j = i + 1; j < n; j += 1) {
+      const factor = a[j][i] / pivot;
+      for (let k = i; k < n; k += 1) a[j][k] -= factor * a[i][k];
+    }
+  }
+  return true;
+}
+
+function setMarketMatrixStatus(message, isError) {
+  const el = document.getElementById("market-matrix-status");
+  if (!el) return;
+  el.textContent = message;
+  el.classList.toggle("error", Boolean(isError));
 }
 
 function parseJsonText(text, label) {
@@ -1099,7 +1256,16 @@ function currentFeedFormValues() {
       start_price: get("start_price") || 100,
       drift: get("drift") || 0,
       vol: get("vol") || 0.02,
-      seed: get("seed") || 1
+      seed: get("seed") || 1,
+      ar: get("ar") || "",
+      alpha1: get("alpha1") || "",
+      beta1: get("beta1") || "",
+      z_dist: get("z_dist") || "norm",
+      jump_intensity: get("jump_intensity") || 0,
+      jump_mean: get("jump_mean") || 0,
+      jump_sd: get("jump_sd") || 0,
+      ohlc_model: get("ohlc_model") || "wiggle",
+      bridge_steps: get("bridge_steps") || 12
     });
   });
   return out;

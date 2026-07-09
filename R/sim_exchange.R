@@ -450,6 +450,8 @@ sim_exchange_load <- function(path) {
       for (i in seq_len(nrow(feed_configs))) {
         row <- feed_configs[i]
         value <- function(name, default = NA) if (name %in% names(row)) row[[name]][1L] else default
+        ar_value <- as.character(value("ar", ""))
+        ar_coef <- if (nzchar(ar_value)) as.numeric(strsplit(ar_value, ",", fixed = TRUE)[[1L]]) else numeric()
         config <- list(
           symbol = value("symbol", "default"),
           asset_id = as.integer(value("asset_id", 0L)),
@@ -463,11 +465,33 @@ sim_exchange_load <- function(path) {
             vol = as.numeric(value("vol", 0.02)),
             seed = as.integer(value("seed", 1L))
           ),
+          simulation = list(
+            ar = list(a = ar_coef),
+            garch11 = list(
+              alpha1 = as.numeric(value("alpha1", NA_real_)),
+              beta1 = as.numeric(value("beta1", NA_real_)),
+              z_dist = value("z_dist", "norm")
+            ),
+            shock = list(
+              jump_intensity = as.numeric(value("jump_intensity", 0)),
+              jump_mean = as.numeric(value("jump_mean", 0)),
+              jump_sd = as.numeric(value("jump_sd", 0))
+            ),
+            ohlc = list(
+              model = value("ohlc_model", "wiggle"),
+              bridge_steps = as.integer(value("bridge_steps", 12L))
+            )
+          ),
+          simulation_state = .unserialize_field(value("simulation_state", NA_character_)),
           running = .truthy(value("running", FALSE)),
           last_completed_end = if (!is.na(value("last_completed_end", NA))) as.POSIXct(value("last_completed_end", NA), tz = value("tz", "UTC") %||% "UTC") else NULL,
           last_price = as.numeric(value("last_price", NA_real_))
         )
         sim_feed_configure(exchange, config)
+        if (!is.null(config$simulation_state)) {
+          key <- as.character(config$asset_id)
+          exchange$feeds[[key]]$simulation_state <- config$simulation_state
+        }
       }
     }
   }
@@ -921,7 +945,11 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
   account <- .aggregate_account_snapshots(snapshots, latest = TRUE)
   if (nrow(account) == 0L) return(invisible(FALSE))
   equity <- as.numeric(account$equity[1L] %||% NA_real_)
-  maintenance_margin <- as.numeric(account$maintenance_margin[1L] %||% 0)
+  maintenance_margin <- if (isTRUE(exchange$config$portfolio_margin %||% FALSE)) {
+    .portfolio_margin_required(exchange, agent_id, snapshots)
+  } else {
+    as.numeric(account$maintenance_margin[1L] %||% 0)
+  }
   if (!is.finite(equity) || equity >= maintenance_margin) return(invisible(FALSE))
   agent_id <- as.character(agent_id)
   exchange$agent_accounts[[agent_id]]$cash <- 0
@@ -950,6 +978,22 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
     ref_id = agent_id
   )), fill = TRUE)
   invisible(TRUE)
+}
+
+#' @keywords internal
+.portfolio_margin_required <- function(exchange, agent_id, snapshots) {
+  snapshots <- data.table::as.data.table(snapshots)
+  snapshots <- snapshots[abs(as.numeric(notional)) > 0]
+  if (nrow(snapshots) == 0L) return(0)
+  assets <- sort(unique(as.integer(snapshots$asset_id)))
+  cov <- .cross_asset_covariance(exchange, assets)
+  exposure <- numeric(length(assets))
+  idx <- match(as.integer(snapshots$asset_id), assets)
+  exposure[idx] <- as.numeric(snapshots$notional)
+  covariance_margin <- as.numeric(exchange$config$portfolio_margin_sigma %||% 3) * sqrt(max(0, as.numeric(t(exposure) %*% cov %*% exposure)))
+  floor_rate <- as.numeric(exchange$config$portfolio_margin_floor %||% exchange$config$mmr %||% 0.02)
+  floor_margin <- floor_rate * sum(abs(exposure), na.rm = TRUE)
+  max(covariance_margin, floor_margin, na.rm = TRUE)
 }
 
 #' @keywords internal

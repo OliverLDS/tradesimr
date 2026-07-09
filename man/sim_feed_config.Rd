@@ -12,7 +12,7 @@ sim_feed_config(
   feed_mode = c("simulation", "external"),
   feed_adapter = NULL,
   start_time = NULL,
-  simulation_model = c("random_walk", "ar", "garch11", "ar_garch"),
+  simulation_model = c("random_walk", "ar", "garch11", "ar_garch", "regime"),
   random_walk = list(start_price = 100, drift = 0, vol = 0.02, seed = 1L),
   simulation = list()
 )
@@ -34,7 +34,7 @@ sim_feed_config(
 \item{start_time}{Optional first completed boundary to process.}
 
 \item{simulation_model}{Simulation model: \code{random_walk}, \code{ar}, \code{garch11},
-or \code{ar_garch}.}
+\code{ar_garch}, or \code{regime}.}
 
 \item{random_walk}{List of random-walk simulation settings: \code{start_price},
 \code{drift}, \code{vol}, and \code{seed}.}
