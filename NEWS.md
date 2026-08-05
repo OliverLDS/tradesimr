@@ -5,6 +5,13 @@ current git history; `v0.9.0` follows `v0.7.0`.
 
 ## tradesimr 0.12.0
 
+- Fixed live exchange order-time filtering so future-dated orders remain
+  pending until an eligible bar arrives.
+- Symbol-only and asset-id-only orders now resolve the canonical identity from
+  the registered asset instead of deriving a conflicting fallback key.
+- `sim_exchange_save()` and `sim_exchange_load()` now preserve execution
+  configuration while remaining compatible with older save directories.
+
 Released as tag `v0.12.0`.
 
 ### Portfolio-Margin Engine
@@ -436,4 +443,3 @@ Released as tag `v0.2.0`.
   views, positions, and new-event access.
 - Preserved vectorized `vec_sim_*` helpers as fast approximate baseline tools
   while the stateful engine became the authoritative execution path.
-

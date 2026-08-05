@@ -461,6 +461,7 @@ sim_exchange_save <- function(exchange, path, format = c("csv", "fst")) {
     paths <- character()
   }
   state_tables <- list(
+    exchange_config = data.table::data.table(config = .serialize_field(exchange$config)),
     market_events = exchange$market_events,
     agent_orders = exchange$agent_orders,
     agent_commands = exchange$agent_commands,
@@ -496,7 +497,18 @@ sim_exchange_save <- function(exchange, path, format = c("csv", "fst")) {
 #' @return A `tradesimr_exchange`.
 #' @export
 sim_exchange_load <- function(path) {
-  exchange <- sim_exchange_new()
+  config_file <- file.path(path, "exchange_config.csv")
+  saved_config <- if (file.exists(config_file)) {
+    config_table <- data.table::fread(config_file)
+    if (nrow(config_table) > 0L && "config" %in% names(config_table)) {
+      .unserialize_field(config_table$config[1L]) %||% list()
+    } else {
+      list()
+    }
+  } else {
+    list()
+  }
+  exchange <- sim_exchange_new(saved_config)
   manifest_file <- file.path(path, "manifest.csv")
   if (file.exists(manifest_file)) {
     imported <- sim_import(path)
@@ -517,7 +529,13 @@ sim_exchange_load <- function(path) {
     }
   }
   if (file.exists(file.path(path, "market_events.csv"))) exchange$market_events <- data.table::fread(file.path(path, "market_events.csv"))
-  if (file.exists(file.path(path, "agent_orders.csv"))) exchange$agent_orders <- data.table::fread(file.path(path, "agent_orders.csv"))
+  if (file.exists(file.path(path, "agent_orders.csv"))) {
+    exchange$agent_orders <- data.table::fread(file.path(path, "agent_orders.csv"))
+    numeric_columns <- intersect(c("qty", "limit_price", "tgt_pos", "tol_pos", "price", "fee", "realized_pnl"), names(exchange$agent_orders))
+    for (column in numeric_columns) data.table::set(exchange$agent_orders, j = column, value = as.numeric(exchange$agent_orders[[column]]))
+    if ("asset_id" %in% names(exchange$agent_orders)) data.table::set(exchange$agent_orders, j = "asset_id", value = as.integer(exchange$agent_orders$asset_id))
+    if ("timestamp" %in% names(exchange$agent_orders)) data.table::set(exchange$agent_orders, j = "timestamp", value = as.POSIXct(exchange$agent_orders$timestamp, tz = "UTC"))
+  }
   if (file.exists(file.path(path, "agent_commands.csv"))) exchange$agent_commands <- data.table::fread(file.path(path, "agent_commands.csv"))
   if (file.exists(file.path(path, "order_requests.csv"))) exchange$order_requests <- data.table::fread(file.path(path, "order_requests.csv"))
   if (file.exists(file.path(path, "order_cancellations.csv"))) exchange$order_cancellations <- data.table::fread(file.path(path, "order_cancellations.csv"))
@@ -655,10 +673,11 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
 
 #' @keywords internal
 .exchange_orders_for_bar <- function(exchange, timestamp, agent_id = NULL, asset_id = NULL) {
+  bar_timestamp <- timestamp
   orders <- exchange$agent_orders[
     exchange$agent_orders$status == "accepted" &
       exchange$agent_orders$qty_type == "contracts" &
-      exchange$agent_orders$timestamp <= timestamp
+      exchange$agent_orders$timestamp <= bar_timestamp
   ]
   if (!is.null(agent_id)) {
     requested_agent_id <- as.character(agent_id)
@@ -754,11 +773,12 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
 
 #' @keywords internal
 .exchange_agents_to_step <- function(exchange, timestamp, asset_id = NULL) {
+  bar_timestamp <- timestamp
   registered <- if (nrow(exchange$agents) > 0L) exchange$agents$agent_id[exchange$agents$status != "removed"] else character()
   order_rows <- exchange$agent_orders[
     exchange$agent_orders$status == "accepted" &
       exchange$agent_orders$qty_type == "contracts" &
-      exchange$agent_orders$timestamp <= timestamp
+      exchange$agent_orders$timestamp <= bar_timestamp
   ]
   if (!is.null(asset_id) && "asset_id" %in% names(order_rows)) {
     requested_asset_id <- as.integer(asset_id)
@@ -1096,6 +1116,12 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
     latest <- exchange$market_events[nrow(exchange$market_events)]
     symbol <- latest$symbol[1L] %||% NULL
     asset_id <- latest$asset_id[1L] %||% NULL
+  }
+  if (is.null(asset_id) && !is.null(symbol) && !is.null(exchange) && isTRUE(validate)) {
+    return(.asset_require_registered(exchange, symbol = symbol))
+  }
+  if (is.null(symbol) && !is.null(asset_id) && !is.null(exchange) && isTRUE(validate)) {
+    return(.asset_require_registered(exchange, asset_id = asset_id))
   }
   if (is.null(asset_id) && !is.null(symbol)) {
     asset_id <- .asset_id_from_symbol(symbol)

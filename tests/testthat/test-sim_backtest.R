@@ -645,8 +645,9 @@ test_that("dashboard export includes market model and cross-asset risk metadata"
     seed = 9L
   ))
   sim_feed_warmup(exchange, n_bars = 2, now = as.POSIXct("2026-01-01 00:02:30", tz = "UTC"))
-  sim_submit_order(exchange, "agent-a", symbol = "AAPL", asset_id = 101L, side = "buy", qty = 1, process = TRUE)
-  sim_submit_order(exchange, "agent-a", symbol = "TLT", asset_id = 102L, side = "sell", qty = 1, process = TRUE)
+  order_at <- exchange$market_events$timestamp[nrow(exchange$market_events)]
+  sim_submit_order(exchange, "agent-a", timestamp = order_at, symbol = "AAPL", asset_id = 101L, side = "buy", qty = 1, process = TRUE)
+  sim_submit_order(exchange, "agent-a", timestamp = order_at, symbol = "TLT", asset_id = 102L, side = "sell", qty = 1, process = TRUE)
   sim_exchange_step(exchange, exchange$market_events[nrow(exchange$market_events)])
   out_dir <- tempfile("tradesimr-dashboard-market-")
 
@@ -704,7 +705,7 @@ test_that("optional portfolio margin uses correlation-aware maintenance", {
     close = 100
   )
   sim_exchange_add_bars(reject_exchange, reject_bar)
-  sim_submit_order(reject_exchange, "risk-limited", symbol = "VOL", asset_id = 33L, side = "buy", qty = 8, process = TRUE)
+  sim_submit_order(reject_exchange, "risk-limited", timestamp = reject_exchange$market_events$timestamp[1L], symbol = "VOL", asset_id = 33L, side = "buy", qty = 8, process = TRUE)
   sim_exchange_step(reject_exchange, reject_bar)
   expect_equal(sim_exchange_orders(reject_exchange)$status, "failed")
 })
@@ -1281,4 +1282,44 @@ test_that("strategy-backed agents consume strategyr-style multi-asset order inte
   expect_true(all(decisions$decision_type == "order"))
   expect_true(any(exchange$agent_strategy_events$output_type == "order_intent_table"))
   expect_equal(nrow(exchange$order_requests), 2)
+})
+
+test_that("live exchange preserves registered asset identity for symbol-only orders", {
+  exchange <- sim_exchange_new(list(cash = 10000))
+  sim_asset_add(exchange, "SPY", asset_id = 1L, asset_class = "etf")
+
+  sim_submit_order(exchange, "symbol-agent", symbol = "SPY", side = "buy", qty = 1)
+
+  expect_equal(exchange$order_requests$asset_id, 1L)
+  expect_equal(exchange$agent_orders$asset_id, 1L)
+})
+
+test_that("future orders wait for an eligible bar and survive save-load", {
+  exchange <- sim_exchange_new(list(cash = 10000, lev = 1, fee_rt = 0.0007))
+  sim_asset_add(exchange, "SPY", asset_id = 1L, asset_class = "etf")
+  sim_agent_add(exchange, "future-agent", "human")
+  order_at <- as.POSIXct("2026-08-03", tz = "UTC")
+  sim_submit_order(exchange, "future-agent", timestamp = order_at, symbol = "SPY", side = "buy", qty = 1)
+
+  early <- data.frame(
+    timestamp = as.POSIXct("2026-08-02", tz = "UTC"),
+    symbol = "SPY", asset_id = 1L,
+    open = 100, high = 101, low = 99, close = 100
+  )
+  sim_exchange_step(exchange, early)
+  expect_equal(exchange$agent_orders$status, "accepted")
+
+  out_dir <- tempfile("tradesimr-future-order-")
+  sim_exchange_save(exchange, out_dir)
+  loaded <- sim_exchange_load(out_dir)
+  expect_equal(loaded$agent_orders$status, "accepted")
+  expect_type(loaded$agent_orders$price, "double")
+  expect_type(loaded$agent_orders$fee, "double")
+  expect_identical(loaded$config$lev, 1)
+  expect_identical(loaded$config$fee_rt, 0.0007)
+
+  eligible <- early
+  eligible$timestamp <- order_at
+  sim_exchange_step(loaded, eligible)
+  expect_equal(loaded$agent_orders$status, "filled")
 })
