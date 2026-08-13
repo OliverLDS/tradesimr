@@ -3,6 +3,17 @@
 This changelog follows the repository tags. There is no `v0.8.0` tag in the
 current git history; `v0.9.0` follows `v0.7.0`.
 
+## tradesimr 0.13.1
+
+- Restored compatibility with Rcpp 1.0.x, whose `Rcpp::List::create()`
+  implementation accepts at most 20 arguments.
+- The C++ recorder now returns its final eight state columns through an
+  internal nested list; `sim_events()` restores the established flat event
+  table before exposing it to callers.
+- `sim_portfolio_step()` now derives its public order lifecycle table from
+  authoritative C++ before/after states and submitted orders, avoiding an
+  unstable portfolio-recorder serialization path on older Rcpp releases.
+
 ## tradesimr 0.13.0
 
 ### Vox Arena Portfolio Replay

@@ -33,7 +33,9 @@ inline Rcpp::LogicalVector bool_vec_to_logical(const std::vector<bool>& x) {
 }
 
 inline Rcpp::List recorder_to_list(const Recorder& recorder) {
-  return Rcpp::List::create(
+  // Rcpp versions supported by R 4.2 limit List::create() to 20 arguments.
+  // The R boundary flattens this internal tail list before exposing events.
+  Rcpp::List out = Rcpp::List::create(
     Rcpp::Named("timestamp") = recorder.ts,
     Rcpp::Named("event_id") = recorder.event_id_vec,
     Rcpp::Named("event_type") = recorder.event_type_vec,
@@ -53,15 +55,18 @@ inline Rcpp::List recorder_to_list(const Recorder& recorder) {
     Rcpp::Named("state_dir") = enum_vec_to_int(recorder.state_dir_vec),
     Rcpp::Named("state_ctr_unit") = recorder.state_ctr_unit_vec,
     Rcpp::Named("avg_price") = recorder.avg_price_vec,
-    Rcpp::Named("last_px") = recorder.last_px_vec,
-    Rcpp::Named("notional") = recorder.notional_vec,
-    Rcpp::Named("abs_notional") = recorder.abs_notional_vec,
-    Rcpp::Named("unrealized_pnl") = recorder.unrealized_pnl_vec,
-    Rcpp::Named("realized_pnl") = recorder.realized_pnl_vec,
-    Rcpp::Named("fee") = recorder.fee_vec,
-    Rcpp::Named("funding_fee") = recorder.funding_fee_vec,
-    Rcpp::Named("maintenance_margin") = recorder.maintenance_margin_vec
+    Rcpp::Named("tail") = Rcpp::List::create(
+      Rcpp::Named("last_px") = recorder.last_px_vec,
+      Rcpp::Named("notional") = recorder.notional_vec,
+      Rcpp::Named("abs_notional") = recorder.abs_notional_vec,
+      Rcpp::Named("unrealized_pnl") = recorder.unrealized_pnl_vec,
+      Rcpp::Named("realized_pnl") = recorder.realized_pnl_vec,
+      Rcpp::Named("fee") = recorder.fee_vec,
+      Rcpp::Named("funding_fee") = recorder.funding_fee_vec,
+      Rcpp::Named("maintenance_margin") = recorder.maintenance_margin_vec
+    )
   );
+  return out;
 }
 
 inline TRADESIMR::Dir int_to_dir(int x) {
@@ -575,8 +580,28 @@ Rcpp::List portfolio_step_rcpp(const Rcpp::List& states,
     if (orders.containsElementNamed("order_id")) order_id = orders["order_id"];
   }
 
-  Recorder recorder{};
-  if (rec) recorder.reserve(static_cast<std::size_t>(has_orders ? orders.nrows() : 0) + static_cast<std::size_t>(n_assets) * 2 + 1);
+  std::vector<double> event_timestamp;
+  std::vector<int> event_id;
+  std::vector<int> event_type;
+  std::vector<int> event_bar_stage;
+  std::vector<int> event_action_id;
+  std::vector<int> event_strat_id;
+  std::vector<int> event_asset_id;
+  std::vector<int> event_tx_id;
+  std::vector<int> event_status;
+  std::vector<int> event_liquidation;
+  std::vector<int> event_action;
+  std::vector<int> event_dir;
+  std::vector<double> event_ctr_qty;
+  std::vector<double> event_price;
+  std::vector<double> event_equity;
+  std::vector<double> event_cash;
+  std::vector<double> event_realized_pnl;
+  std::vector<double> event_fee;
+  std::vector<double> event_funding_fee;
+  std::vector<double> event_maintenance_margin;
+  int next_event_id = 0;
+  int next_tx_id = 0;
 
   auto fee_rate_for = [&](const ActionDecision& a) {
     return a.type == TRADESIMR::OrderType::LIMIT ? maker_fee_rt : taker_fee_rt;
@@ -648,9 +673,29 @@ Rcpp::List portfolio_step_rcpp(const Rcpp::List& states,
     }
 
     if (rec) {
-      TradeState event_state = s;
+      TradeState event_state = state_vec[static_cast<std::size_t>(si)];
       event_state.cash = shared_cash;
-      recorder.append_record(event_state, trade_msg);
+      if (trade_msg.action == TRADESIMR::ActionCode::OPEN) ++next_tx_id;
+      event_timestamp.push_back(trade_msg.timestamp);
+      event_id.push_back(++next_event_id);
+      event_type.push_back(1);
+      event_bar_stage.push_back(static_cast<int>(trade_msg.bar_stage));
+      event_action_id.push_back(static_cast<int>(trade_msg.action_id));
+      event_strat_id.push_back(static_cast<int>(trade_msg.strat));
+      event_asset_id.push_back(s.asset);
+      event_tx_id.push_back(next_tx_id);
+      event_status.push_back(static_cast<int>(trade_msg.status));
+      event_liquidation.push_back(trade_msg.liquidate ? 1 : 0);
+      event_action.push_back(static_cast<int>(trade_msg.action));
+      event_dir.push_back(static_cast<int>(trade_msg.action_pos_dir));
+      event_ctr_qty.push_back(trade_msg.action_ctr_unit);
+      event_price.push_back(trade_msg.action_px);
+      event_equity.push_back(event_state.eq());
+      event_cash.push_back(event_state.cash);
+      event_realized_pnl.push_back(trade_msg.realized_pnl);
+      event_fee.push_back(trade_msg.fee);
+      event_funding_fee.push_back(0.0);
+      event_maintenance_margin.push_back(event_state.mm());
     }
     state_vec[static_cast<std::size_t>(si)].action_id_now = std::max(
       state_vec[static_cast<std::size_t>(si)].action_id_now,
@@ -664,7 +709,6 @@ Rcpp::List portfolio_step_rcpp(const Rcpp::List& states,
     s.cash = shared_cash;
     s.mmr = 0.0;
     ExchangeMessage_on_funding fund_msg = exchange_vec[static_cast<std::size_t>(i)].update_on_funding(s);
-    if (rec && (fund_msg.funding_fee != 0.0 || fund_msg.liquidate)) recorder.append_funding(s, fund_msg);
     shared_cash = fund_msg.cash;
     ExchangeMessage_on_mark mark_msg = exchange_vec[static_cast<std::size_t>(i)].update_on_mark(s);
     s.last_px = mark_msg.last_px;
@@ -677,7 +721,6 @@ Rcpp::List portfolio_step_rcpp(const Rcpp::List& states,
   if (liquidated) {
     shared_cash = 0.0;
     for (auto& s : state_vec) {
-      if (rec && s.has_pos()) recorder.append_liquidation(s, timestamp[0], TRADESIMR::BarStage::CLOSE);
       s.cash = 0.0;
       s.pos_dir = TRADESIMR::Dir::FLAT;
       s.ctr_unit = 0.0;
@@ -686,20 +729,45 @@ Rcpp::List portfolio_step_rcpp(const Rcpp::List& states,
     }
   }
 
-  Rcpp::List out_states(n_assets);
-  Rcpp::CharacterVector out_names(n_assets);
+  Rcpp::List out_states;
   for (R_xlen_t i = 0; i < n_assets; ++i) {
-    out_names[i] = std::to_string(asset_ids[static_cast<std::size_t>(i)]);
-    out_states[i] = trade_state_to_list(state_vec[static_cast<std::size_t>(i)], shared_cash, timestamp[i], liquidated);
+    out_states.push_back(
+      trade_state_to_list(state_vec[static_cast<std::size_t>(i)], shared_cash, timestamp[i], liquidated),
+      std::to_string(asset_ids[static_cast<std::size_t>(i)])
+    );
   }
-  out_states.names() = out_names;
 
+  Rcpp::List event_out = Rcpp::List::create();
+  if (rec && !event_id.empty()) {
+    event_out = Rcpp::List::create(
+      Rcpp::Named("timestamp") = event_timestamp,
+      Rcpp::Named("event_id") = event_id,
+      Rcpp::Named("event_type") = event_type,
+      Rcpp::Named("bar_stage") = event_bar_stage,
+      Rcpp::Named("action_id") = event_action_id,
+      Rcpp::Named("strat_id") = event_strat_id,
+      Rcpp::Named("asset_id") = event_asset_id,
+      Rcpp::Named("tx_id") = event_tx_id,
+      Rcpp::Named("status") = event_status,
+      Rcpp::Named("liquidation") = event_liquidation,
+      Rcpp::Named("action") = event_action,
+      Rcpp::Named("dir") = event_dir,
+      Rcpp::Named("ctr_qty") = event_ctr_qty,
+      Rcpp::Named("price") = event_price,
+      Rcpp::Named("equity") = event_equity,
+      Rcpp::Named("cash") = event_cash,
+      Rcpp::Named("realized_pnl") = event_realized_pnl,
+      Rcpp::Named("fee") = event_fee,
+      Rcpp::Named("funding_fee") = event_funding_fee,
+      Rcpp::Named("maintenance_margin") = event_maintenance_margin
+    );
+  }
   return Rcpp::List::create(
     Rcpp::Named("states") = out_states,
     Rcpp::Named("cash") = shared_cash,
     Rcpp::Named("equity") = liquidated ? 0.0 : portfolio_equity_cpp(state_vec, shared_cash),
     Rcpp::Named("maintenance_margin") = liquidated ? 0.0 : required,
     Rcpp::Named("liquidated") = liquidated,
-    Rcpp::Named("events") = rec ? recorder_to_list(recorder) : Rcpp::List::create()
+    Rcpp::Named("events") = event_out
   );
 }

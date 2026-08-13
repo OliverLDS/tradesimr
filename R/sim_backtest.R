@@ -214,6 +214,9 @@ sim_events <- function(x) {
   }
   if (is.null(recorder)) return(data.table::data.table())
   if (data.table::is.data.table(recorder)) return(data.table::copy(recorder))
+  if (is.list(recorder) && is.list(recorder$tail)) {
+    recorder <- c(recorder[setdiff(names(recorder), "tail")], recorder$tail)
+  }
 
   out <- data.table::as.data.table(recorder)
   if (nrow(out) == 0L) return(out)

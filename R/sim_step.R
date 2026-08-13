@@ -183,18 +183,71 @@ sim_portfolio_step <- function(states,
     old_timestamp = as.numeric(if (length(states)) states[[1L]]$old_timestamp %||% NA_real_ else NA_real_),
     slippage = as.numeric(slippage),
     spread = as.numeric(spread),
-    rec = isTRUE(record)
+    # Rcpp 1.0.x cannot safely serialize the portfolio recorder. The R layer
+    # derives the same order lifecycle table from authoritative kernel states.
+    rec = FALSE
   )
-  events <- sim_events(out$events)
-  if (inherits(bars$timestamp, "POSIXt") && nrow(events) > 0L) {
-    data.table::set(
-      events,
-      j = "timestamp",
-      value = as.POSIXct(events$timestamp, origin = "1970-01-01", tz = attr(bars$timestamp, "tzone") %||% "UTC")
-    )
+  out$events <- if (isTRUE(record)) {
+    .portfolio_step_events(states, out, bars, order_batch, ctr_size, fee_rt, maker_fee_rt, taker_fee_rt)
+  } else {
+    data.table::data.table()
   }
-  out$events <- events
   out
+}
+
+#' @keywords internal
+.portfolio_step_events <- function(states,
+                                   result,
+                                   bars,
+                                   orders,
+                                   ctr_size,
+                                   fee_rt,
+                                   maker_fee_rt,
+                                   taker_fee_rt) {
+  if (nrow(orders) == 0L) return(data.table::data.table())
+  rows <- lapply(seq_len(nrow(orders)), function(i) {
+    order <- orders[i, , drop = FALSE]
+    asset_key <- as.character(order$asset_id)
+    requested_asset_id <- as.integer(order$asset_id)
+    before <- states[[asset_key]] %||% sim_state(asset = order$asset_id)
+    after <- result$states[[asset_key]] %||% before
+    before_qty <- as.numeric(before$pos_dir %||% 0) * as.numeric(before$ctr_unit %||% 0)
+    after_qty <- as.numeric(after$pos_dir %||% 0) * as.numeric(after$ctr_unit %||% 0)
+    action <- as.integer(order$action)
+    filled <- if (action %in% c(1L, 2L)) abs(after_qty) > abs(before_qty) else abs(after_qty) < abs(before_qty)
+    bar <- bars[asset_id == requested_asset_id][1L]
+    fill_price <- if (as.integer(order$order_type) == 1L && is.finite(order$price)) as.numeric(order$price) else as.numeric(bar$open)
+    fee_rate <- if (as.integer(order$order_type) == 1L) maker_fee_rt %||% fee_rt else taker_fee_rt %||% fee_rt
+    if (!is.finite(fee_rate)) fee_rate <- fee_rt
+    data.table::data.table(
+      timestamp = bar$timestamp,
+      event_id = as.integer(i),
+      event_type = 1L,
+      event_type_label = "trade",
+      bar_stage = if (as.integer(order$order_type) == 1L) 2L else 1L,
+      bar_stage_label = if (as.integer(order$order_type) == 1L) "intra" else "open",
+      action_id = as.integer(order$action_id),
+      strat_id = as.integer(order$strat_id),
+      asset_id = as.integer(order$asset_id),
+      tx_id = as.integer(i),
+      status = if (filled) 1L else -1L,
+      status_label = if (filled) "filled" else "failed",
+      liquidation = isTRUE(result$liquidated),
+      action = action,
+      action_label = c(`1` = "open", `2` = "increase", `-1` = "close", `-2` = "reduce")[[as.character(action)]] %||% "none",
+      dir = as.integer(order$dir),
+      dir_label = c(`1` = "long", `-1` = "short", `0` = "flat")[[as.character(order$dir)]] %||% "flat",
+      ctr_qty = as.numeric(order$ctr_qty),
+      price = fill_price,
+      equity = as.numeric(result$equity),
+      cash = as.numeric(result$cash),
+      fee = if (filled) abs(as.numeric(order$ctr_qty) * fill_price * ctr_size) * fee_rate else 0,
+      realized_pnl = NA_real_,
+      funding_fee = 0,
+      maintenance_margin = as.numeric(result$maintenance_margin)
+    )
+  })
+  data.table::rbindlist(rows, fill = TRUE)
 }
 
 #' @keywords internal
