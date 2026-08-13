@@ -1,7 +1,7 @@
 #' tradesimr durable schema version
 #'
 #' @export
-TRADESIMR_SCHEMA_VERSION <- "0.10.0"
+TRADESIMR_SCHEMA_VERSION <- "0.13.0"
 
 #' Simulation table schemas
 #'
@@ -44,6 +44,10 @@ sim_schemas <- function() {
       symbol = character(),
       asset_id = integer(),
       timestamp = as.POSIXct(character()),
+      eligible_after = as.POSIXct(character()),
+      rebalance_id = character(),
+      target_weight = numeric(),
+      decision_price = numeric(),
       order_type = character(),
       side = character(),
       intended_action = character(),
@@ -58,6 +62,30 @@ sim_schemas <- function() {
       price = numeric(),
       fee = numeric(),
       realized_pnl = numeric()
+    ),
+    portfolio_targets = data.table::data.table(
+      rebalance_id = character(),
+      timestamp = as.POSIXct(character()),
+      eligible_after = as.POSIXct(character()),
+      agent_id = character(),
+      symbol = character(),
+      asset_id = integer(),
+      target_weight = numeric(),
+      realized_weight_before = numeric(),
+      decision_price = numeric(),
+      status = character(),
+      message = character()
+    ),
+    portfolio_rebalances = data.table::data.table(
+      rebalance_id = character(),
+      timestamp = as.POSIXct(character()),
+      agent_id = character(),
+      status = character(),
+      execution_timing = character(),
+      fee_rt = numeric(),
+      slippage = numeric(),
+      spread = numeric(),
+      message = character()
     ),
     agent_commands = data.table::data.table(
       command_id = character(),
@@ -167,6 +195,9 @@ sim_schemas <- function() {
     ),
     fills = data.table::data.table(
       timestamp = as.POSIXct(character()),
+      agent_id = character(),
+      symbol = character(),
+      asset_id = integer(),
       event_id = integer(),
       action_id = integer(),
       action_label = character(),

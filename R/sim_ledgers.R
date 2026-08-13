@@ -325,6 +325,15 @@ sim_export <- function(sim,
     risk = sim_risk(sim)
   )
   table_map <- table_map[intersect(tables, names(table_map))]
+  empty_schemas <- list(
+    events = sim_schemas()$events[0],
+    orders = sim_schemas()$events[0],
+    fills = sim_schemas()$fills[0],
+    cash_ledger = sim_schemas()$cash_ledger[0]
+  )
+  for (nm in intersect(names(empty_schemas), names(table_map))) {
+    if (ncol(table_map[[nm]]) == 0L) table_map[[nm]] <- empty_schemas[[nm]]
+  }
 
   paths <- character(length(table_map))
   names(paths) <- names(table_map)

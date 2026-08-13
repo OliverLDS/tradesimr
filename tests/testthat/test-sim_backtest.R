@@ -763,6 +763,116 @@ test_that("C++ portfolio step applies shared-cash portfolio margin before accept
   expect_true(any(concentrated$events$status_label == "failed"))
 })
 
+test_that("target-weight portfolio replay translates weights and fills on next eligible bars", {
+  exchange <- sim_exchange_new(list(cash = 100000, ctr_step = 1, lev = 1))
+  sim_asset_add(exchange, "SPY", asset_id = 1L, asset_class = "etf", qty_step = 1)
+  sim_asset_add(exchange, "TLT", asset_id = 2L, asset_class = "etf", qty_step = 1)
+  execution <- sim_portfolio_execution(fee_rt = 0.001, slippage = 0, spread = 0)
+  first <- data.frame(
+    timestamp = as.POSIXct("2026-01-01", tz = "UTC"),
+    symbol = c("SPY", "TLT"), asset_id = c(1L, 2L),
+    open = c(100, 50), high = c(101, 51), low = c(99, 49), close = c(100, 50)
+  )
+  decision <- sim_portfolio_target_step(exchange, "arena-a", first, c(SPY = 0.5, TLT = 0.5), execution)
+
+  expect_equal(decision$orders$qty, c(500, 1000))
+  expect_true(all(decision$orders$status == "accepted"))
+  expect_equal(nrow(decision$fills), 0)
+  expect_equal(length(unique(decision$orders$rebalance_id)), 1L)
+  expect_equal(as.numeric(decision$orders$eligible_after), rep(as.numeric(first$timestamp[1L]), 2L))
+
+  repeated <- sim_portfolio_target_step(exchange, "arena-a", first, NULL, execution)
+  expect_equal(repeated$outcomes$status, "no_new_bar")
+  expect_equal(nrow(repeated$fills), 0)
+
+  second <- first
+  second$timestamp <- first$timestamp + 86400
+  second$open <- c(110, 55)
+  second$high <- c(111, 56)
+  second$low <- c(109, 54)
+  second$close <- c(110, 55)
+  filled <- sim_portfolio_target_step(exchange, "arena-a", second, NULL, execution)
+
+  expect_equal(nrow(filled$fills), 2L)
+  expect_equal(filled$fills$price, c(110, 55))
+  expect_equal(filled$fills$fee, c(55, 55))
+  expect_true(all(c("agent_id", "symbol", "asset_id", "timestamp", "status_label") %in% names(filled$fills)))
+  expect_equal(filled$account$cash, 99890)
+})
+
+test_that("target-weight portfolio replay preserves closed-market orders and independent accounts", {
+  exchange <- sim_exchange_new(list(cash = 100000, ctr_step = 1, lev = 1))
+  sim_asset_add(exchange, "SPY", asset_id = 1L, qty_step = 1)
+  sim_asset_add(exchange, "TLT", asset_id = 2L, qty_step = 1)
+  execution <- sim_portfolio_execution(lev = 2)
+  first <- data.frame(
+    timestamp = as.POSIXct("2026-01-01", tz = "UTC"),
+    symbol = c("SPY", "TLT"), asset_id = c(1L, 2L),
+    open = c(100, 50), high = c(100, 50), low = c(100, 50), close = c(100, 50)
+  )
+  sim_portfolio_target_step(exchange, "long-spy", first, c(SPY = 1, TLT = 0), execution)
+  sim_portfolio_target_step(exchange, "long-tlt", first, c(SPY = 0, TLT = 1), execution)
+  spy_only <- first[1, ]
+  spy_only$timestamp <- first$timestamp[1L] + 86400
+  spy_only$open <- spy_only$close <- 105
+  sim_portfolio_target_step(exchange, "long-spy", spy_only, NULL, execution)
+
+  orders <- sim_exchange_orders(exchange)
+  expect_equal(orders[agent_id == "long-spy" & symbol == "SPY", status], "filled")
+  expect_equal(orders[agent_id == "long-tlt" & symbol == "TLT", status], "accepted")
+  positions <- sim_exchange_positions(exchange)
+  expect_equal(positions[agent_id == "long-spy" & symbol == "SPY", ctr_unit], 1000)
+  expect_equal(nrow(positions[agent_id == "long-tlt" & symbol == "TLT"]), 0L)
+
+  tlt_only <- first[2, ]
+  tlt_only$timestamp <- first$timestamp[1L] + 2 * 86400
+  sim_portfolio_target_step(exchange, "long-tlt", tlt_only, NULL, execution)
+  positions <- sim_exchange_positions(exchange)
+  expect_equal(positions[agent_id == "long-tlt" & symbol == "TLT", ctr_unit], 2000)
+  accounts <- sim_exchange_account(exchange)
+  expect_equal(accounts[agent_id == "long-spy", cash], 100000)
+  expect_equal(accounts[agent_id == "long-tlt", cash], 100000)
+})
+
+test_that("target-weight portfolio replay reports no-op, rejection, persistence, and public schemas", {
+  exchange <- sim_exchange_new(list(cash = 100000, ctr_step = 1, lev = 1))
+  sim_asset_add(exchange, "SPY", asset_id = 1L, qty_step = 1)
+  sim_asset_add(exchange, "TLT", asset_id = 2L, qty_step = 1)
+  execution <- sim_portfolio_execution()
+  first <- data.frame(
+    timestamp = as.POSIXct("2026-01-01", tz = "UTC"),
+    symbol = c("SPY", "TLT"), asset_id = c(1L, 2L),
+    open = c(100, 50), high = c(100, 50), low = c(100, 50), close = c(100, 50)
+  )
+  sim_portfolio_target_step(exchange, "resume", first, c(SPY = 0.5, TLT = 0.5), execution)
+  out_dir <- tempfile("tradesimr-portfolio-resume-")
+  sim_exchange_save(exchange, out_dir)
+  loaded <- sim_exchange_load(out_dir)
+  expect_equal(nrow(loaded$portfolio_targets), 2L)
+  expect_equal(nrow(loaded$portfolio_rebalances), 1L)
+
+  second <- first
+  second$timestamp <- first$timestamp + 86400
+  resumed <- sim_portfolio_target_step(loaded, "resume", second, NULL, execution)
+  expect_equal(nrow(resumed$fills), 2L)
+  no_op_bar <- second
+  no_op_bar$timestamp <- second$timestamp + 86400
+  no_op <- sim_portfolio_target_step(loaded, "resume", no_op_bar, c(SPY = 0.5, TLT = 0.5), execution)
+  expect_true(all(no_op$outcomes$status == "no_op"))
+  rejected_bar <- no_op_bar
+  rejected_bar$timestamp <- no_op_bar$timestamp + 86400
+  rejected <- sim_portfolio_target_step(loaded, "resume", rejected_bar, c(SPY = 2, TLT = 0), execution)
+  expect_equal(rejected$outcomes$status, "rejected")
+
+  export_dir <- tempfile("tradesimr-portfolio-export-")
+  skip_if_not_installed("jsonlite")
+  paths <- sim_portfolio_export(loaded, "resume", export_dir)
+  expect_true(all(file.exists(paths)))
+  expect_true(all(c("agent_id", "symbol", "asset_id", "timestamp", "status") %in% names(no_op$orders)))
+  expect_true(all(c("agent_id", "symbol", "asset_id", "timestamp") %in% names(no_op$positions)))
+  expect_true(all(c("agent_id", "equity", "cash") %in% names(no_op$account)))
+})
+
 test_that("simulation feed uses asset-specific random streams", {
   exchange <- sim_exchange_new()
   sim_asset_add(exchange, "BTC-USDT-SWAP", asset_id = 101L)

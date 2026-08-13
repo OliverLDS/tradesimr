@@ -10,6 +10,8 @@ sim_exchange_new <- function(config = list()) {
   state$market_events <- sim_schemas()$market_events[0]
   state$intents <- sim_schemas()$intents[0]
   state$agent_orders <- sim_schemas()$agent_orders[0]
+  state$portfolio_targets <- sim_schemas()$portfolio_targets[0]
+  state$portfolio_rebalances <- sim_schemas()$portfolio_rebalances[0]
   state$agent_commands <- sim_schemas()$agent_commands[0]
   state$order_requests <- sim_schemas()$order_requests[0]
   state$order_cancellations <- sim_schemas()$order_cancellations[0]
@@ -44,6 +46,7 @@ sim_exchange_new <- function(config = list()) {
   state$last_bar_count <- 0L
   state$next_order_id <- 1L
   state$next_command_id <- 1L
+  state$next_rebalance_id <- 1L
   state$feed <- sim_feed_config()
   class(state) <- c("tradesimr_exchange", "environment")
   state
@@ -122,6 +125,10 @@ sim_exchange_place_order <- function(exchange,
     symbol = asset$symbol,
     asset_id = asset$asset_id,
     timestamp = timestamp,
+    eligible_after = as.POSIXct(NA),
+    rebalance_id = NA_character_,
+    target_weight = NA_real_,
+    decision_price = NA_real_,
     order_type = order_type,
     side = side,
     qty_type = qty_type,
@@ -464,6 +471,8 @@ sim_exchange_save <- function(exchange, path, format = c("csv", "fst")) {
     exchange_config = data.table::data.table(config = .serialize_field(exchange$config)),
     market_events = exchange$market_events,
     agent_orders = exchange$agent_orders,
+    portfolio_targets = exchange$portfolio_targets,
+    portfolio_rebalances = exchange$portfolio_rebalances,
     agent_commands = exchange$agent_commands,
     order_requests = exchange$order_requests,
     order_cancellations = exchange$order_cancellations,
@@ -513,7 +522,13 @@ sim_exchange_load <- function(path) {
   if (file.exists(manifest_file)) {
     imported <- sim_import(path)
     exchange$result <- imported$simulation
+    if (!is.null(exchange$result) && "timestamp" %in% names(exchange$result)) {
+      data.table::set(exchange$result, j = "timestamp", value = as.POSIXct(exchange$result$timestamp, tz = "UTC"))
+    }
     exchange$last_events <- if (!is.null(imported$events)) sim_events(imported$events) else data.table::data.table()
+    if ("timestamp" %in% names(exchange$last_events)) {
+      data.table::set(exchange$last_events, j = "timestamp", value = as.POSIXct(exchange$last_events$timestamp, tz = "UTC"))
+    }
     exchange$step_events <- exchange$last_events
     exchange$step_snapshots <- if (!is.null(imported$simulation)) imported$simulation else data.table::data.table()
     if (!is.null(imported$simulation) && nrow(imported$simulation) > 0L) {
@@ -531,10 +546,24 @@ sim_exchange_load <- function(path) {
   if (file.exists(file.path(path, "market_events.csv"))) exchange$market_events <- data.table::fread(file.path(path, "market_events.csv"))
   if (file.exists(file.path(path, "agent_orders.csv"))) {
     exchange$agent_orders <- data.table::fread(file.path(path, "agent_orders.csv"))
-    numeric_columns <- intersect(c("qty", "limit_price", "tgt_pos", "tol_pos", "price", "fee", "realized_pnl"), names(exchange$agent_orders))
+    numeric_columns <- intersect(c("qty", "limit_price", "tgt_pos", "tol_pos", "price", "fee", "realized_pnl", "target_weight", "decision_price"), names(exchange$agent_orders))
     for (column in numeric_columns) data.table::set(exchange$agent_orders, j = column, value = as.numeric(exchange$agent_orders[[column]]))
     if ("asset_id" %in% names(exchange$agent_orders)) data.table::set(exchange$agent_orders, j = "asset_id", value = as.integer(exchange$agent_orders$asset_id))
-    if ("timestamp" %in% names(exchange$agent_orders)) data.table::set(exchange$agent_orders, j = "timestamp", value = as.POSIXct(exchange$agent_orders$timestamp, tz = "UTC"))
+    for (column in intersect(c("timestamp", "eligible_after"), names(exchange$agent_orders))) {
+      data.table::set(exchange$agent_orders, j = column, value = as.POSIXct(exchange$agent_orders[[column]], tz = "UTC"))
+    }
+  }
+  if (file.exists(file.path(path, "portfolio_targets.csv"))) {
+    exchange$portfolio_targets <- data.table::fread(file.path(path, "portfolio_targets.csv"))
+    for (column in intersect(c("timestamp", "eligible_after"), names(exchange$portfolio_targets))) {
+      data.table::set(exchange$portfolio_targets, j = column, value = as.POSIXct(exchange$portfolio_targets[[column]], tz = "UTC"))
+    }
+  }
+  if (file.exists(file.path(path, "portfolio_rebalances.csv"))) {
+    exchange$portfolio_rebalances <- data.table::fread(file.path(path, "portfolio_rebalances.csv"))
+    if ("timestamp" %in% names(exchange$portfolio_rebalances)) {
+      data.table::set(exchange$portfolio_rebalances, j = "timestamp", value = as.POSIXct(exchange$portfolio_rebalances$timestamp, tz = "UTC"))
+    }
   }
   if (file.exists(file.path(path, "agent_commands.csv"))) exchange$agent_commands <- data.table::fread(file.path(path, "agent_commands.csv"))
   if (file.exists(file.path(path, "order_requests.csv"))) exchange$order_requests <- data.table::fread(file.path(path, "order_requests.csv"))
@@ -642,6 +671,10 @@ sim_exchange_load <- function(path) {
     numeric_command_ids <- suppressWarnings(as.integer(sub("^CMD", "", exchange$agent_commands$command_id)))
     exchange$next_command_id <- max(numeric_command_ids, na.rm = TRUE) + 1L
   }
+  if (nrow(exchange$portfolio_rebalances) > 0L) {
+    numeric_rebalance_ids <- suppressWarnings(as.integer(sub("^RB", "", exchange$portfolio_rebalances$rebalance_id)))
+    exchange$next_rebalance_id <- max(numeric_rebalance_ids, na.rm = TRUE) + 1L
+  }
   exchange
 }
 
@@ -679,6 +712,9 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
       exchange$agent_orders$qty_type == "contracts" &
       exchange$agent_orders$timestamp <= bar_timestamp
   ]
+  if ("eligible_after" %in% names(orders)) {
+    orders <- orders[is.na(eligible_after) | eligible_after < bar_timestamp]
+  }
   if (!is.null(agent_id)) {
     requested_agent_id <- as.character(agent_id)
     orders <- orders[orders[["agent_id"]] == requested_agent_id]
@@ -713,6 +749,38 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
   action_id <- integer()
   next_action_id <- as.integer(step_state$action_id_now %||% 1L)
   for (i in seq_len(nrow(orders))) {
+    direct_action <- tolower(as.character(orders$intended_action[i]))
+    direct_dir <- tolower(as.character(orders$intended_dir[i]))
+    if (is.na(direct_action)) direct_action <- ""
+    if (is.na(direct_dir)) direct_dir <- ""
+    if (direct_action %in% c("open", "increase", "reduce", "close") && direct_dir %in% c("long", "short", "flat")) {
+      this_qty <- abs(as.numeric(orders$qty[i]))
+      if (!is.finite(this_qty) || this_qty <= 0) {
+        .mark_orders_noop(exchange, orders$order_id[i])
+        next
+      }
+      this_action <- direct_action
+      this_dir <- direct_dir
+      if (this_action %in% c("open", "increase")) {
+        cur_dir <- if (this_dir == "long") 1L else -1L
+        cur_qty <- if (this_action == "open") this_qty else cur_qty + this_qty
+      } else if (this_action == "close") {
+        cur_dir <- 0L
+        cur_qty <- 0
+      } else {
+        cur_qty <- max(0, cur_qty - this_qty)
+        if (cur_qty == 0) cur_dir <- 0L
+      }
+      action <- c(action, this_action)
+      dir <- c(dir, this_dir)
+      ctr_qty <- c(ctr_qty, this_qty)
+      order_id <- c(order_id, orders$order_id[i])
+      order_type <- c(order_type, orders$order_type[i])
+      price <- c(price, orders$limit_price[i])
+      action_id <- c(action_id, next_action_id)
+      next_action_id <- next_action_id + 1L
+      next
+    }
     if (!side[i] %in% c("buy", "sell", "flat")) {
       stop("Contract orders require side `buy`, `sell`, or `flat`.", call. = FALSE)
     }

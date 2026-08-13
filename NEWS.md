@@ -3,6 +3,42 @@
 This changelog follows the repository tags. There is no `v0.8.0` tag in the
 current git history; `v0.9.0` follows `v0.7.0`.
 
+## tradesimr 0.13.0
+
+### Vox Arena Portfolio Replay
+
+- Added `sim_portfolio_execution()` to define explicit, exchange-locked
+  target-weight execution assumptions: next-eligible-bar timing, fees,
+  slippage, spread, leverage, maintenance margin, and gross-weight limits.
+- Added `sim_portfolio_target_step()`, the public multi-asset target-weight
+  replay interface. It translates named registered-symbol weights into
+  contract quantities from authoritative account equity and completed-bar or
+  carried valuation prices.
+- Rebalance plans are accepted atomically under durable `rebalance_id`s. A
+  single plan may contain multiple asset orders, including explicit
+  close-then-open actions for direction changes.
+- Target-weight orders are eligible only on a strictly later bar for their own
+  asset. Stale observations create explicit `no_new_bar` outcomes, and assets
+  without a genuinely new bar cannot fill or trigger a new strategy reaction.
+- `NULL` target weights now record an explicit `no_decision` outcome and keep
+  existing positions; rounded unchanged targets record `no_op`; invalid target
+  vectors record a rejected rebalance without submitting orders.
+- Added `sim_portfolio_export()` for consumer-safe JSON exports of orders,
+  fills, positions, valuations, account snapshots, targets, and realized
+  weights. The export intentionally excludes credentials and provider payloads.
+
+### Durable State And Validation
+
+- Exchange save/load now preserves portfolio target and rebalance ledgers,
+  next-eligible timestamps, target metadata, and the next rebalance sequence.
+- Added stable schemas for portfolio targets/rebalances and enriched fill
+  records with agent and asset identity.
+- Added a runnable five-asset, two-competitor example at
+  `inst/examples/vox_arena_portfolio_replay.R`.
+- Added tests for target-to-contract conversion, atomic rebalance grouping,
+  isolated accounts, next-bar and closed-market behavior, no-op/rejected
+  outcomes, fees, save/load resume, and public output schemas.
+
 ## tradesimr 0.12.0
 
 - Fixed live exchange order-time filtering so future-dated orders remain
