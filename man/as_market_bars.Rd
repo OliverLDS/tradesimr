@@ -21,6 +21,15 @@ as_market_bars(
 \item{data}{A table-like object.}
 
 \item{timestamp_col, open_col, high_col, low_col, close_col}{Column names.}
+
+\item{symbol_col}{Optional input symbol column name.}
+
+\item{asset_id_col}{Optional input asset identifier column name.}
+
+\item{symbol}{Optional scalar symbol when the input has no symbol column.}
+
+\item{asset_id}{Optional scalar asset identifier when the input has no asset
+identifier column.}
 }
 \value{
 A data.table with canonical \code{timestamp}, \code{open}, \code{high}, \code{low},

@@ -3,6 +3,24 @@
 This changelog follows the repository tags. There is no `v0.8.0` tag in the
 current git history; `v0.9.0` follows `v0.7.0`.
 
+## tradesimr 0.13.2
+
+### Fee-Aware Target Execution
+
+- Fixed fee-bearing `tgt_pos` execution at full account exposure. Previously,
+  a target of `1` at `lev = 1` could translate to exactly all available
+  notional and then fail when the execution fee was applied.
+- Target-position and target-weight opening/increase actions now retain their
+  decision-boundary sizing intent but are clipped at the actual eligible fill
+  price to the largest contract-step quantity satisfying
+  `equity - transaction_fee >= initial_margin`.
+- This applies to the C++ backtest kernel and incremental target-weight replay
+  path. Explicit contract orders intentionally retain their previous
+  reject-on-insufficient-margin semantics.
+- Added regression tests for fee-aware long, short, fractional, and reversal
+  targets, as well as target-weight replay, exact fees/cash/equity, and
+  `lev = 1` gross-exposure limits.
+
 ## tradesimr 0.13.1
 
 - Restored compatibility with Rcpp 1.0.x, whose `Rcpp::List::create()`

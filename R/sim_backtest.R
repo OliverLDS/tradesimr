@@ -2,7 +2,11 @@
 #'
 #' `sim_backtest()` executes target-position intentions through the package's
 #' C++ exchange/accounting engine. Orders are planned at bar close and market
-#' orders are filled on the next bar open.
+#' orders are filled on the next bar open. Target-derived opening and increase
+#' orders are fee-aware: they are clipped at the executable price to the
+#' largest step-rounded quantity satisfying `equity - fee >= initial_margin`.
+#' Thus a `tgt_pos` of `1` at `lev = 1` produces the largest near-100%-notional
+#' position that reserves its transaction fee rather than a failed order.
 #'
 #' @param data A data frame/data.table with timestamp, open, high, low, close,
 #'   and target-position columns.
@@ -18,7 +22,9 @@
 #' @param ctr_size Contract size.
 #' @param ctr_step Minimum contract increment.
 #' @param lev Leverage used for initial margin.
-#' @param fee_rt Trading fee rate on notional.
+#' @param fee_rt Trading fee rate on notional. Fees are reserved by
+#'   target-derived opening/increase actions at their fill boundary; explicit
+#'   contract orders continue to fail if their requested quantity is infeasible.
 #' @param maker_fee_rt,taker_fee_rt Optional maker/taker fee rates. Missing
 #'   values fall back to `fee_rt`.
 #' @param fund_rt Funding rate per 8 hours on notional.

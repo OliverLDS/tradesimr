@@ -339,6 +339,11 @@ validate_intents <- function(data, tgt_pos_col = "tgt_pos", tol_pos_col = NULL) 
 #' Normalize market bars for tradesimr
 #'
 #' @inheritParams validate_market_data
+#' @param symbol_col Optional input symbol column name.
+#' @param asset_id_col Optional input asset identifier column name.
+#' @param symbol Optional scalar symbol when the input has no symbol column.
+#' @param asset_id Optional scalar asset identifier when the input has no asset
+#'   identifier column.
 #' @return A data.table with canonical `timestamp`, `open`, `high`, `low`,
 #'   `close` columns.
 #' @export

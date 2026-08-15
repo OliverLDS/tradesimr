@@ -29,7 +29,10 @@ sim_step(
 \item{bar}{One-row market bar coercible by \code{as_market_bars()}.}
 
 \item{orders}{Data frame with order columns: \code{action}, \code{dir}, \code{order_type},
-\code{ctr_qty}, \code{price}, and optional \code{strat_id}, \code{action_id}.}
+\code{ctr_qty}, \code{price}, and optional \code{strat_id}, \code{action_id}, and
+\code{fee_aware_target}. The last flag is used internally for target-position
+and target-weight orders, whose opening quantity is capped at the fill
+price to reserve fees and initial margin.}
 
 \item{asset}{Integer asset identifier.}
 
@@ -39,7 +42,9 @@ sim_step(
 
 \item{lev}{Leverage used for initial margin.}
 
-\item{fee_rt}{Trading fee rate on notional.}
+\item{fee_rt}{Trading fee rate on notional. Fees are reserved by
+target-derived opening/increase actions at their fill boundary; explicit
+contract orders continue to fail if their requested quantity is infeasible.}
 
 \item{maker_fee_rt, taker_fee_rt}{Optional maker/taker fee rates. Missing
 values fall back to \code{fee_rt}.}

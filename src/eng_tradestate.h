@@ -1,6 +1,7 @@
 // eng_tradestate.h
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 
 #include "base_types.h"
@@ -77,6 +78,25 @@ struct TradeState {
     return abs_notional() * mmr;
   }
 
+  // Maximum opening/increasing quantity that remains valid after its fee and
+  // initial-margin requirement are both charged at the actual fill price.
+  inline double fee_aware_target_qty(double px) const noexcept {
+    if (!std::isfinite(px) || px <= 0.0 || !std::isfinite(ctr_size) || ctr_size <= 0.0 ||
+        !std::isfinite(ctr_step) || ctr_step <= 0.0 || !std::isfinite(lev) || lev <= 0.0) {
+      return 0.0;
+    }
+    const double equity = cash + unrealized_pnl(px);
+    const double current_abs_notional = std::abs(pos_units() * px);
+    const double headroom = equity - current_abs_notional * imr();
+    const double unit_cost = imr() + std::max(0.0, fee_rt);
+    if (!std::isfinite(headroom) || !std::isfinite(unit_cost) || headroom <= 0.0 || unit_cost <= 0.0) {
+      return 0.0;
+    }
+    const double raw_qty = headroom / (unit_cost * px * ctr_size);
+    if (!std::isfinite(raw_qty) || raw_qty <= 0.0) return 0.0;
+    return std::floor(raw_qty / ctr_step + 1e-10) * ctr_step;
+  }
+
   double delta_pos_to_ctr(double delta_pos) const noexcept;
   ActionPlan plan_action_mkt_ord(const Intent& intent, size_t action_id) const noexcept;
 };
@@ -112,6 +132,7 @@ inline ActionPlan TradeState::plan_action_mkt_ord(const Intent& intent, size_t a
     o.type = intent.type;
     o.px = intent.px;
     o.ctr_qty = std::abs(ctr_delta);
+    o.fee_aware_target = true;
     plan.a[0] = o;
     plan.n = 1;
     return plan;
@@ -124,6 +145,7 @@ inline ActionPlan TradeState::plan_action_mkt_ord(const Intent& intent, size_t a
     c.action = TRADESIMR::ActionCode::CLOSE;
     c.dir = TRADESIMR::Dir::FLAT;
     c.ctr_qty = std::abs(ctr_unit);
+    c.fee_aware_target = true;
     plan.a[0] = c;
     plan.n = 1;
     return plan;
@@ -136,6 +158,7 @@ inline ActionPlan TradeState::plan_action_mkt_ord(const Intent& intent, size_t a
     c.action = TRADESIMR::ActionCode::CLOSE;
     c.dir = TRADESIMR::Dir::FLAT;
     c.ctr_qty = std::abs(ctr_unit);
+    c.fee_aware_target = true;
     plan.a[0] = c;
     plan.n = 1;
 
@@ -150,6 +173,7 @@ inline ActionPlan TradeState::plan_action_mkt_ord(const Intent& intent, size_t a
     o.type = intent.type;
     o.px = intent.px;
     o.ctr_qty = std::abs(ctr_for_tgt);
+    o.fee_aware_target = true;
     plan.a[1] = o;
     plan.n = 2;
     return plan;
@@ -164,6 +188,7 @@ inline ActionPlan TradeState::plan_action_mkt_ord(const Intent& intent, size_t a
   d.type = intent.type;
   d.px = intent.px;
   d.ctr_qty = std::abs(ctr_delta);
+  d.fee_aware_target = true;
   plan.a[0] = d;
   plan.n = 1;
   return plan;

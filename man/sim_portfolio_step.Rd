@@ -44,7 +44,9 @@ sim_portfolio_step(
 
 \item{lev}{Leverage used for initial margin.}
 
-\item{fee_rt}{Trading fee rate on notional.}
+\item{fee_rt}{Trading fee rate on notional. Fees are reserved by
+target-derived opening/increase actions at their fill boundary; explicit
+contract orders continue to fail if their requested quantity is infeasible.}
 
 \item{maker_fee_rt, taker_fee_rt}{Optional maker/taker fee rates. Missing
 values fall back to \code{fee_rt}.}

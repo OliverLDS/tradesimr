@@ -28,6 +28,11 @@ sim_exchange_place_order(
 
 \item{timestamp}{Order timestamp.}
 
+\item{symbol}{Registered asset symbol.}
+
+\item{asset_id}{Registered asset identifier. Provide \code{symbol}, \code{asset_id},
+or both when they identify the same asset.}
+
 \item{tgt_pos}{Target exposure. Kept for compatibility with earlier
 intent-level calls.}
 

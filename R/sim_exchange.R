@@ -75,6 +75,9 @@ sim_exchange_add_bars <- function(exchange, bars) {
 #' @param exchange A `tradesimr_exchange`.
 #' @param agent_id Agent identifier.
 #' @param timestamp Order timestamp.
+#' @param symbol Registered asset symbol.
+#' @param asset_id Registered asset identifier. Provide `symbol`, `asset_id`,
+#'   or both when they identify the same asset.
 #' @param tgt_pos Target exposure. Kept for compatibility with earlier
 #'   intent-level calls.
 #' @param tol_pos Target-position tolerance.
@@ -732,7 +735,8 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
       ctr_qty = numeric(),
       price = numeric(),
       strat_id = integer(),
-      action_id = integer()
+      action_id = integer(),
+      fee_aware_target = logical()
     ))
   }
   state_key <- .agent_state_key(agent_id %||% "default", asset_id %||% 0L)
@@ -747,6 +751,7 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
   order_type <- character()
   price <- numeric()
   action_id <- integer()
+  fee_aware_target <- logical()
   next_action_id <- as.integer(step_state$action_id_now %||% 1L)
   for (i in seq_len(nrow(orders))) {
     direct_action <- tolower(as.character(orders$intended_action[i]))
@@ -778,6 +783,10 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
       order_type <- c(order_type, orders$order_type[i])
       price <- c(price, orders$limit_price[i])
       action_id <- c(action_id, next_action_id)
+      fee_aware_target <- c(
+        fee_aware_target,
+        "rebalance_id" %in% names(orders) && !is.na(orders$rebalance_id[i])
+      )
       next_action_id <- next_action_id + 1L
       next
     }
@@ -825,6 +834,7 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
     order_type <- c(order_type, orders$order_type[i])
     price <- c(price, orders$limit_price[i])
     action_id <- c(action_id, next_action_id)
+    fee_aware_target <- c(fee_aware_target, FALSE)
     next_action_id <- next_action_id + 1L
   }
   data.table::data.table(
@@ -835,7 +845,8 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
     ctr_qty = ctr_qty,
     price = price,
     strat_id = rep.int(0L, length(action_id)),
-    action_id = action_id
+    action_id = action_id,
+    fee_aware_target = fee_aware_target
   )
 }
 

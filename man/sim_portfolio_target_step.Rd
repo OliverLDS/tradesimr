@@ -38,7 +38,12 @@ decision. Existing eligible orders are stepped first. A new target decision
 is then translated atomically into contract orders using current account
 equity and the decision-bar close (or the latest carried valuation for an
 asset absent from the batch). New orders are eligible only on a strictly
-later bar for their own asset.
+later bar for their own asset. At that later fill boundary, target-derived
+opening/increase orders are capped to the largest step-rounded quantity whose
+fee and initial margin fit the account. Consequently a target weight of \code{1}
+at \code{lev = 1} is near 100\% notional after reserving the fee, rather than a
+failed all-cash order. Explicit contract orders retain reject-on-insufficient
+margin semantics.
 }
 \details{
 Missing target weights for active registered assets mean a target weight of

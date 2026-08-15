@@ -323,6 +323,7 @@ Rcpp::List step_rcpp(const Rcpp::List& state,
                      const Rcpp::NumericVector& price,
                      const Rcpp::IntegerVector& strat_id,
                      const Rcpp::IntegerVector& action_id,
+                     const Rcpp::LogicalVector& fee_aware_target,
                      int asset = 0,
                      double ctr_size = 1.0,
                      double ctr_step = 1.0,
@@ -343,7 +344,8 @@ Rcpp::List step_rcpp(const Rcpp::List& state,
       ctr_qty.size() != n ||
       price.size() != n ||
       strat_id.size() != n ||
-      action_id.size() != n) {
+      action_id.size() != n ||
+      fee_aware_target.size() != n) {
     Rcpp::stop("All order vectors must have the same length.");
   }
   if (Rcpp::NumericVector::is_na(maker_fee_rt)) maker_fee_rt = fee_rt;
@@ -402,6 +404,7 @@ Rcpp::List step_rcpp(const Rcpp::List& state,
       a.type = int_to_order_type(order_type[i]);
       a.ctr_qty = ctr_qty[i];
       a.px = price[i];
+      a.fee_aware_target = fee_aware_target[i] == TRUE;
       if (a.action == TRADESIMR::ActionCode::NONE || a.ctr_qty <= 0.0 || Rcpp::NumericVector::is_na(a.ctr_qty)) {
         continue;
       }
@@ -411,11 +414,17 @@ Rcpp::List step_rcpp(const Rcpp::List& state,
       double base_price = a.type == TRADESIMR::OrderType::LIMIT ? a.px : x.open;
       TradeState priced_state = s;
       priced_state.fee_rt = fee_rate_for(a);
+      ActionDecision executable = a;
+      const double filled_price = fill_price_with_costs(executable, base_price);
+      if (executable.fee_aware_target &&
+          (executable.action == TRADESIMR::ActionCode::OPEN || executable.action == TRADESIMR::ActionCode::INCREASE)) {
+        executable.ctr_qty = std::min(executable.ctr_qty, priced_state.fee_aware_target_qty(filled_price));
+      }
       ExchangeMessage_on_trade trade_msg = x.update_on_trade(
         priced_state,
-        a,
+        executable,
         a.type == TRADESIMR::OrderType::LIMIT ? TRADESIMR::BarStage::INTRA : TRADESIMR::BarStage::OPEN,
-        fill_price_with_costs(a, base_price)
+        filled_price
       );
       if (rec) recorder.append_record(s, trade_msg);
       if (trade_msg.liquidate) {
@@ -567,6 +576,7 @@ Rcpp::List portfolio_step_rcpp(const Rcpp::List& states,
   Rcpp::NumericVector price;
   Rcpp::IntegerVector strat_id;
   Rcpp::IntegerVector action_id;
+  Rcpp::LogicalVector fee_aware_target;
   const bool has_orders = orders.nrows() > 0;
   if (has_orders) {
     order_asset = orders["asset_id"];
@@ -577,6 +587,7 @@ Rcpp::List portfolio_step_rcpp(const Rcpp::List& states,
     price = orders["price"];
     strat_id = orders["strat_id"];
     action_id = orders["action_id"];
+    if (orders.containsElementNamed("fee_aware_target")) fee_aware_target = orders["fee_aware_target"];
     if (orders.containsElementNamed("order_id")) order_id = orders["order_id"];
   }
 
@@ -627,6 +638,7 @@ Rcpp::List portfolio_step_rcpp(const Rcpp::List& states,
     a.type = int_to_order_type(order_type[oi]);
     a.ctr_qty = ctr_qty[oi];
     a.px = price[oi];
+    a.fee_aware_target = fee_aware_target.size() == orders.nrows() && fee_aware_target[oi] == TRUE;
     if (a.action == TRADESIMR::ActionCode::NONE || a.ctr_qty <= 0.0 || Rcpp::NumericVector::is_na(a.ctr_qty)) {
       continue;
     }
@@ -637,13 +649,21 @@ Rcpp::List portfolio_step_rcpp(const Rcpp::List& states,
     TradeState priced_state = s;
     priced_state.cash = shared_cash;
     priced_state.fee_rt = fee_rate_for(a);
-    priced_state.lev = 1e12;
+    // Keep the configured per-asset initial-margin ceiling before applying
+    // the portfolio-level covariance margin check below.
+    priced_state.lev = lev;
     priced_state.mmr = 0.0;
+    ActionDecision executable = a;
+    const double filled_price = fill_price_with_costs_cpp(executable, s, base_price, spread, slippage);
+    if (executable.fee_aware_target &&
+        (executable.action == TRADESIMR::ActionCode::OPEN || executable.action == TRADESIMR::ActionCode::INCREASE)) {
+      executable.ctr_qty = std::min(executable.ctr_qty, priced_state.fee_aware_target_qty(filled_price));
+    }
     ExchangeMessage_on_trade trade_msg = x.update_on_trade(
       priced_state,
-      a,
+      executable,
       a.type == TRADESIMR::OrderType::LIMIT ? TRADESIMR::BarStage::INTRA : TRADESIMR::BarStage::OPEN,
-      fill_price_with_costs_cpp(a, s, base_price, spread, slippage)
+      filled_price
     );
 
     if (trade_msg.status == TRADESIMR::ActionStatus::FILLED) {

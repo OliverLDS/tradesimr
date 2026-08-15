@@ -45,7 +45,12 @@ sim_portfolio_execution <- function(timing = "next_eligible_open",
 #' is then translated atomically into contract orders using current account
 #' equity and the decision-bar close (or the latest carried valuation for an
 #' asset absent from the batch). New orders are eligible only on a strictly
-#' later bar for their own asset.
+#' later bar for their own asset. At that later fill boundary, target-derived
+#' opening/increase orders are capped to the largest step-rounded quantity whose
+#' fee and initial margin fit the account. Consequently a target weight of `1`
+#' at `lev = 1` is near 100% notional after reserving the fee, rather than a
+#' failed all-cash order. Explicit contract orders retain reject-on-insufficient
+#' margin semantics.
 #'
 #' Missing target weights for active registered assets mean a target weight of
 #' zero. A `NULL` target is a no-decision: positions are retained and no new

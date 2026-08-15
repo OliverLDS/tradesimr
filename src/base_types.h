@@ -15,6 +15,8 @@ struct ActionDecision {
   TRADESIMR::OrderType type = TRADESIMR::OrderType::MARKET;
   double ctr_qty = TRADESIMR::kNaReal;
   double px = TRADESIMR::kNaReal;
+  // Target-derived actions may be clipped at the executable price to reserve fees.
+  bool fee_aware_target = false;
 };
 
 static constexpr size_t MaxActions = 2;

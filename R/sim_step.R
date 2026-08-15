@@ -44,7 +44,10 @@ sim_state <- function(cash = 10000,
 #' @param state Prior state created by `sim_state()` or returned by `sim_step()`.
 #' @param bar One-row market bar coercible by `as_market_bars()`.
 #' @param orders Data frame with order columns: `action`, `dir`, `order_type`,
-#'   `ctr_qty`, `price`, and optional `strat_id`, `action_id`.
+#'   `ctr_qty`, `price`, and optional `strat_id`, `action_id`, and
+#'   `fee_aware_target`. The last flag is used internally for target-position
+#'   and target-weight orders, whose opening quantity is capped at the fill
+#'   price to reserve fees and initial margin.
 #' @param asset Integer asset identifier.
 #' @inheritParams sim_backtest
 #' @return A list with `state` and `events`.
@@ -82,6 +85,7 @@ sim_step <- function(state,
     price = order_batch$price,
     strat_id = order_batch$strat_id,
     action_id = order_batch$action_id,
+    fee_aware_target = order_batch$fee_aware_target,
     asset = as.integer(asset),
     ctr_size = as.numeric(ctr_size),
     ctr_step = as.numeric(ctr_step),
@@ -215,6 +219,7 @@ sim_portfolio_step <- function(states,
     after_qty <- as.numeric(after$pos_dir %||% 0) * as.numeric(after$ctr_unit %||% 0)
     action <- as.integer(order$action)
     filled <- if (action %in% c(1L, 2L)) abs(after_qty) > abs(before_qty) else abs(after_qty) < abs(before_qty)
+    filled_qty <- if (filled) abs(after_qty - before_qty) else 0
     bar <- bars[asset_id == requested_asset_id][1L]
     fill_price <- if (as.integer(order$order_type) == 1L && is.finite(order$price)) as.numeric(order$price) else as.numeric(bar$open)
     fee_rate <- if (as.integer(order$order_type) == 1L) maker_fee_rt %||% fee_rt else taker_fee_rt %||% fee_rt
@@ -237,11 +242,11 @@ sim_portfolio_step <- function(states,
       action_label = c(`1` = "open", `2` = "increase", `-1` = "close", `-2` = "reduce")[[as.character(action)]] %||% "none",
       dir = as.integer(order$dir),
       dir_label = c(`1` = "long", `-1` = "short", `0` = "flat")[[as.character(order$dir)]] %||% "flat",
-      ctr_qty = as.numeric(order$ctr_qty),
+      ctr_qty = if (filled) filled_qty else as.numeric(order$ctr_qty),
       price = fill_price,
       equity = as.numeric(result$equity),
       cash = as.numeric(result$cash),
-      fee = if (filled) abs(as.numeric(order$ctr_qty) * fill_price * ctr_size) * fee_rate else 0,
+      fee = if (filled) abs(filled_qty * fill_price * ctr_size) * fee_rate else 0,
       realized_pnl = NA_real_,
       funding_fee = 0,
       maintenance_margin = as.numeric(result$maintenance_margin)
@@ -261,7 +266,8 @@ sim_portfolio_step <- function(states,
       ctr_qty = numeric(),
       price = numeric(),
       strat_id = integer(),
-      action_id = integer()
+      action_id = integer(),
+      fee_aware_target = logical()
     ))
   }
   required <- c("action", "dir", "ctr_qty")
@@ -276,6 +282,7 @@ sim_portfolio_step <- function(states,
     start <- as.integer(state$action_id_now %||% 1L)
     data.table::set(DT, j = "action_id", value = seq.int(start, length.out = nrow(DT)))
   }
+  if (!"fee_aware_target" %in% names(DT)) data.table::set(DT, j = "fee_aware_target", value = rep.int(FALSE, nrow(DT)))
   data.table::data.table(
     action = .encode_step_action(DT$action),
     dir = .encode_step_dir(DT$dir),
@@ -283,7 +290,8 @@ sim_portfolio_step <- function(states,
     ctr_qty = as.numeric(DT$ctr_qty),
     price = as.numeric(DT$price),
     strat_id = as.integer(DT$strat_id),
-    action_id = as.integer(DT$action_id)
+    action_id = as.integer(DT$action_id),
+    fee_aware_target = as.logical(DT$fee_aware_target)
   )
 }
 
@@ -300,7 +308,8 @@ sim_portfolio_step <- function(states,
       ctr_qty = numeric(),
       price = numeric(),
       strat_id = integer(),
-      action_id = integer()
+      action_id = integer(),
+      fee_aware_target = logical()
     ))
   }
   required <- c("asset_id", "action", "dir", "ctr_qty")
@@ -313,6 +322,7 @@ sim_portfolio_step <- function(states,
   if (!"price" %in% names(DT)) data.table::set(DT, j = "price", value = rep.int(NA_real_, nrow(DT)))
   if (!"strat_id" %in% names(DT)) data.table::set(DT, j = "strat_id", value = rep.int(0L, nrow(DT)))
   if (!"action_id" %in% names(DT)) data.table::set(DT, j = "action_id", value = seq_len(nrow(DT)))
+  if (!"fee_aware_target" %in% names(DT)) data.table::set(DT, j = "fee_aware_target", value = rep.int(FALSE, nrow(DT)))
   data.frame(
     order_id = as.character(DT$order_id),
     asset_id = as.integer(DT$asset_id),
@@ -322,7 +332,8 @@ sim_portfolio_step <- function(states,
     ctr_qty = as.numeric(DT$ctr_qty),
     price = as.numeric(DT$price),
     strat_id = as.integer(DT$strat_id),
-    action_id = as.integer(DT$action_id)
+    action_id = as.integer(DT$action_id),
+    fee_aware_target = as.logical(DT$fee_aware_target)
   )
 }
 

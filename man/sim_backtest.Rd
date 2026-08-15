@@ -61,7 +61,9 @@ names in \code{data}.}
 
 \item{lev}{Leverage used for initial margin.}
 
-\item{fee_rt}{Trading fee rate on notional.}
+\item{fee_rt}{Trading fee rate on notional. Fees are reserved by
+target-derived opening/increase actions at their fill boundary; explicit
+contract orders continue to fail if their requested quantity is infeasible.}
 
 \item{maker_fee_rt, taker_fee_rt}{Optional maker/taker fee rates. Missing
 values fall back to \code{fee_rt}.}
@@ -91,5 +93,9 @@ execution recorder is attached as attribute \code{orders}.
 \description{
 \code{sim_backtest()} executes target-position intentions through the package's
 C++ exchange/accounting engine. Orders are planned at bar close and market
-orders are filled on the next bar open.
+orders are filled on the next bar open. Target-derived opening and increase
+orders are fee-aware: they are clipped at the executable price to the
+largest step-rounded quantity satisfying \code{equity - fee >= initial_margin}.
+Thus a \code{tgt_pos} of \code{1} at \code{lev = 1} produces the largest near-100\%-notional
+position that reserves its transaction fee rather than a failed order.
 }

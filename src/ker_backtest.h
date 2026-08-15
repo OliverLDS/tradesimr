@@ -1,6 +1,8 @@
 // ker_backtest.h
 #pragma once
 
+#include <algorithm>
+
 #include "eng_recorder.h"
 
 inline void backtest(double* eq,
@@ -89,7 +91,12 @@ inline void backtest(double* eq,
     TradeState priced_state = s;
     priced_state.fee_rt = trade_fee_rate(a);
     double filled_price = fill_price_with_costs(a, base_price);
-    return x.update_on_trade(priced_state, a, stage, filled_price);
+    ActionDecision executable = a;
+    if (executable.fee_aware_target &&
+        (executable.action == TRADESIMR::ActionCode::OPEN || executable.action == TRADESIMR::ActionCode::INCREASE)) {
+      executable.ctr_qty = std::min(executable.ctr_qty, priced_state.fee_aware_target_qty(filled_price));
+    }
+    return x.update_on_trade(priced_state, executable, stage, filled_price);
   };
 
   for (size_t i = 0; i < len; ++i) {

@@ -66,6 +66,22 @@ sim_orders(sim)
 sim_account(sim)
 ```
 
+## Fee-Aware Target Semantics
+
+Target positions and target weights are first translated into contract actions
+at their decision boundary. An opening or increasing target action fills only
+on its next eligible bar. At that fill price, tradesimr clips the requested
+quantity to the largest contract-step quantity that satisfies:
+
+```text
+equity - transaction_fee >= initial_margin
+```
+
+For example, a `+1` target with `lev = 1` and a nonzero fee opens a
+near-100%-notional long position after reserving the fee, rather than failing
+because the original target consumed exactly all cash. Explicit contract orders
+are not resized and still fail if their requested quantity violates margin.
+
 ## Incremental Exchange Example
 
 ```r
@@ -148,4 +164,3 @@ exchange2 <- sim_exchange_load("exchange-out")
 `tradesimr` is under active development. The current design favors stable event
 schemas, replayability, and explicit exchange/accounting boundaries before
 expanding production-grade live service features.
-
