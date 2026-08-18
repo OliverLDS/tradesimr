@@ -3,6 +3,18 @@
 This changelog follows the repository tags. There is no `v0.8.0` tag in the
 current git history; `v0.9.0` follows `v0.7.0`.
 
+## tradesimr 0.14.0
+
+### Durable Portfolio Fill Exports
+
+- Added an append-only `portfolio_fills` ledger with immutable `FILL...`
+  identifiers for target-weight portfolio execution.
+- Every portfolio fill now records its durable `order_id`, `rebalance_id`,
+  agent/asset identity, execution action, quantity, price, fee, realized P&L,
+  and applicable target weight.
+- `sim_portfolio_export()` now exports the durable ledger in `fills.json`, so
+  exports remain complete after subsequent exchange steps and save/load cycles.
+
 ## tradesimr 0.13.2
 
 ### Fee-Aware Target Execution

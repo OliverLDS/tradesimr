@@ -12,6 +12,7 @@ sim_exchange_new <- function(config = list()) {
   state$agent_orders <- sim_schemas()$agent_orders[0]
   state$portfolio_targets <- sim_schemas()$portfolio_targets[0]
   state$portfolio_rebalances <- sim_schemas()$portfolio_rebalances[0]
+  state$portfolio_fills <- sim_schemas()$portfolio_fills[0]
   state$agent_commands <- sim_schemas()$agent_commands[0]
   state$order_requests <- sim_schemas()$order_requests[0]
   state$order_cancellations <- sim_schemas()$order_cancellations[0]
@@ -47,6 +48,7 @@ sim_exchange_new <- function(config = list()) {
   state$next_order_id <- 1L
   state$next_command_id <- 1L
   state$next_rebalance_id <- 1L
+  state$next_fill_id <- 1L
   state$feed <- sim_feed_config()
   class(state) <- c("tradesimr_exchange", "environment")
   state
@@ -476,6 +478,7 @@ sim_exchange_save <- function(exchange, path, format = c("csv", "fst")) {
     agent_orders = exchange$agent_orders,
     portfolio_targets = exchange$portfolio_targets,
     portfolio_rebalances = exchange$portfolio_rebalances,
+    portfolio_fills = exchange$portfolio_fills,
     agent_commands = exchange$agent_commands,
     order_requests = exchange$order_requests,
     order_cancellations = exchange$order_cancellations,
@@ -566,6 +569,18 @@ sim_exchange_load <- function(path) {
     exchange$portfolio_rebalances <- data.table::fread(file.path(path, "portfolio_rebalances.csv"))
     if ("timestamp" %in% names(exchange$portfolio_rebalances)) {
       data.table::set(exchange$portfolio_rebalances, j = "timestamp", value = as.POSIXct(exchange$portfolio_rebalances$timestamp, tz = "UTC"))
+    }
+  }
+  if (file.exists(file.path(path, "portfolio_fills.csv"))) {
+    exchange$portfolio_fills <- data.table::fread(file.path(path, "portfolio_fills.csv"))
+    for (column in intersect(c("timestamp"), names(exchange$portfolio_fills))) {
+      data.table::set(exchange$portfolio_fills, j = column, value = as.POSIXct(exchange$portfolio_fills[[column]], tz = "UTC"))
+    }
+    for (column in intersect(c("asset_id", "event_id", "action_id"), names(exchange$portfolio_fills))) {
+      data.table::set(exchange$portfolio_fills, j = column, value = as.integer(exchange$portfolio_fills[[column]]))
+    }
+    for (column in intersect(c("qty", "price", "fee", "realized_pnl", "target_weight"), names(exchange$portfolio_fills))) {
+      data.table::set(exchange$portfolio_fills, j = column, value = as.numeric(exchange$portfolio_fills[[column]]))
     }
   }
   if (file.exists(file.path(path, "agent_commands.csv"))) exchange$agent_commands <- data.table::fread(file.path(path, "agent_commands.csv"))
@@ -678,6 +693,10 @@ sim_exchange_load <- function(path) {
     numeric_rebalance_ids <- suppressWarnings(as.integer(sub("^RB", "", exchange$portfolio_rebalances$rebalance_id)))
     exchange$next_rebalance_id <- max(numeric_rebalance_ids, na.rm = TRUE) + 1L
   }
+  if (nrow(exchange$portfolio_fills) > 0L) {
+    numeric_fill_ids <- suppressWarnings(as.integer(sub("^FILL", "", exchange$portfolio_fills$fill_id)))
+    exchange$next_fill_id <- max(numeric_fill_ids, na.rm = TRUE) + 1L
+  }
   exchange
 }
 
@@ -736,7 +755,9 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
       price = numeric(),
       strat_id = integer(),
       action_id = integer(),
-      fee_aware_target = logical()
+      fee_aware_target = logical(),
+      rebalance_id = character(),
+      target_weight = numeric()
     ))
   }
   state_key <- .agent_state_key(agent_id %||% "default", asset_id %||% 0L)
@@ -752,6 +773,8 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
   price <- numeric()
   action_id <- integer()
   fee_aware_target <- logical()
+  rebalance_id <- character()
+  target_weight <- numeric()
   next_action_id <- as.integer(step_state$action_id_now %||% 1L)
   for (i in seq_len(nrow(orders))) {
     direct_action <- tolower(as.character(orders$intended_action[i]))
@@ -787,6 +810,8 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
         fee_aware_target,
         "rebalance_id" %in% names(orders) && !is.na(orders$rebalance_id[i])
       )
+      rebalance_id <- c(rebalance_id, as.character(orders$rebalance_id[i] %||% NA_character_))
+      target_weight <- c(target_weight, as.numeric(orders$target_weight[i] %||% NA_real_))
       next_action_id <- next_action_id + 1L
       next
     }
@@ -835,6 +860,8 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
     price <- c(price, orders$limit_price[i])
     action_id <- c(action_id, next_action_id)
     fee_aware_target <- c(fee_aware_target, FALSE)
+    rebalance_id <- c(rebalance_id, as.character(orders$rebalance_id[i] %||% NA_character_))
+    target_weight <- c(target_weight, as.numeric(orders$target_weight[i] %||% NA_real_))
     next_action_id <- next_action_id + 1L
   }
   data.table::data.table(
@@ -846,7 +873,9 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
     price = price,
     strat_id = rep.int(0L, length(action_id)),
     action_id = action_id,
-    fee_aware_target = fee_aware_target
+    fee_aware_target = fee_aware_target,
+    rebalance_id = rebalance_id,
+    target_weight = target_weight
   )
 }
 
@@ -931,15 +960,13 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
   if (nrow(orders) == 0L || nrow(events) == 0L) return(invisible(NULL))
   filled_events <- events[events$status_label == "filled"]
   failed_events <- events[events$status_label == "failed"]
-  filled_actions <- filled_events$action_id
-  failed_actions <- failed_events$action_id
-  idx <- which(orders$action_id %in% filled_actions)
   for (col in c("price", "fee", "realized_pnl")) {
     if (!col %in% names(exchange$agent_orders)) data.table::set(exchange$agent_orders, j = col, value = NA_real_)
   }
-  for (i in idx) {
+  for (i in seq_len(nrow(orders))) {
+    event_idx <- .match_order_event(orders[i], filled_events)
+    if (is.na(event_idx)) next
     order_idx <- match(orders$order_id[i], exchange$agent_orders$order_id)
-    event_idx <- match(orders$action_id[i], filled_events$action_id)
     if (is.na(order_idx) || is.na(event_idx)) next
     data.table::set(exchange$agent_orders, i = order_idx, j = "status", value = "filled")
     for (col in c("price", "fee", "realized_pnl")) {
@@ -947,17 +974,63 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
         data.table::set(exchange$agent_orders, i = order_idx, j = col, value = as.numeric(filled_events[[col]][event_idx]))
       }
     }
+    .append_portfolio_fill(exchange, orders[i], filled_events[event_idx])
   }
-  failed_idx <- which(orders$action_id %in% failed_actions)
-  for (i in failed_idx) {
+  for (i in seq_len(nrow(orders))) {
+    event_idx <- .match_order_event(orders[i], failed_events)
+    if (is.na(event_idx)) next
     order_idx <- match(orders$order_id[i], exchange$agent_orders$order_id)
-    event_idx <- match(orders$action_id[i], failed_events$action_id)
     if (is.na(order_idx) || is.na(event_idx)) next
     data.table::set(exchange$agent_orders, i = order_idx, j = "status", value = "failed")
     if ("price" %in% names(failed_events)) {
       data.table::set(exchange$agent_orders, i = order_idx, j = "price", value = as.numeric(failed_events$price[event_idx]))
     }
   }
+  invisible(NULL)
+}
+
+#' @keywords internal
+.match_order_event <- function(order, events) {
+  if (nrow(events) == 0L) return(NA_integer_)
+  idx <- which(events$action_id == as.integer(order$action_id[1L]))
+  if ("asset_id" %in% names(order) && "asset_id" %in% names(events)) {
+    idx <- idx[events$asset_id[idx] == as.integer(order$asset_id[1L])]
+  }
+  if (length(idx) == 1L) as.integer(idx) else NA_integer_
+}
+
+#' @keywords internal
+.append_portfolio_fill <- function(exchange, order, event) {
+  requested_order_id <- as.character(order$order_id[1L])
+  canonical_order <- exchange$agent_orders[exchange$agent_orders$order_id == requested_order_id]
+  if (nrow(canonical_order) != 1L || is.na(canonical_order$rebalance_id[1L])) return(invisible(NULL))
+  if (requested_order_id %in% exchange$portfolio_fills$order_id) return(invisible(NULL))
+  fill_id <- paste0("FILL", sprintf("%06d", exchange$next_fill_id %||% 1L))
+  exchange$next_fill_id <- as.integer(exchange$next_fill_id %||% 1L) + 1L
+  row <- data.table::data.table(
+    fill_id = fill_id,
+    timestamp = event$timestamp[1L],
+    agent_id = as.character(canonical_order$agent_id[1L]),
+    order_id = requested_order_id,
+    rebalance_id = as.character(canonical_order$rebalance_id[1L]),
+    symbol = as.character(canonical_order$symbol[1L]),
+    asset_id = as.integer(canonical_order$asset_id[1L]),
+    event_id = as.integer(event$event_id[1L] %||% NA_integer_),
+    action_id = as.integer(event$action_id[1L]),
+    side = as.character(canonical_order$side[1L]),
+    action = as.character(event$action_label[1L]),
+    status = "filled",
+    action_label = as.character(event$action_label[1L]),
+    status_label = "filled",
+    dir_label = as.character(event$dir_label[1L]),
+    qty = as.numeric(event$ctr_qty[1L]),
+    ctr_qty = as.numeric(event$ctr_qty[1L]),
+    price = as.numeric(event$price[1L]),
+    fee = as.numeric(event$fee[1L] %||% 0),
+    realized_pnl = as.numeric(event$realized_pnl[1L] %||% 0),
+    target_weight = as.numeric(canonical_order$target_weight[1L])
+  )
+  exchange$portfolio_fills <- data.table::rbindlist(list(exchange$portfolio_fills, row), fill = TRUE)
   invisible(NULL)
 }
 

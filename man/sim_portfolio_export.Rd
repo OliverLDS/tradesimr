@@ -16,7 +16,10 @@ sim_portfolio_export(exchange, agent_id, path, format = "json")
 \item{format}{Export format. Phase 1 supports JSON.}
 }
 \value{
-A named vector of written paths.
+A named vector of written paths. \code{fills.json} is sourced from the
+durable portfolio fill ledger and links every filled portfolio order to
+its \code{order_id} and \code{rebalance_id}; \code{rebalances.json} contains the linked
+accepted/rejected rebalance records.
 }
 \description{
 Export a safe portfolio replay snapshot for an external consumer

@@ -1,7 +1,7 @@
 #' tradesimr durable schema version
 #'
 #' @export
-TRADESIMR_SCHEMA_VERSION <- "0.13.0"
+TRADESIMR_SCHEMA_VERSION <- "0.14.0"
 
 #' Simulation table schemas
 #'
@@ -86,6 +86,29 @@ sim_schemas <- function() {
       slippage = numeric(),
       spread = numeric(),
       message = character()
+    ),
+    portfolio_fills = data.table::data.table(
+      fill_id = character(),
+      timestamp = as.POSIXct(character()),
+      agent_id = character(),
+      order_id = character(),
+      rebalance_id = character(),
+      symbol = character(),
+      asset_id = integer(),
+      event_id = integer(),
+      action_id = integer(),
+      side = character(),
+      action = character(),
+      status = character(),
+      action_label = character(),
+      status_label = character(),
+      dir_label = character(),
+      qty = numeric(),
+      ctr_qty = numeric(),
+      price = numeric(),
+      fee = numeric(),
+      realized_pnl = numeric(),
+      target_weight = numeric()
     ),
     agent_commands = data.table::data.table(
       command_id = character(),

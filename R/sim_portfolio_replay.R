@@ -174,7 +174,10 @@ sim_portfolio_target_step <- function(exchange,
 #' @param agent_id Agent identifier.
 #' @param path Output directory.
 #' @param format Export format. Phase 1 supports JSON.
-#' @return A named vector of written paths.
+#' @return A named vector of written paths. `fills.json` is sourced from the
+#'   durable portfolio fill ledger and links every filled portfolio order to
+#'   its `order_id` and `rebalance_id`; `rebalances.json` contains the linked
+#'   accepted/rejected rebalance records.
 #' @export
 sim_portfolio_export <- function(exchange,
                                  agent_id,
@@ -194,6 +197,7 @@ sim_portfolio_export <- function(exchange,
     valuations = snapshot$valuations,
     account = snapshot$account,
     targets = snapshot$targets,
+    rebalances = snapshot$rebalances,
     realized_weights = snapshot$realized_weights
   )
   paths <- vapply(names(tables), function(name) {
@@ -381,12 +385,26 @@ sim_portfolio_export <- function(exchange,
 .portfolio_step_result <- function(exchange, agent_id, rebalance_id = NULL, fills = NULL, outcomes = data.table::data.table()) {
   orders <- data.table::copy(exchange$agent_orders[exchange$agent_orders$agent_id == agent_id])
   if (!is.null(rebalance_id)) orders <- orders[orders$rebalance_id == rebalance_id]
-  if (is.null(fills) || !"agent_id" %in% names(fills)) fills <- sim_schemas()$fills[0]
-  fills <- data.table::copy(fills[fills$agent_id == agent_id])
+  durable_fills <- data.table::copy(exchange$portfolio_fills[exchange$portfolio_fills$agent_id == agent_id])
+  if (!is.null(rebalance_id)) {
+    selected_rebalance_id <- rebalance_id
+    durable_fills <- durable_fills[rebalance_id == selected_rebalance_id]
+  }
+  if (is.null(fills)) {
+    fills <- durable_fills
+  } else if (!"agent_id" %in% names(fills) || nrow(fills) == 0L) {
+    fills <- durable_fills[0]
+  } else {
+    keys <- unique(paste(fills$agent_id, fills$asset_id, as.numeric(fills$timestamp), fills$action_id, sep = "|"))
+    fill_keys <- paste(durable_fills$agent_id, durable_fills$asset_id, as.numeric(durable_fills$timestamp), durable_fills$action_id, sep = "|")
+    fills <- durable_fills[fill_keys %in% keys]
+  }
   positions <- data.table::copy(sim_exchange_positions(exchange)[sim_exchange_positions(exchange)$agent_id == agent_id])
   account <- data.table::copy(sim_exchange_account(exchange)[sim_exchange_account(exchange)$agent_id == agent_id])
   targets <- data.table::copy(exchange$portfolio_targets[exchange$portfolio_targets$agent_id == agent_id])
   if (!is.null(rebalance_id)) targets <- targets[targets$rebalance_id == rebalance_id]
+  rebalances <- data.table::copy(exchange$portfolio_rebalances[exchange$portfolio_rebalances$agent_id == agent_id])
+  if (!is.null(rebalance_id)) rebalances <- rebalances[rebalances$rebalance_id == rebalance_id]
   equity <- if (nrow(account)) as.numeric(account$equity[1L]) else NA_real_
   realized_weights <- data.table::copy(positions)
   realized_weights[, realized_weight := if (is.finite(equity) && equity != 0) notional / equity else NA_real_]
@@ -405,5 +423,5 @@ sim_portfolio_export <- function(exchange,
   valuations[, timestamp := as.POSIXct(vapply(valuation_rows, function(row) as.numeric(row$timestamp), numeric(1L)), origin = "1970-01-01", tz = "UTC")]
   valuations[, last_px := vapply(valuation_rows, `[[`, numeric(1L), "last_px")]
   valuations[, agent_id := agent_id]
-  list(rebalance_id = rebalance_id, orders = orders, fills = fills, positions = positions, account = account, targets = targets, realized_weights = realized_weights, valuations = valuations, outcomes = data.table::as.data.table(outcomes))
+  list(rebalance_id = rebalance_id, orders = orders, fills = fills, positions = positions, account = account, targets = targets, rebalances = rebalances, realized_weights = realized_weights, valuations = valuations, outcomes = data.table::as.data.table(outcomes))
 }
