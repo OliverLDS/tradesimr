@@ -3,6 +3,25 @@
 This changelog follows the repository tags. There is no `v0.8.0` tag in the
 current git history; `v0.9.0` follows `v0.7.0`.
 
+## tradesimr 0.15.0
+
+### Batch-Boundary Portfolio Replay
+
+- Added explicit Arena-style batch-boundary APIs:
+  `sim_portfolio_market_step()` advances a completed market batch once and
+  executes only earlier eligible orders; `sim_portfolio_target_submit()` then
+  accepts one agent's target decision without rerunning market execution.
+- Added durable `portfolio_market_boundaries` exchange state. Target
+  submissions require the exact asset/timestamp bars to have been accepted by
+  the market-boundary API, preventing same-bar fills and accidental repeated
+  processing of a completed batch.
+- Reimplemented `sim_portfolio_target_step()` as a compatibility composition of
+  the two boundary APIs. Sequential callers retain existing behavior, while
+  multi-agent callers can now make one market call followed by lightweight
+  target submissions.
+- Extended exchange save/load to preserve accepted portfolio market boundaries
+  and updated the five-asset Vox Arena example to use the batch-boundary flow.
+
 ## tradesimr 0.14.0
 
 ### Durable Portfolio Fill Exports

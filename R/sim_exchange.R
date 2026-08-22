@@ -13,6 +13,7 @@ sim_exchange_new <- function(config = list()) {
   state$portfolio_targets <- sim_schemas()$portfolio_targets[0]
   state$portfolio_rebalances <- sim_schemas()$portfolio_rebalances[0]
   state$portfolio_fills <- sim_schemas()$portfolio_fills[0]
+  state$portfolio_market_boundaries <- sim_schemas()$portfolio_market_boundaries[0]
   state$agent_commands <- sim_schemas()$agent_commands[0]
   state$order_requests <- sim_schemas()$order_requests[0]
   state$order_cancellations <- sim_schemas()$order_cancellations[0]
@@ -479,6 +480,7 @@ sim_exchange_save <- function(exchange, path, format = c("csv", "fst")) {
     portfolio_targets = exchange$portfolio_targets,
     portfolio_rebalances = exchange$portfolio_rebalances,
     portfolio_fills = exchange$portfolio_fills,
+    portfolio_market_boundaries = exchange$portfolio_market_boundaries,
     agent_commands = exchange$agent_commands,
     order_requests = exchange$order_requests,
     order_cancellations = exchange$order_cancellations,
@@ -583,10 +585,24 @@ sim_exchange_load <- function(path) {
       data.table::set(exchange$portfolio_fills, j = column, value = as.numeric(exchange$portfolio_fills[[column]]))
     }
   }
+  if (file.exists(file.path(path, "portfolio_market_boundaries.csv"))) {
+    exchange$portfolio_market_boundaries <- data.table::fread(file.path(path, "portfolio_market_boundaries.csv"))
+    if ("timestamp" %in% names(exchange$portfolio_market_boundaries)) {
+      data.table::set(exchange$portfolio_market_boundaries, j = "timestamp", value = as.POSIXct(exchange$portfolio_market_boundaries$timestamp, tz = "UTC"))
+    }
+    if ("asset_id" %in% names(exchange$portfolio_market_boundaries)) {
+      data.table::set(exchange$portfolio_market_boundaries, j = "asset_id", value = as.integer(exchange$portfolio_market_boundaries$asset_id))
+    }
+  }
   if (file.exists(file.path(path, "agent_commands.csv"))) exchange$agent_commands <- data.table::fread(file.path(path, "agent_commands.csv"))
   if (file.exists(file.path(path, "order_requests.csv"))) exchange$order_requests <- data.table::fread(file.path(path, "order_requests.csv"))
   if (file.exists(file.path(path, "order_cancellations.csv"))) exchange$order_cancellations <- data.table::fread(file.path(path, "order_cancellations.csv"))
-  if (file.exists(file.path(path, "agents.csv"))) exchange$agents <- data.table::fread(file.path(path, "agents.csv"))
+  if (file.exists(file.path(path, "agents.csv"))) {
+    exchange$agents <- data.table::fread(file.path(path, "agents.csv"))
+    if ("created_at" %in% names(exchange$agents)) {
+      data.table::set(exchange$agents, j = "created_at", value = as.POSIXct(exchange$agents$created_at, tz = "UTC"))
+    }
+  }
   if (file.exists(file.path(path, "assets.csv"))) exchange$assets <- data.table::fread(file.path(path, "assets.csv"))
   if (file.exists(file.path(path, "agent_decisions.csv"))) exchange$agent_decisions <- data.table::fread(file.path(path, "agent_decisions.csv"))
   if (file.exists(file.path(path, "agent_strategy_events.csv"))) exchange$agent_strategy_events <- data.table::fread(file.path(path, "agent_strategy_events.csv"))
@@ -680,7 +696,12 @@ sim_exchange_load <- function(path) {
       exchange$feed <- feed
     }
   }
-  if (file.exists(file.path(path, "exchange_event_log.csv"))) exchange$event_log <- data.table::fread(file.path(path, "exchange_event_log.csv"))
+  if (file.exists(file.path(path, "exchange_event_log.csv"))) {
+    exchange$event_log <- data.table::fread(file.path(path, "exchange_event_log.csv"))
+    if ("timestamp" %in% names(exchange$event_log)) {
+      data.table::set(exchange$event_log, j = "timestamp", value = as.POSIXct(exchange$event_log$timestamp, tz = "UTC"))
+    }
+  }
   if (nrow(exchange$agent_orders) > 0L) {
     numeric_ids <- suppressWarnings(as.integer(sub("^ORD", "", exchange$agent_orders$order_id)))
     exchange$next_order_id <- max(numeric_ids, na.rm = TRUE) + 1L

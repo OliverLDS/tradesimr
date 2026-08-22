@@ -46,8 +46,10 @@ make_bars <- function(timestamp, prices) {
 
 day_1 <- make_bars(as.POSIXct("2026-01-02", tz = "UTC"), assets$start_price)
 
-# Two isolated Arena competitors publish different target weights.
-sim_portfolio_target_step(
+# Advance this completed observation once, then let every eligible competitor
+# submit a target from its common closing decision boundary.
+sim_portfolio_market_step(arena, day_1, execution)
+sim_portfolio_target_submit(
   arena,
   agent_id = "balanced",
   bars = day_1,
@@ -55,7 +57,7 @@ sim_portfolio_target_step(
   execution = execution,
   decision_label = "Vox publication 2026-01-02"
 )
-sim_portfolio_target_step(
+sim_portfolio_target_submit(
   arena,
   agent_id = "risk-on",
   bars = day_1,
@@ -66,8 +68,9 @@ sim_portfolio_target_step(
 
 # Next completed observations fill the day-1 decisions at these opens.
 day_2 <- make_bars(as.POSIXct("2026-01-05", tz = "UTC"), c(505, 89, 202, 1.09, 67000))
-balanced <- sim_portfolio_target_step(arena, "balanced", day_2, execution = execution)
-risk_on <- sim_portfolio_target_step(arena, "risk-on", day_2, execution = execution)
+market <- sim_portfolio_market_step(arena, day_2, execution)
+balanced <- sim_portfolio_target_submit(arena, "balanced", day_2, execution = execution)
+risk_on <- sim_portfolio_target_submit(arena, "risk-on", day_2, execution = execution)
 
 balanced$orders
 balanced$fills

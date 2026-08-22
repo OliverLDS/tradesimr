@@ -1,7 +1,7 @@
 #' tradesimr durable schema version
 #'
 #' @export
-TRADESIMR_SCHEMA_VERSION <- "0.14.0"
+TRADESIMR_SCHEMA_VERSION <- "0.15.0"
 
 #' Simulation table schemas
 #'
@@ -109,6 +109,11 @@ sim_schemas <- function() {
       fee = numeric(),
       realized_pnl = numeric(),
       target_weight = numeric()
+    ),
+    portfolio_market_boundaries = data.table::data.table(
+      timestamp = as.POSIXct(character()),
+      symbol = character(),
+      asset_id = integer()
     ),
     agent_commands = data.table::data.table(
       command_id = character(),
