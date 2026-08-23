@@ -329,6 +329,8 @@ sim_portfolio_target_step <- function(exchange,
     asset_id,
     target_weight,
     realized_weight_before,
+    decision_equity,
+    planned_signed_quantity = desired_signed_qty,
     decision_price,
     status = outcome_status,
     message = outcome_message
@@ -627,6 +629,7 @@ sim_portfolio_export <- function(exchange,
     stop("Cannot value target symbol(s) without a completed or carried price: ", paste(missing, collapse = ", "), call. = FALSE)
   }
   latest[, desired_signed_qty := round((target_weight * equity / (decision_price * contract_size)) / qty_step) * qty_step]
+  latest[, decision_equity := equity]
   latest[, current_signed_qty := vapply(asset_id, function(requested_asset_id) {
     row <- if (nrow(positions) && "asset_id" %in% names(positions)) positions[positions$asset_id == requested_asset_id] else positions[0]
     if (!nrow(row)) return(0)
@@ -677,6 +680,7 @@ sim_portfolio_export <- function(exchange,
     asset_id = as.integer(orders$asset_id),
     timestamp = timestamp,
     eligible_after = timestamp,
+    settlement_timestamp = as.POSIXct(NA, tz = "UTC"),
     rebalance_id = rebalance_id,
     target_weight = as.numeric(orders$target_weight),
     decision_price = as.numeric(orders$decision_price),

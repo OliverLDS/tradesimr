@@ -45,6 +45,7 @@ sim_schemas <- function() {
       asset_id = integer(),
       timestamp = as.POSIXct(character()),
       eligible_after = as.POSIXct(character()),
+      settlement_timestamp = as.POSIXct(character()),
       rebalance_id = character(),
       target_weight = numeric(),
       decision_price = numeric(),
@@ -73,6 +74,8 @@ sim_schemas <- function() {
       asset_id = integer(),
       target_weight = numeric(),
       realized_weight_before = numeric(),
+      decision_equity = numeric(),
+      planned_signed_quantity = numeric(),
       decision_price = numeric(),
       status = character(),
       message = character()

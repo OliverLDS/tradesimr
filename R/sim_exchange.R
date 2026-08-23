@@ -132,6 +132,7 @@ sim_exchange_place_order <- function(exchange,
     asset_id = asset$asset_id,
     timestamp = timestamp,
     eligible_after = as.POSIXct(NA),
+    settlement_timestamp = as.POSIXct(NA),
     rebalance_id = NA_character_,
     target_weight = NA_real_,
     decision_price = NA_real_,
@@ -612,7 +613,7 @@ sim_exchange_load <- function(path) {
     numeric_columns <- intersect(c("qty", "limit_price", "tgt_pos", "tol_pos", "price", "fee", "realized_pnl", "target_weight", "decision_price"), names(exchange$agent_orders))
     for (column in numeric_columns) data.table::set(exchange$agent_orders, j = column, value = as.numeric(exchange$agent_orders[[column]]))
     if ("asset_id" %in% names(exchange$agent_orders)) data.table::set(exchange$agent_orders, j = "asset_id", value = as.integer(exchange$agent_orders$asset_id))
-    for (column in intersect(c("timestamp", "eligible_after"), names(exchange$agent_orders))) {
+    for (column in intersect(c("timestamp", "eligible_after", "settlement_timestamp"), names(exchange$agent_orders))) {
       data.table::set(exchange$agent_orders, j = column, value = as.POSIXct(exchange$agent_orders[[column]], tz = "UTC"))
     }
   }
@@ -974,6 +975,10 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
       j = "message",
       value = "Order asset is outside the agent allowed universe."
     )
+    if (!"settlement_timestamp" %in% names(exchange$agent_orders)) {
+      data.table::set(exchange$agent_orders, j = "settlement_timestamp", value = as.POSIXct(NA, tz = "UTC"))
+    }
+    data.table::set(exchange$agent_orders, i = index, j = "settlement_timestamp", value = Sys.time())
   }
   invisible(index)
 }
@@ -1065,6 +1070,9 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
   if (!"message" %in% names(exchange$agent_orders)) {
     data.table::set(exchange$agent_orders, j = "message", value = NA_character_)
   }
+  if (!"settlement_timestamp" %in% names(exchange$agent_orders)) {
+    data.table::set(exchange$agent_orders, j = "settlement_timestamp", value = as.POSIXct(NA, tz = "UTC"))
+  }
   for (i in seq_len(nrow(orders))) {
     order_idx <- match(orders$order_id[i], exchange$agent_orders$order_id)
     if (is.na(order_idx)) next
@@ -1077,6 +1085,7 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
     if (is.na(event_idx)) next
     if (is.na(order_idx) || is.na(event_idx)) next
     data.table::set(exchange$agent_orders, i = order_idx, j = "status", value = "filled")
+    data.table::set(exchange$agent_orders, i = order_idx, j = "settlement_timestamp", value = filled_events$timestamp[event_idx])
     for (col in c("price", "fee", "realized_pnl")) {
       if (col %in% names(filled_events)) {
         data.table::set(exchange$agent_orders, i = order_idx, j = col, value = as.numeric(filled_events[[col]][event_idx]))
@@ -1096,6 +1105,7 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
       j = "message",
       value = "Execution rejected at the eligible market boundary."
     )
+    data.table::set(exchange$agent_orders, i = order_idx, j = "settlement_timestamp", value = failed_events$timestamp[event_idx])
     if ("price" %in% names(failed_events)) {
       data.table::set(exchange$agent_orders, i = order_idx, j = "price", value = as.numeric(failed_events$price[event_idx]))
     }
@@ -1158,6 +1168,10 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
       data.table::set(exchange$agent_orders, j = "message", value = NA_character_)
     }
     data.table::set(exchange$agent_orders, i = idx, j = "message", value = "Order requires no executable position change.")
+    if (!"settlement_timestamp" %in% names(exchange$agent_orders)) {
+      data.table::set(exchange$agent_orders, j = "settlement_timestamp", value = as.POSIXct(NA, tz = "UTC"))
+    }
+    data.table::set(exchange$agent_orders, i = idx, j = "settlement_timestamp", value = Sys.time())
   }
   invisible(NULL)
 }
