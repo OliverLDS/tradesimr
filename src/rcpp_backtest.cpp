@@ -492,22 +492,22 @@ Rcpp::List portfolio_step_rcpp(const Rcpp::List& states,
                                const Rcpp::DataFrame& bars,
                                const Rcpp::DataFrame& orders,
                                const Rcpp::NumericMatrix& cov,
-                               double shared_cash = 10000.0,
-                               double ctr_size = 1.0,
-                               double ctr_step = 1.0,
-                               double lev = 10.0,
-                               double fee_rt = 0.0,
-                               double maker_fee_rt = NA_REAL,
-                               double taker_fee_rt = NA_REAL,
-                               double fund_rt = 0.0,
-                               double funding_interval_hours = 8.0,
-                               double mmr = 0.02,
-                               double portfolio_margin_sigma = 3.0,
-                               double portfolio_margin_floor = 0.02,
-                               double old_timestamp = NA_REAL,
-                               double slippage = 0.0,
-                               double spread = 0.0,
-                               bool rec = true) {
+                               double shared_cash,
+                               const Rcpp::NumericVector& ctr_size,
+                               const Rcpp::NumericVector& ctr_step,
+                               double lev,
+                               double fee_rt,
+                               double maker_fee_rt,
+                               double taker_fee_rt,
+                               double fund_rt,
+                               double funding_interval_hours,
+                               double mmr,
+                               double portfolio_margin_sigma,
+                               double portfolio_margin_floor,
+                               double old_timestamp,
+                               double slippage,
+                               double spread,
+                               bool rec) {
   if (Rcpp::NumericVector::is_na(maker_fee_rt)) maker_fee_rt = fee_rt;
   if (Rcpp::NumericVector::is_na(taker_fee_rt)) taker_fee_rt = fee_rt;
 
@@ -521,6 +521,9 @@ Rcpp::List portfolio_step_rcpp(const Rcpp::List& states,
   if (timestamp.size() != n_assets || open.size() != n_assets || high.size() != n_assets ||
       low.size() != n_assets || close.size() != n_assets) {
     Rcpp::stop("Portfolio bars must have asset_id, timestamp, open, high, low, and close columns of equal length.");
+  }
+  if (ctr_size.size() != n_assets || ctr_step.size() != n_assets) {
+    Rcpp::stop("Portfolio ctr_size and ctr_step must be aligned to the market-bar asset batch.");
   }
 
   std::vector<TradeState> state_vec;
@@ -550,8 +553,8 @@ Rcpp::List portfolio_step_rcpp(const Rcpp::List& states,
       asset,
       close[i],
       shared_cash,
-      ctr_size,
-      ctr_step,
+      ctr_size[i],
+      ctr_step[i],
       lev,
       fee_rt,
       fund_rt,

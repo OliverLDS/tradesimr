@@ -350,6 +350,10 @@ sim_exchange_step <- function(exchange, bars) {
       orders <- data.table::rbindlist(orders_all, fill = TRUE)
       cov <- .cross_asset_covariance(exchange, asset_ids)
       step_config <- exchange$config[intersect(names(exchange$config), names(formals(sim_portfolio_step)))]
+      asset_specs <- exchange$assets[match(asset_ids, exchange$assets$asset_id)]
+      if (anyNA(asset_specs$asset_id)) stop("Missing registered asset specification for portfolio step.", call. = FALSE)
+      step_config$ctr_step <- as.numeric(asset_specs$qty_step)
+      step_config$ctr_size <- as.numeric(asset_specs$contract_size)
       step_config$cov <- cov
       step_config$shared_cash <- .shared_cash(exchange, agent_id)
       step_config$portfolio_margin_floor <- as.numeric(exchange$config$portfolio_margin_floor %||% exchange$config$mmr %||% 0.02)

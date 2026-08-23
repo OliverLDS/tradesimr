@@ -122,6 +122,8 @@ sim_step <- function(state,
 #' @param bars One timestamp batch of market bars.
 #' @param orders Order data frame with `asset_id`, `action`, `dir`,
 #'   `order_type`, `ctr_qty`, `price`, `strat_id`, and `action_id`.
+#' @param ctr_size,ctr_step Contract size and quantity step. Supply one value
+#'   for all assets or one value per row of `bars`, aligned to `asset_id`.
 #' @param cov Return covariance matrix aligned to `bars$asset_id`.
 #' @param shared_cash Shared account cash before this step.
 #' @param portfolio_margin_sigma Sigma multiplier for covariance margin.
@@ -156,6 +158,8 @@ sim_portfolio_step <- function(states,
   }
   if (!"asset_id" %in% names(bars)) stop("`bars` must contain `asset_id`.", call. = FALSE)
   order_batch <- .normalize_portfolio_step_orders(orders)
+  ctr_size <- .portfolio_asset_parameter(ctr_size, bars, "ctr_size")
+  ctr_step <- .portfolio_asset_parameter(ctr_step, bars, "ctr_step")
   cov <- as.matrix(cov)
   if (!all(dim(cov) == c(nrow(bars), nrow(bars)))) {
     stop("`cov` must be aligned to `bars` and have dimension nrow(bars) x nrow(bars).", call. = FALSE)
@@ -173,8 +177,8 @@ sim_portfolio_step <- function(states,
     orders = order_batch,
     cov = cov,
     shared_cash = as.numeric(shared_cash),
-    ctr_size = as.numeric(ctr_size),
-    ctr_step = as.numeric(ctr_step),
+    ctr_size = ctr_size,
+    ctr_step = ctr_step,
     lev = as.numeric(lev),
     fee_rt = as.numeric(fee_rt),
     maker_fee_rt = as.numeric(maker_fee_rt),
@@ -200,6 +204,16 @@ sim_portfolio_step <- function(states,
 }
 
 #' @keywords internal
+.portfolio_asset_parameter <- function(value, bars, name) {
+  value <- as.numeric(value)
+  if (length(value) == 1L) value <- rep.int(value, nrow(bars))
+  if (length(value) != nrow(bars) || any(!is.finite(value)) || any(value <= 0)) {
+    stop("`", name, "` must be one positive value or one positive value per `bars` row.", call. = FALSE)
+  }
+  value
+}
+
+#' @keywords internal
 .portfolio_step_events <- function(states,
                                    result,
                                    bars,
@@ -221,6 +235,7 @@ sim_portfolio_step <- function(states,
     filled <- if (action %in% c(1L, 2L)) abs(after_qty) > abs(before_qty) else abs(after_qty) < abs(before_qty)
     filled_qty <- if (filled) abs(after_qty - before_qty) else 0
     bar <- bars[asset_id == requested_asset_id][1L]
+    asset_ctr_size <- ctr_size[match(requested_asset_id, bars$asset_id)]
     fill_price <- if (as.integer(order$order_type) == 1L && is.finite(order$price)) as.numeric(order$price) else as.numeric(bar$open)
     fee_rate <- if (as.integer(order$order_type) == 1L) maker_fee_rt %||% fee_rt else taker_fee_rt %||% fee_rt
     if (!is.finite(fee_rate)) fee_rate <- fee_rt
@@ -246,7 +261,7 @@ sim_portfolio_step <- function(states,
       price = fill_price,
       equity = as.numeric(result$equity),
       cash = as.numeric(result$cash),
-      fee = if (filled) abs(filled_qty * fill_price * ctr_size) * fee_rate else 0,
+      fee = if (filled) abs(filled_qty * fill_price * asset_ctr_size) * fee_rate else 0,
       realized_pnl = NA_real_,
       funding_fee = 0,
       maintenance_margin = as.numeric(result$maintenance_margin)

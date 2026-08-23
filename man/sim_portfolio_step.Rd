@@ -38,9 +38,8 @@ sim_portfolio_step(
 
 \item{shared_cash}{Shared account cash before this step.}
 
-\item{ctr_size}{Contract size.}
-
-\item{ctr_step}{Minimum contract increment.}
+\item{ctr_size, ctr_step}{Contract size and quantity step. Supply one value
+for all assets or one value per row of \code{bars}, aligned to \code{asset_id}.}
 
 \item{lev}{Leverage used for initial margin.}
 

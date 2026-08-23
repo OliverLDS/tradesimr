@@ -85,7 +85,7 @@ BEGIN_RCPP
 END_RCPP
 }
 // portfolio_step_rcpp
-Rcpp::List portfolio_step_rcpp(const Rcpp::List& states, const Rcpp::DataFrame& bars, const Rcpp::DataFrame& orders, const Rcpp::NumericMatrix& cov, double shared_cash, double ctr_size, double ctr_step, double lev, double fee_rt, double maker_fee_rt, double taker_fee_rt, double fund_rt, double funding_interval_hours, double mmr, double portfolio_margin_sigma, double portfolio_margin_floor, double old_timestamp, double slippage, double spread, bool rec);
+Rcpp::List portfolio_step_rcpp(const Rcpp::List& states, const Rcpp::DataFrame& bars, const Rcpp::DataFrame& orders, const Rcpp::NumericMatrix& cov, double shared_cash, const Rcpp::NumericVector& ctr_size, const Rcpp::NumericVector& ctr_step, double lev, double fee_rt, double maker_fee_rt, double taker_fee_rt, double fund_rt, double funding_interval_hours, double mmr, double portfolio_margin_sigma, double portfolio_margin_floor, double old_timestamp, double slippage, double spread, bool rec);
 RcppExport SEXP _tradesimr_portfolio_step_rcpp(SEXP statesSEXP, SEXP barsSEXP, SEXP ordersSEXP, SEXP covSEXP, SEXP shared_cashSEXP, SEXP ctr_sizeSEXP, SEXP ctr_stepSEXP, SEXP levSEXP, SEXP fee_rtSEXP, SEXP maker_fee_rtSEXP, SEXP taker_fee_rtSEXP, SEXP fund_rtSEXP, SEXP funding_interval_hoursSEXP, SEXP mmrSEXP, SEXP portfolio_margin_sigmaSEXP, SEXP portfolio_margin_floorSEXP, SEXP old_timestampSEXP, SEXP slippageSEXP, SEXP spreadSEXP, SEXP recSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
@@ -95,8 +95,8 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const Rcpp::DataFrame& >::type orders(ordersSEXP);
     Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type cov(covSEXP);
     Rcpp::traits::input_parameter< double >::type shared_cash(shared_cashSEXP);
-    Rcpp::traits::input_parameter< double >::type ctr_size(ctr_sizeSEXP);
-    Rcpp::traits::input_parameter< double >::type ctr_step(ctr_stepSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type ctr_size(ctr_sizeSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type ctr_step(ctr_stepSEXP);
     Rcpp::traits::input_parameter< double >::type lev(levSEXP);
     Rcpp::traits::input_parameter< double >::type fee_rt(fee_rtSEXP);
     Rcpp::traits::input_parameter< double >::type maker_fee_rt(maker_fee_rtSEXP);

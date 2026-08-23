@@ -128,3 +128,25 @@ test_that("target-weight crypto orders retain asset-level fractional contract st
   expect_equal(filled$positions$ctr_unit, 1.561)
   expect_equal(filled$fills$price, 64054.87890625)
 })
+
+test_that("portfolio-margin market boundaries preserve fractional crypto contracts", {
+  exchange <- sim_exchange_new(list(init_cash = 100000, lev = 1, portfolio_margin = TRUE))
+  sim_asset_add(exchange, "BTC-USD", asset_id = 5L, asset_class = "cryptocurrency", qty_step = 0.001)
+  sim_agent_add(exchange, "agent", agent_type = "human")
+  execution <- sim_portfolio_execution(fee_rt = 0, lev = 1)
+  first <- data.frame(
+    timestamp = as.POSIXct("2026-08-01", tz = "UTC"), symbol = "BTC-USD", asset_id = 5L,
+    open = 64055.953125, high = 64055.953125, low = 64055.953125, close = 64055.953125
+  )
+  sim_portfolio_market_step(exchange, first, execution)
+  submitted <- sim_portfolio_target_submit(exchange, "agent", first, c(`BTC-USD` = 1), execution)
+  second <- first
+  second$timestamp <- second$timestamp + 86400
+  second[, c("open", "high", "low", "close")] <- 64054.87890625
+  market <- sim_portfolio_market_step(exchange, second, execution)
+
+  expect_equal(submitted$orders$qty, 1.561)
+  expect_equal(market$fills$ctr_qty, 1.561)
+  expect_equal(exchange$portfolio_fills$qty, 1.561)
+  expect_equal(sim_exchange_positions(exchange)$ctr_unit, 1.561)
+})
