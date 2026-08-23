@@ -256,6 +256,10 @@ sim_exchange_step <- function(exchange, bars) {
     agents <- .exchange_agents_to_step(exchange, bar$timestamp[1L], asset_id = asset$asset_id)
     for (j in seq_along(agents)) {
       agent_id <- agents[[j]]
+      if (!.portfolio_agent_asset_allowed(exchange, agent_id, asset$asset_id)) {
+        .portfolio_reject_forbidden_orders(exchange, agent_id, asset$asset_id)
+        next
+      }
       state_key <- .agent_state_key(agent_id, asset$asset_id)
       .ensure_agent_account(exchange, agent_id, asset_id = asset$asset_id, symbol = asset$symbol, agent_type = "human")
       orders <- .exchange_orders_for_bar(exchange, bar$timestamp[1L], agent_id = agent_id, asset_id = asset$asset_id)
@@ -332,14 +336,18 @@ sim_exchange_step <- function(exchange, bars) {
     if (!length(agents)) next
 
     for (agent_id in agents) {
+      permitted <- vapply(asset_ids, function(asset_id) .portfolio_agent_asset_allowed(exchange, agent_id, asset_id), logical(1L))
+      for (asset_id in asset_ids[!permitted]) .portfolio_reject_forbidden_orders(exchange, agent_id, asset_id)
+      agent_batch <- batch[permitted]
+      if (nrow(agent_batch) == 0L) next
       states <- list()
       orders_all <- list()
-      for (i in seq_len(nrow(batch))) {
-        asset <- .bar_asset_key(batch[i])
+      for (i in seq_len(nrow(agent_batch))) {
+        asset <- .bar_asset_key(agent_batch[i])
         .ensure_agent_account(exchange, agent_id, asset_id = asset$asset_id, symbol = asset$symbol, agent_type = "human")
         state_key <- .agent_state_key(agent_id, asset$asset_id)
         states[[as.character(asset$asset_id)]] <- .sync_state_cash_from_account(exchange, agent_id, exchange$agent_states[[state_key]])
-        orders <- .exchange_orders_for_bar(exchange, batch$timestamp[i], agent_id = agent_id, asset_id = asset$asset_id)
+        orders <- .exchange_orders_for_bar(exchange, agent_batch$timestamp[i], agent_id = agent_id, asset_id = asset$asset_id)
         if (nrow(orders) > 0L) {
           data.table::set(orders, j = "asset_id", value = asset$asset_id)
           data.table::set(orders, j = "symbol", value = asset$symbol)
@@ -348,16 +356,17 @@ sim_exchange_step <- function(exchange, bars) {
       }
 
       orders <- data.table::rbindlist(orders_all, fill = TRUE)
-      cov <- .cross_asset_covariance(exchange, asset_ids)
+      agent_asset_ids <- as.integer(agent_batch$asset_id)
+      cov <- .cross_asset_covariance(exchange, agent_asset_ids)
       step_config <- exchange$config[intersect(names(exchange$config), names(formals(sim_portfolio_step)))]
-      asset_specs <- exchange$assets[match(asset_ids, exchange$assets$asset_id)]
+      asset_specs <- exchange$assets[match(agent_asset_ids, exchange$assets$asset_id)]
       if (anyNA(asset_specs$asset_id)) stop("Missing registered asset specification for portfolio step.", call. = FALSE)
       step_config$ctr_step <- as.numeric(asset_specs$qty_step)
       step_config$ctr_size <- as.numeric(asset_specs$contract_size)
       step_config$cov <- cov
       step_config$shared_cash <- .shared_cash(exchange, agent_id)
       step_config$portfolio_margin_floor <- as.numeric(exchange$config$portfolio_margin_floor %||% exchange$config$mmr %||% 0.02)
-      step_args <- c(list(states = states, bars = batch, orders = orders), step_config)
+      step_args <- c(list(states = states, bars = agent_batch, orders = orders), step_config)
       step <- do.call(sim_portfolio_step, step_args)
 
       exchange$agent_accounts[[as.character(agent_id)]]$cash <- as.numeric(step$cash %||% 0)
@@ -378,7 +387,7 @@ sim_exchange_step <- function(exchange, bars) {
         new_event_list[[length(new_event_list) + 1L]] <- step$events
         .mark_orders_from_events(exchange, orders, step$events)
       }
-      account_snapshots <- .agent_position_snapshots(exchange, agent_id, batch$timestamp[1L])
+      account_snapshots <- .agent_position_snapshots(exchange, agent_id, agent_batch$timestamp[1L])
       if (nrow(account_snapshots) > 0L) {
         data.table::set(account_snapshots, j = "maintenance_margin", value = as.numeric(step$maintenance_margin %||% 0))
       }
@@ -461,6 +470,13 @@ sim_exchange_positions <- function(exchange) {
   }
   positions <- sim_positions(exchange$result)
   if (nrow(positions) == 0L) return(positions)
+  if (all(c("agent_id", "asset_id") %in% names(positions))) {
+    keep <- mapply(
+      function(agent_id, asset_id) .portfolio_agent_asset_allowed(exchange, agent_id, asset_id),
+      positions$agent_id, positions$asset_id
+    )
+    positions <- positions[keep]
+  }
   if (all(c("agent_id", "asset_id") %in% names(positions))) {
     data.table::setorderv(positions, "timestamp")
     return(positions[, .SD[.N], by = .(agent_id, asset_id)])
@@ -916,6 +932,20 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
 }
 
 #' @keywords internal
+.portfolio_reject_forbidden_orders <- function(exchange, agent_id, asset_id) {
+  requested_agent_id <- as.character(agent_id)
+  index <- which(
+    exchange$agent_orders$agent_id == requested_agent_id &
+      exchange$agent_orders$asset_id == as.integer(asset_id) &
+      exchange$agent_orders$status == "accepted"
+  )
+  if (length(index)) {
+    data.table::set(exchange$agent_orders, i = index, j = "status", value = "rejected")
+  }
+  invisible(index)
+}
+
+#' @keywords internal
 .exchange_agents_to_step <- function(exchange, timestamp, asset_id = NULL) {
   bar_timestamp <- timestamp
   registered <- if (nrow(exchange$agents) > 0L) exchange$agents$agent_id[exchange$agents$status != "removed"] else character()
@@ -1000,9 +1030,15 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
     if (!col %in% names(exchange$agent_orders)) data.table::set(exchange$agent_orders, j = col, value = NA_real_)
   }
   for (i in seq_len(nrow(orders))) {
+    order_idx <- match(orders$order_id[i], exchange$agent_orders$order_id)
+    if (is.na(order_idx)) next
+    canonical_order <- exchange$agent_orders[order_idx]
+    if (!.portfolio_agent_asset_allowed(exchange, canonical_order$agent_id[1L], canonical_order$asset_id[1L])) {
+      .portfolio_reject_forbidden_orders(exchange, canonical_order$agent_id[1L], canonical_order$asset_id[1L])
+      next
+    }
     event_idx <- .match_order_event(orders[i], filled_events)
     if (is.na(event_idx)) next
-    order_idx <- match(orders$order_id[i], exchange$agent_orders$order_id)
     if (is.na(order_idx) || is.na(event_idx)) next
     data.table::set(exchange$agent_orders, i = order_idx, j = "status", value = "filled")
     for (col in c("price", "fee", "realized_pnl")) {
@@ -1228,6 +1264,7 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
   rows <- lapply(keys, function(key) {
     parsed <- .parse_agent_state_key(key)
     if (!identical(parsed$agent_id, as.character(agent_id))) return(NULL)
+    if (!.portfolio_agent_asset_allowed(exchange, parsed$agent_id, parsed$asset_id)) return(NULL)
     symbol <- exchange$asset_symbols[[as.character(parsed$asset_id)]] %||% parsed$symbol
     .state_to_snapshot(
       .sync_state_cash_from_account(exchange, agent_id, exchange$agent_states[[key]]),

@@ -10,7 +10,9 @@ sim_portfolio_target_step(
   bars,
   target_weights = NULL,
   execution = sim_portfolio_execution(),
-  decision_label = "target_weight"
+  decision_label = "target_weight",
+  allowed_symbols = NULL,
+  allowed_asset_ids = NULL
 )
 }
 \arguments{
@@ -26,6 +28,12 @@ registered symbols.}
 \item{execution}{Execution assumptions from \code{sim_portfolio_execution()}.}
 
 \item{decision_label}{Optional durable label for the decision source.}
+
+\item{allowed_symbols}{Optional registered symbols this agent may target,
+hold, or trade.}
+
+\item{allowed_asset_ids}{Optional registered asset ids this agent may target,
+hold, or trade.}
 }
 \value{
 A list containing \code{orders}, \code{fills}, \code{positions}, \code{account},
