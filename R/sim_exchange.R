@@ -267,6 +267,17 @@ sim_exchange_step <- function(exchange, bars) {
       step_config$order_type_col <- NULL
       step_config$limit_price_col <- NULL
       step_config$asset <- asset$asset_id
+      # Contract precision belongs to the registered asset, not to the
+      # exchange-wide fallback. This preserves fractional crypto contracts.
+      asset_spec <- exchange$assets[exchange$assets$asset_id == asset$asset_id]
+      if (nrow(asset_spec) > 0L) {
+        if (is.finite(asset_spec$qty_step[1L]) && asset_spec$qty_step[1L] > 0) {
+          step_config$ctr_step <- as.numeric(asset_spec$qty_step[1L])
+        }
+        if (is.finite(asset_spec$contract_size[1L]) && asset_spec$contract_size[1L] > 0) {
+          step_config$ctr_size <- as.numeric(asset_spec$contract_size[1L])
+        }
+      }
       step_args <- c(list(
         state = exchange$agent_states[[state_key]],
         bar = bar,

@@ -108,3 +108,23 @@ test_that("target-weight replay uses the same fee-aware next-bar sizing", {
   expect_equal(filled$account$cash, 100000 - expected_fee, tolerance = 1e-8)
   expect_lte(abs(filled$positions$notional), filled$account$equity + 1e-8)
 })
+
+test_that("target-weight crypto orders retain asset-level fractional contract steps", {
+  exchange <- sim_exchange_new(list(cash = 100000, ctr_step = 1, lev = 1))
+  sim_asset_add(exchange, "BTC-USD", asset_id = 1L, asset_class = "crypto_spot", qty_step = 0.001)
+  execution <- sim_portfolio_execution(fee_rt = 0, lev = 1)
+  first <- data.frame(
+    timestamp = as.POSIXct("2026-08-01", tz = "UTC"), symbol = "BTC-USD", asset_id = 1L,
+    open = 64055.953125, high = 64055.953125, low = 64055.953125, close = 64055.953125
+  )
+  submitted <- sim_portfolio_target_step(exchange, "buy_hold--btc-usd", first, c(`BTC-USD` = 1), execution)
+  second <- first
+  second$timestamp <- second$timestamp + 86400
+  second[, c("open", "high", "low", "close")] <- 64054.87890625
+  filled <- sim_portfolio_target_step(exchange, "buy_hold--btc-usd", second, NULL, execution)
+
+  expect_equal(submitted$orders$qty, 1.561)
+  expect_equal(filled$fills$ctr_qty, 1.561)
+  expect_equal(filled$positions$ctr_unit, 1.561)
+  expect_equal(filled$fills$price, 64054.87890625)
+})
