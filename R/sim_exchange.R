@@ -340,6 +340,23 @@ sim_exchange_step <- function(exchange, bars) {
       for (asset_id in asset_ids[!permitted]) .portfolio_reject_forbidden_orders(exchange, agent_id, asset_id)
       agent_batch <- batch[permitted]
       if (nrow(agent_batch) == 0L) next
+      # A registered account with neither a position state nor an eligible
+      # order has nothing to mark. Deferring its state creation avoids an
+      # O(agents x assets) C++ warm-up before its first decision.
+      state_or_order <- vapply(seq_len(nrow(agent_batch)), function(i) {
+        asset_id <- as.integer(agent_batch$asset_id[i])
+        state_key <- .agent_state_key(agent_id, asset_id)
+        has_state <- !is.null(exchange$agent_states[[state_key]])
+        has_order <- any(
+          exchange$agent_orders$agent_id == agent_id &
+            exchange$agent_orders$asset_id == asset_id &
+            exchange$agent_orders$status == "accepted" &
+            exchange$agent_orders$qty_type == "contracts"
+        )
+        has_state || has_order
+      }, logical(1L))
+      agent_batch <- agent_batch[state_or_order]
+      if (nrow(agent_batch) == 0L) next
       states <- list()
       orders_all <- list()
       for (i in seq_len(nrow(agent_batch))) {
@@ -452,7 +469,13 @@ sim_exchange_account <- function(exchange) {
   if ("agent_id" %in% names(account)) {
     data.table::setorderv(account, "timestamp")
     latest <- if ("asset_id" %in% names(account)) account[, .SD[.N], by = .(agent_id, asset_id)] else account[, .SD[.N], by = agent_id]
-    return(.aggregate_account_snapshots(latest, latest = TRUE))
+    account <- .aggregate_account_snapshots(latest, latest = TRUE)
+    shared <- .shared_accounts_snapshot(exchange, latest = TRUE)
+    missing_agents <- setdiff(shared$agent_id, account$agent_id)
+    if (length(missing_agents)) {
+      account <- data.table::rbindlist(list(account, shared[shared$agent_id %in% missing_agents]), fill = TRUE)
+    }
+    return(account[])
   }
   tail(account, 1L)
 }

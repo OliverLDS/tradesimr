@@ -73,3 +73,36 @@ test_that("market-boundary state survives save and load", {
   submitted <- sim_portfolio_target_submit(loaded, "alpha", day_1, c(SPY = 1), execution)
   expect_true(all(submitted$orders$status == "accepted"))
 })
+
+test_that("batched target submissions preserve sequential boundary semantics", {
+  execution <- sim_portfolio_execution(fee_rt = 0.001, lev = 1)
+  day_1 <- make_portfolio_boundary_bars("2026-02-01")
+  day_2 <- make_portfolio_boundary_bars("2026-02-02", c(101, 49))
+  decisions <- list(
+    alpha = list(target_weights = c(SPY = 0.6, TLT = 0.4), decision_label = "alpha-target"),
+    beta = list(target_weights = c(SPY = -0.5, TLT = 0.5), decision_label = "beta-target")
+  )
+
+  sequential <- make_portfolio_boundary_exchange()
+  sim_portfolio_market_step(sequential, day_1, execution)
+  lapply(names(decisions), function(agent_id) {
+    decision <- decisions[[agent_id]]
+    sim_portfolio_target_submit(sequential, agent_id, day_1, decision$target_weights, execution, decision$decision_label)
+  })
+  sim_portfolio_market_step(sequential, day_2, execution)
+
+  batched <- make_portfolio_boundary_exchange()
+  sim_portfolio_market_step(batched, day_1, execution)
+  submitted <- sim_portfolio_target_submit_batch(batched, day_1, decisions, execution)
+  filled <- sim_portfolio_market_step(batched, day_2, execution)
+
+  expect_named(submitted$submissions, names(decisions))
+  expect_true(all(vapply(submitted$submissions, function(x) all(x$orders$status == "accepted"), logical(1L))))
+  expect_equal(batched$agent_orders, sequential$agent_orders)
+  expect_equal(batched$portfolio_rebalances, sequential$portfolio_rebalances)
+  expect_equal(batched$portfolio_targets, sequential$portfolio_targets)
+  expect_equal(batched$portfolio_fills, sequential$portfolio_fills)
+  expect_equal(sim_exchange_positions(batched), sim_exchange_positions(sequential))
+  expect_equal(sim_exchange_account(batched), sim_exchange_account(sequential))
+  expect_equal(nrow(filled$fills), 4L)
+})
