@@ -693,7 +693,8 @@ sim_portfolio_export <- function(exchange,
     status = "accepted",
     price = NA_real_,
     fee = NA_real_,
-    realized_pnl = NA_real_
+    realized_pnl = NA_real_,
+    message = NA_character_
   )
 }
 

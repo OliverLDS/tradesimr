@@ -146,7 +146,8 @@ sim_exchange_place_order <- function(exchange,
     status = "accepted",
     price = NA_real_,
     fee = NA_real_,
-    realized_pnl = NA_real_
+    realized_pnl = NA_real_,
+    message = NA_character_
   )
   exchange$agent_orders <- data.table::rbindlist(list(exchange$agent_orders, row), fill = TRUE)
   exchange$event_log <- data.table::rbindlist(list(exchange$event_log, data.table::data.table(
@@ -964,6 +965,15 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
   )
   if (length(index)) {
     data.table::set(exchange$agent_orders, i = index, j = "status", value = "rejected")
+    if (!"message" %in% names(exchange$agent_orders)) {
+      data.table::set(exchange$agent_orders, j = "message", value = NA_character_)
+    }
+    data.table::set(
+      exchange$agent_orders,
+      i = index,
+      j = "message",
+      value = "Order asset is outside the agent allowed universe."
+    )
   }
   invisible(index)
 }
@@ -1052,6 +1062,9 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
   for (col in c("price", "fee", "realized_pnl")) {
     if (!col %in% names(exchange$agent_orders)) data.table::set(exchange$agent_orders, j = col, value = NA_real_)
   }
+  if (!"message" %in% names(exchange$agent_orders)) {
+    data.table::set(exchange$agent_orders, j = "message", value = NA_character_)
+  }
   for (i in seq_len(nrow(orders))) {
     order_idx <- match(orders$order_id[i], exchange$agent_orders$order_id)
     if (is.na(order_idx)) next
@@ -1076,7 +1089,13 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
     if (is.na(event_idx)) next
     order_idx <- match(orders$order_id[i], exchange$agent_orders$order_id)
     if (is.na(order_idx) || is.na(event_idx)) next
-    data.table::set(exchange$agent_orders, i = order_idx, j = "status", value = "failed")
+    data.table::set(exchange$agent_orders, i = order_idx, j = "status", value = "rejected")
+    data.table::set(
+      exchange$agent_orders,
+      i = order_idx,
+      j = "message",
+      value = "Execution rejected at the eligible market boundary."
+    )
     if ("price" %in% names(failed_events)) {
       data.table::set(exchange$agent_orders, i = order_idx, j = "price", value = as.numeric(failed_events$price[event_idx]))
     }
@@ -1135,6 +1154,10 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
   idx <- idx[!is.na(idx)]
   if (length(idx) > 0L) {
     data.table::set(exchange$agent_orders, i = idx, j = "status", value = "no_op")
+    if (!"message" %in% names(exchange$agent_orders)) {
+      data.table::set(exchange$agent_orders, j = "message", value = NA_character_)
+    }
+    data.table::set(exchange$agent_orders, i = idx, j = "message", value = "Order requires no executable position change.")
   }
   invisible(NULL)
 }

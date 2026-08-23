@@ -61,7 +61,8 @@ sim_schemas <- function() {
       status = character(),
       price = numeric(),
       fee = numeric(),
-      realized_pnl = numeric()
+      realized_pnl = numeric(),
+      message = character()
     ),
     portfolio_targets = data.table::data.table(
       rebalance_id = character(),

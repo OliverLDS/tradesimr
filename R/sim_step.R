@@ -191,16 +191,29 @@ sim_portfolio_step <- function(states,
     old_timestamp = as.numeric(if (length(states)) states[[1L]]$old_timestamp %||% NA_real_ else NA_real_),
     slippage = as.numeric(slippage),
     spread = as.numeric(spread),
-    # Rcpp 1.0.x cannot safely serialize the portfolio recorder. The R layer
-    # derives the same order lifecycle table from authoritative kernel states.
-    rec = FALSE
+    rec = isTRUE(record)
   )
-  out$events <- if (isTRUE(record)) {
-    .portfolio_step_events(states, out, bars, order_batch, ctr_size, fee_rt, maker_fee_rt, taker_fee_rt)
-  } else {
-    data.table::data.table()
-  }
+  out$events <- if (isTRUE(record)) .portfolio_kernel_events(out$events) else data.table::data.table()
   out
+}
+
+#' @keywords internal
+.portfolio_kernel_events <- function(events) {
+  if (is.null(events) || !length(events)) return(data.table::data.table())
+  out <- data.table::as.data.table(events)
+  if (!nrow(out)) return(data.table::data.table())
+  out[, timestamp := as.POSIXct(as.numeric(timestamp), origin = "1970-01-01", tz = "UTC")]
+  out[, `:=`(
+    event_type_label = "trade",
+    bar_stage_label = c(`1` = "open", `2` = "intra", `3` = "close")[as.character(bar_stage)],
+    status_label = c(`1` = "filled", `-1` = "failed", `0` = "pending")[as.character(status)],
+    action_label = c(`1` = "open", `2` = "increase", `-1` = "close", `-2` = "reduce", `0` = "none")[as.character(action)],
+    dir_label = c(`1` = "long", `-1` = "short", `0` = "flat")[as.character(dir)]
+  )]
+  for (column in c("event_type_label", "bar_stage_label", "status_label", "action_label", "dir_label")) {
+    data.table::set(out, j = column, value = as.character(out[[column]]))
+  }
+  out[]
 }
 
 #' @keywords internal

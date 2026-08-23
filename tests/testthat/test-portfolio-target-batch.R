@@ -56,4 +56,51 @@ test_that("eight-asset 66-account replay matches sequential and batch submission
   expect_equal(batch_setup$exchange$portfolio_fills, sequential_setup$exchange$portfolio_fills)
   expect_equal(sim_exchange_positions(batch_setup$exchange), sim_exchange_positions(sequential_setup$exchange))
   expect_equal(sim_exchange_account(batch_setup$exchange), sim_exchange_account(sequential_setup$exchange))
+
+  first_boundary_orders <- batch_setup$exchange$agent_orders[
+    batch_setup$exchange$agent_orders$timestamp == day_1$timestamp[1L]
+  ]
+  expect_true(all(first_boundary_orders$status == "filled"))
+  linked_fills <- batch_setup$exchange$portfolio_fills[
+    match(first_boundary_orders$order_id, batch_setup$exchange$portfolio_fills$order_id)
+  ]
+  expect_equal(linked_fills$order_id, first_boundary_orders$order_id)
+  expect_equal(linked_fills$rebalance_id, first_boundary_orders$rebalance_id)
+  expect_equal(linked_fills$agent_id, first_boundary_orders$agent_id)
+  positions <- sim_exchange_positions(batch_setup$exchange)
+  expect_true(all(positions$pos_dir == 1L))
+})
+
+test_that("a satisfied target is no-op and an execution rejection is terminal", {
+  exchange <- sim_exchange_new(list(cash = 100000, lev = 1, portfolio_margin = TRUE))
+  sim_asset_add(exchange, "SPY", asset_id = 1, qty_step = 1)
+  bars_1 <- data.frame(
+    timestamp = as.POSIXct("2026-08-04", tz = "UTC"), symbol = "SPY", asset_id = 1,
+    open = 100, high = 100, low = 100, close = 100
+  )
+  bars_2 <- data.table::copy(bars_1)
+  bars_2$timestamp <- bars_2$timestamp + 86400
+  execution <- sim_portfolio_execution(lev = 1, fee_rt = 0)
+  sim_portfolio_market_step(exchange, bars_1, execution)
+  sim_portfolio_target_submit_batch(exchange, bars_1, list(agent = list(
+    target_weights = c(SPY = 0.5), allowed_symbols = "SPY"
+  )), execution)
+  sim_portfolio_market_step(exchange, bars_2, execution)
+  no_op <- sim_portfolio_target_submit_batch(exchange, bars_2, list(agent = list(
+    target_weights = c(SPY = 0.5), allowed_symbols = "SPY"
+  )), execution)$submissions$agent
+  expect_equal(no_op$rebalances$status, "no_op")
+  expect_equal(nrow(no_op$orders), 0L)
+
+  rejected <- sim_exchange_new(list(cash = 100000, lev = 1, portfolio_margin = TRUE, portfolio_margin_floor = 2))
+  sim_asset_add(rejected, "SPY", asset_id = 1, qty_step = 1)
+  sim_portfolio_market_step(rejected, bars_1, execution)
+  sim_portfolio_target_submit_batch(rejected, bars_1, list(agent = list(
+    target_weights = c(SPY = 1), allowed_symbols = "SPY"
+  )), execution)
+  sim_portfolio_market_step(rejected, bars_2, execution)
+  terminal <- rejected$agent_orders
+  expect_equal(terminal$status, "rejected")
+  expect_match(terminal$message, "eligible market boundary")
+  expect_equal(nrow(rejected$portfolio_fills), 0L)
 })
