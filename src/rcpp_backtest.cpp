@@ -669,92 +669,77 @@ Rcpp::List portfolio_step_rcpp(const Rcpp::List& states,
       a.type == TRADESIMR::OrderType::LIMIT ? TRADESIMR::BarStage::INTRA : TRADESIMR::BarStage::OPEN,
       filled_price
     );
-
-    if (trade_msg.status == TRADESIMR::ActionStatus::FILLED) {
+    const bool can_clip = executable.fee_aware_target &&
+      (executable.action == TRADESIMR::ActionCode::OPEN ||
+       executable.action == TRADESIMR::ActionCode::INCREASE) &&
+      s.ctr_step > 0.0;
+    auto commit_trade = [&](const ExchangeMessage_on_trade& message) {
       std::vector<TradeState> candidate = state_vec;
       TradeState candidate_state = s;
-      candidate_state.cash = trade_msg.cash;
-      candidate_state.pos_dir = trade_msg.pos_dir;
-      candidate_state.ctr_unit = trade_msg.ctr_unit;
-      candidate_state.avg_price = trade_msg.avg_price;
-      candidate_state.last_px = trade_msg.action_px;
+      candidate_state.cash = message.cash;
+      candidate_state.pos_dir = message.pos_dir;
+      candidate_state.ctr_unit = message.ctr_unit;
+      candidate_state.avg_price = message.avg_price;
+      candidate_state.last_px = message.action_px;
       candidate[static_cast<std::size_t>(si)] = candidate_state;
-      const double candidate_cash = trade_msg.cash;
-      const double equity = portfolio_equity_cpp(candidate, candidate_cash);
+      const double equity = portfolio_equity_cpp(candidate, message.cash);
       const double required = portfolio_margin_required_cpp(candidate, cov, portfolio_margin_sigma, portfolio_margin_floor);
-      if (!std::isfinite(equity) || equity < required) {
-        // A target rebalance is an intent, rather than an explicit contract
-        // order. Clip a target-derived opening/increase to the largest
-        // contract-step quantity that satisfies shared portfolio margin.
-        const bool can_clip = executable.fee_aware_target &&
-          (executable.action == TRADESIMR::ActionCode::OPEN ||
-           executable.action == TRADESIMR::ActionCode::INCREASE) &&
-          s.ctr_step > 0.0;
-        bool clipped = false;
-        if (can_clip) {
-          const long long max_steps = static_cast<long long>(std::floor(executable.ctr_qty / s.ctr_step + 1e-10));
-          long long low = 1;
-          long long high = max_steps;
-          long long feasible_steps = 0;
-          ExchangeMessage_on_trade feasible_msg{};
-          std::vector<TradeState> feasible_candidate;
-          while (low <= high) {
-            const long long mid = low + (high - low) / 2;
-            ActionDecision trial = executable;
-            trial.ctr_qty = static_cast<double>(mid) * s.ctr_step;
-            ExchangeMessage_on_trade trial_msg = x.update_on_trade(
-              priced_state,
-              trial,
-              a.type == TRADESIMR::OrderType::LIMIT ? TRADESIMR::BarStage::INTRA : TRADESIMR::BarStage::OPEN,
-              filled_price
-            );
-            bool feasible = false;
-            std::vector<TradeState> trial_candidate;
-            if (trial_msg.status == TRADESIMR::ActionStatus::FILLED) {
-              trial_candidate = state_vec;
-              TradeState trial_state = s;
-              trial_state.cash = trial_msg.cash;
-              trial_state.pos_dir = trial_msg.pos_dir;
-              trial_state.ctr_unit = trial_msg.ctr_unit;
-              trial_state.avg_price = trial_msg.avg_price;
-              trial_state.last_px = trial_msg.action_px;
-              trial_candidate[static_cast<std::size_t>(si)] = trial_state;
-              const double trial_equity = portfolio_equity_cpp(trial_candidate, trial_msg.cash);
-              const double trial_required = portfolio_margin_required_cpp(
-                trial_candidate, cov, portfolio_margin_sigma, portfolio_margin_floor
-              );
-              feasible = std::isfinite(trial_equity) && trial_equity >= trial_required;
-            }
-            if (feasible) {
-              feasible_steps = mid;
-              feasible_msg = trial_msg;
-              feasible_candidate = trial_candidate;
-              low = mid + 1;
-            } else {
-              high = mid - 1;
-            }
-          }
-          if (feasible_steps > 0) {
-            trade_msg = feasible_msg;
-            candidate = feasible_candidate;
-            shared_cash = trade_msg.cash;
-            state_vec = candidate;
-            clipped = feasible_steps < max_steps;
-          }
+      if (!std::isfinite(equity) || equity < required) return false;
+      shared_cash = message.cash;
+      state_vec = candidate;
+      return true;
+    };
+    auto clip_to_portfolio_margin = [&]() {
+      const long long max_steps = static_cast<long long>(std::floor(executable.ctr_qty / s.ctr_step + 1e-10));
+      long long low = 1;
+      long long high = max_steps;
+      long long feasible_steps = 0;
+      ExchangeMessage_on_trade feasible_msg{};
+      while (low <= high) {
+        const long long mid = low + (high - low) / 2;
+        ActionDecision trial = executable;
+        trial.ctr_qty = static_cast<double>(mid) * s.ctr_step;
+        ExchangeMessage_on_trade trial_msg = x.update_on_trade(
+          priced_state,
+          trial,
+          a.type == TRADESIMR::OrderType::LIMIT ? TRADESIMR::BarStage::INTRA : TRADESIMR::BarStage::OPEN,
+          filled_price
+        );
+        if (trial_msg.status == TRADESIMR::ActionStatus::FILLED && commit_trade(trial_msg)) {
+          // commit_trade mutates state, so restore it until the largest trial is known.
+          state_vec[static_cast<std::size_t>(si)] = s;
+          shared_cash = s.cash;
+          feasible_steps = mid;
+          feasible_msg = trial_msg;
+          low = mid + 1;
+        } else {
+          high = mid - 1;
         }
-        if (!clipped) {
-          trade_msg.status = TRADESIMR::ActionStatus::FAILED;
-          trade_msg.cash = shared_cash;
-          trade_msg.pos_dir = s.pos_dir;
-          trade_msg.ctr_unit = s.ctr_unit;
-          trade_msg.avg_price = s.avg_price;
-          trade_msg.fee = 0.0;
-          trade_msg.realized_pnl = 0.0;
-        }
-      } else {
-        shared_cash = candidate_cash;
-        state_vec = candidate;
       }
+      if (feasible_steps == 0) return false;
+      // Commit the selected trial exactly once after restoring the pre-trade state.
+      if (!commit_trade(feasible_msg)) return false;
+      trade_msg = feasible_msg;
+      return true;
+    };
+
+    bool committed = false;
+    if (trade_msg.status == TRADESIMR::ActionStatus::FILLED) {
+      committed = commit_trade(trade_msg);
+    }
+    if (!committed && can_clip) {
+      // This covers both a per-asset pre-check rejection and a shared
+      // portfolio-margin rejection of the requested target quantity.
+      committed = clip_to_portfolio_margin();
+    }
+    if (!committed) {
+      trade_msg.status = TRADESIMR::ActionStatus::FAILED;
+      trade_msg.cash = shared_cash;
+      trade_msg.pos_dir = s.pos_dir;
+      trade_msg.ctr_unit = s.ctr_unit;
+      trade_msg.avg_price = s.avg_price;
+      trade_msg.fee = 0.0;
+      trade_msg.realized_pnl = 0.0;
     }
 
     if (rec) {
