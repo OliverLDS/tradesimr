@@ -85,6 +85,7 @@ sim_portfolio_execution_quality <- function(exchange, agent_id = NULL, summary =
   ]
   target_status <- as.character(target$status[1L] %||% "accepted")
   order_status <- as.character(orders$status %||% character())
+  margin_clipped <- "reason_code" %in% names(orders) && any(orders$reason_code == "margin_clipped", na.rm = TRUE)
   terminal <- order_status %in% c("rejected", "cancelled", "failed", "no_op")
   all_filled <- nrow(orders) > 0L && all(order_status == "filled") &&
     all(orders$order_id %in% fills$order_id)
@@ -109,7 +110,7 @@ sim_portfolio_execution_quality <- function(exchange, agent_id = NULL, summary =
   }
   expected_signed_quantity <- planned_quantity
   if (identical(target_status, "no_op")) expected_signed_quantity <- current_signed_quantity
-  if (all_filled) {
+  if (all_filled && !margin_clipped) {
     # Exact fill quantities include C++ fee-aware clipping and are therefore
     # the authoritative executable target for quality assessment.
     expected_signed_quantity <- .portfolio_quality_apply_fills(current_signed_quantity, fills)
@@ -127,6 +128,9 @@ sim_portfolio_execution_quality <- function(exchange, agent_id = NULL, summary =
   if (identical(target_status, "no_op")) {
     quality <- "no_op"
     message <- as.character(target$message[1L] %||% "Target already matched the rounded contract quantity.")
+  } else if (margin_clipped && any_filled) {
+    quality <- "partial"
+    message <- "Target-derived order was clipped to available portfolio-margin capacity."
   } else if (all_filled && is.finite(quantity_deviation) && abs(quantity_deviation) <= tolerance) {
     quality <- "fulfilled"
     message <- "All order actions filled at the eligible market boundary."

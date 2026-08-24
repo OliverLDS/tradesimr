@@ -63,6 +63,7 @@ sim_schemas <- function() {
       price = numeric(),
       fee = numeric(),
       realized_pnl = numeric(),
+      reason_code = character(),
       message = character()
     ),
     portfolio_targets = data.table::data.table(
@@ -112,6 +113,7 @@ sim_schemas <- function() {
       price = numeric(),
       fee = numeric(),
       realized_pnl = numeric(),
+      reason_code = character(),
       target_weight = numeric()
     ),
     portfolio_market_boundaries = data.table::data.table(

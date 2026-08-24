@@ -90,6 +90,9 @@ sim_portfolio_market_step <- function(exchange,
 #' completed-bar close and the post-step account state. Submitted orders are
 #' eligible only on a strictly later bar of the same asset. `NULL` records a
 #' durable no-decision outcome and preserves current positions.
+#' Target-derived opening and increasing orders are clipped down to the largest
+#' executable contract-step quantity when fees or shared portfolio margin make
+#' the exact target infeasible. Explicit contract orders remain all-or-nothing.
 #'
 #' @param exchange A `tradesimr_exchange`.
 #' @param agent_id Account identifier. Each agent has an isolated account.
@@ -698,6 +701,7 @@ sim_portfolio_export <- function(exchange,
     price = NA_real_,
     fee = NA_real_,
     realized_pnl = NA_real_,
+    reason_code = NA_character_,
     message = NA_character_
   )
 }

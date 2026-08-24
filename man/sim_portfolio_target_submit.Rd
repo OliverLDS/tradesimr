@@ -46,4 +46,7 @@ The supplied decision bars must already have been accepted by
 completed-bar close and the post-step account state. Submitted orders are
 eligible only on a strictly later bar of the same asset. \code{NULL} records a
 durable no-decision outcome and preserves current positions.
+Target-derived opening and increasing orders are clipped down to the largest
+executable contract-step quantity when fees or shared portfolio margin make
+the exact target infeasible. Explicit contract orders remain all-or-nothing.
 }

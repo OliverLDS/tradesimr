@@ -74,9 +74,9 @@ test_that("execution quality distinguishes no-op, terminal rejection, and partia
     target_weights = c(SPY = 1), allowed_symbols = "SPY"
   )), execution)
   sim_portfolio_market_step(rejected, day_2, execution)
-  terminal <- sim_portfolio_execution_quality(rejected)
-  expect_equal(terminal$execution_quality, "terminal_rejected")
-  expect_match(terminal$message, "eligible market boundary")
+  clipped <- sim_portfolio_execution_quality(rejected)
+  expect_equal(clipped$execution_quality, "partial")
+  expect_match(clipped$message, "portfolio-margin capacity")
 })
 
 test_that("execution quality summarizes multi-asset rebalances and survives save/load", {

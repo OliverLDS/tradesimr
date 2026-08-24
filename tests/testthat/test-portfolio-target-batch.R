@@ -99,8 +99,9 @@ test_that("a satisfied target is no-op and an execution rejection is terminal", 
     target_weights = c(SPY = 1), allowed_symbols = "SPY"
   )), execution)
   sim_portfolio_market_step(rejected, bars_2, execution)
-  terminal <- rejected$agent_orders
-  expect_equal(terminal$status, "rejected")
-  expect_match(terminal$message, "eligible market boundary")
-  expect_equal(nrow(rejected$portfolio_fills), 0L)
+  clipped <- rejected$agent_orders
+  expect_equal(clipped$status, "filled")
+  expect_equal(clipped$reason_code, "margin_clipped")
+  expect_match(clipped$message, "portfolio-margin capacity")
+  expect_equal(nrow(rejected$portfolio_fills), 1L)
 })

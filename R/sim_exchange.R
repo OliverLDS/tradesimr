@@ -148,6 +148,7 @@ sim_exchange_place_order <- function(exchange,
     price = NA_real_,
     fee = NA_real_,
     realized_pnl = NA_real_,
+    reason_code = NA_character_,
     message = NA_character_
   )
   exchange$agent_orders <- data.table::rbindlist(list(exchange$agent_orders, row), fill = TRUE)
@@ -612,6 +613,9 @@ sim_exchange_load <- function(path) {
     exchange$agent_orders <- data.table::fread(file.path(path, "agent_orders.csv"))
     numeric_columns <- intersect(c("qty", "limit_price", "tgt_pos", "tol_pos", "price", "fee", "realized_pnl", "target_weight", "decision_price"), names(exchange$agent_orders))
     for (column in numeric_columns) data.table::set(exchange$agent_orders, j = column, value = as.numeric(exchange$agent_orders[[column]]))
+    if ("reason_code" %in% names(exchange$agent_orders)) {
+      data.table::set(exchange$agent_orders, j = "reason_code", value = as.character(exchange$agent_orders$reason_code))
+    }
     if ("asset_id" %in% names(exchange$agent_orders)) data.table::set(exchange$agent_orders, j = "asset_id", value = as.integer(exchange$agent_orders$asset_id))
     for (column in intersect(c("timestamp", "eligible_after", "settlement_timestamp"), names(exchange$agent_orders))) {
       data.table::set(exchange$agent_orders, j = column, value = as.POSIXct(exchange$agent_orders[[column]], tz = "UTC"))
@@ -639,6 +643,9 @@ sim_exchange_load <- function(path) {
     }
     for (column in intersect(c("qty", "price", "fee", "realized_pnl", "target_weight"), names(exchange$portfolio_fills))) {
       data.table::set(exchange$portfolio_fills, j = column, value = as.numeric(exchange$portfolio_fills[[column]]))
+    }
+    if ("reason_code" %in% names(exchange$portfolio_fills)) {
+      data.table::set(exchange$portfolio_fills, j = "reason_code", value = as.character(exchange$portfolio_fills$reason_code))
     }
   }
   if (file.exists(file.path(path, "portfolio_market_boundaries.csv"))) {
@@ -1070,6 +1077,9 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
   if (!"message" %in% names(exchange$agent_orders)) {
     data.table::set(exchange$agent_orders, j = "message", value = NA_character_)
   }
+  if (!"reason_code" %in% names(exchange$agent_orders)) {
+    data.table::set(exchange$agent_orders, j = "reason_code", value = NA_character_)
+  }
   if (!"settlement_timestamp" %in% names(exchange$agent_orders)) {
     data.table::set(exchange$agent_orders, j = "settlement_timestamp", value = as.POSIXct(NA, tz = "UTC"))
   }
@@ -1086,6 +1096,17 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
     if (is.na(order_idx) || is.na(event_idx)) next
     data.table::set(exchange$agent_orders, i = order_idx, j = "status", value = "filled")
     data.table::set(exchange$agent_orders, i = order_idx, j = "settlement_timestamp", value = filled_events$timestamp[event_idx])
+    if ("target_clipped" %in% names(filled_events) &&
+        !is.na(filled_events$target_clipped[event_idx]) &&
+        as.logical(filled_events$target_clipped[event_idx])) {
+      data.table::set(exchange$agent_orders, i = order_idx, j = "reason_code", value = "margin_clipped")
+      data.table::set(
+        exchange$agent_orders,
+        i = order_idx,
+        j = "message",
+        value = "Target-derived order was clipped to available portfolio-margin capacity."
+      )
+    }
     for (col in c("price", "fee", "realized_pnl")) {
       if (col %in% names(filled_events)) {
         data.table::set(exchange$agent_orders, i = order_idx, j = col, value = as.numeric(filled_events[[col]][event_idx]))
@@ -1099,6 +1120,7 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
     order_idx <- match(orders$order_id[i], exchange$agent_orders$order_id)
     if (is.na(order_idx) || is.na(event_idx)) next
     data.table::set(exchange$agent_orders, i = order_idx, j = "status", value = "rejected")
+    data.table::set(exchange$agent_orders, i = order_idx, j = "reason_code", value = "execution_rejected")
     data.table::set(
       exchange$agent_orders,
       i = order_idx,
@@ -1152,6 +1174,7 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
     price = as.numeric(event$price[1L]),
     fee = as.numeric(event$fee[1L] %||% 0),
     realized_pnl = as.numeric(event$realized_pnl[1L] %||% 0),
+    reason_code = as.character(canonical_order$reason_code[1L] %||% NA_character_),
     target_weight = as.numeric(canonical_order$target_weight[1L])
   )
   exchange$portfolio_fills <- data.table::rbindlist(list(exchange$portfolio_fills, row), fill = TRUE)

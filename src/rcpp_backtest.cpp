@@ -614,6 +614,7 @@ Rcpp::List portfolio_step_rcpp(const Rcpp::List& states,
   std::vector<double> event_fee;
   std::vector<double> event_funding_fee;
   std::vector<double> event_maintenance_margin;
+  std::vector<int> event_target_clipped;
   int next_event_id = 0;
   int next_tx_id = 0;
 
@@ -682,13 +683,74 @@ Rcpp::List portfolio_step_rcpp(const Rcpp::List& states,
       const double equity = portfolio_equity_cpp(candidate, candidate_cash);
       const double required = portfolio_margin_required_cpp(candidate, cov, portfolio_margin_sigma, portfolio_margin_floor);
       if (!std::isfinite(equity) || equity < required) {
-        trade_msg.status = TRADESIMR::ActionStatus::FAILED;
-        trade_msg.cash = shared_cash;
-        trade_msg.pos_dir = s.pos_dir;
-        trade_msg.ctr_unit = s.ctr_unit;
-        trade_msg.avg_price = s.avg_price;
-        trade_msg.fee = 0.0;
-        trade_msg.realized_pnl = 0.0;
+        // A target rebalance is an intent, rather than an explicit contract
+        // order. Clip a target-derived opening/increase to the largest
+        // contract-step quantity that satisfies shared portfolio margin.
+        const bool can_clip = executable.fee_aware_target &&
+          (executable.action == TRADESIMR::ActionCode::OPEN ||
+           executable.action == TRADESIMR::ActionCode::INCREASE) &&
+          s.ctr_step > 0.0;
+        bool clipped = false;
+        if (can_clip) {
+          const long long max_steps = static_cast<long long>(std::floor(executable.ctr_qty / s.ctr_step + 1e-10));
+          long long low = 1;
+          long long high = max_steps;
+          long long feasible_steps = 0;
+          ExchangeMessage_on_trade feasible_msg{};
+          std::vector<TradeState> feasible_candidate;
+          while (low <= high) {
+            const long long mid = low + (high - low) / 2;
+            ActionDecision trial = executable;
+            trial.ctr_qty = static_cast<double>(mid) * s.ctr_step;
+            ExchangeMessage_on_trade trial_msg = x.update_on_trade(
+              priced_state,
+              trial,
+              a.type == TRADESIMR::OrderType::LIMIT ? TRADESIMR::BarStage::INTRA : TRADESIMR::BarStage::OPEN,
+              filled_price
+            );
+            bool feasible = false;
+            std::vector<TradeState> trial_candidate;
+            if (trial_msg.status == TRADESIMR::ActionStatus::FILLED) {
+              trial_candidate = state_vec;
+              TradeState trial_state = s;
+              trial_state.cash = trial_msg.cash;
+              trial_state.pos_dir = trial_msg.pos_dir;
+              trial_state.ctr_unit = trial_msg.ctr_unit;
+              trial_state.avg_price = trial_msg.avg_price;
+              trial_state.last_px = trial_msg.action_px;
+              trial_candidate[static_cast<std::size_t>(si)] = trial_state;
+              const double trial_equity = portfolio_equity_cpp(trial_candidate, trial_msg.cash);
+              const double trial_required = portfolio_margin_required_cpp(
+                trial_candidate, cov, portfolio_margin_sigma, portfolio_margin_floor
+              );
+              feasible = std::isfinite(trial_equity) && trial_equity >= trial_required;
+            }
+            if (feasible) {
+              feasible_steps = mid;
+              feasible_msg = trial_msg;
+              feasible_candidate = trial_candidate;
+              low = mid + 1;
+            } else {
+              high = mid - 1;
+            }
+          }
+          if (feasible_steps > 0) {
+            trade_msg = feasible_msg;
+            candidate = feasible_candidate;
+            shared_cash = trade_msg.cash;
+            state_vec = candidate;
+            clipped = feasible_steps < max_steps;
+          }
+        }
+        if (!clipped) {
+          trade_msg.status = TRADESIMR::ActionStatus::FAILED;
+          trade_msg.cash = shared_cash;
+          trade_msg.pos_dir = s.pos_dir;
+          trade_msg.ctr_unit = s.ctr_unit;
+          trade_msg.avg_price = s.avg_price;
+          trade_msg.fee = 0.0;
+          trade_msg.realized_pnl = 0.0;
+        }
       } else {
         shared_cash = candidate_cash;
         state_vec = candidate;
@@ -719,6 +781,11 @@ Rcpp::List portfolio_step_rcpp(const Rcpp::List& states,
       event_fee.push_back(trade_msg.fee);
       event_funding_fee.push_back(0.0);
       event_maintenance_margin.push_back(event_state.mm());
+      event_target_clipped.push_back(
+        executable.fee_aware_target &&
+        trade_msg.status == TRADESIMR::ActionStatus::FILLED &&
+        trade_msg.action_ctr_unit + s.ctr_step / 2.0 < executable.ctr_qty ? 1 : 0
+      );
     }
     state_vec[static_cast<std::size_t>(si)].action_id_now = std::max(
       state_vec[static_cast<std::size_t>(si)].action_id_now,
@@ -784,6 +851,8 @@ Rcpp::List portfolio_step_rcpp(const Rcpp::List& states,
       Rcpp::Named("funding_fee") = event_funding_fee,
       Rcpp::Named("maintenance_margin") = event_maintenance_margin
     );
+    // Rcpp 1.0.x supports at most 20 arguments in List::create().
+    event_out["target_clipped"] = event_target_clipped;
   }
   return Rcpp::List::create(
     Rcpp::Named("states") = out_states,
