@@ -49,4 +49,7 @@ durable no-decision outcome and preserves current positions.
 Target-derived opening and increasing orders are clipped down to the largest
 executable contract-step quantity when fees or shared portfolio margin make
 the exact target infeasible. Explicit contract orders remain all-or-nothing.
+A later accepted target decision supersedes still-unfilled target-derived
+orders for the same agent and overlapping allowed assets; explicit contract
+orders are never superseded.
 }

@@ -93,6 +93,9 @@ sim_portfolio_market_step <- function(exchange,
 #' Target-derived opening and increasing orders are clipped down to the largest
 #' executable contract-step quantity when fees or shared portfolio margin make
 #' the exact target infeasible. Explicit contract orders remain all-or-nothing.
+#' A later accepted target decision supersedes still-unfilled target-derived
+#' orders for the same agent and overlapping allowed assets; explicit contract
+#' orders are never superseded.
 #'
 #' @param exchange A `tradesimr_exchange`.
 #' @param agent_id Account identifier. Each agent has an isolated account.
@@ -227,10 +230,11 @@ sim_portfolio_target_submit_batch <- function(exchange,
 #' failed all-cash order. Explicit contract orders retain reject-on-insufficient
 #' margin semantics.
 #'
-#' Missing target weights for active registered assets mean a target weight of
-#' zero. A `NULL` target is a no-decision: positions are retained and no new
-#' orders are submitted. Repeated/stale bars are ignored, so closed markets can
-#' retain their last valuation without creating strategy reactions or fills.
+#' A named target vector updates only its named symbols; supply an explicit
+#' zero target weight to flatten an asset. A `NULL` target is a no-decision:
+#' positions are retained and no new orders are submitted. Repeated/stale bars
+#' are ignored, so closed markets can retain their last valuation without
+#' creating strategy reactions or fills.
 #'
 #' @param exchange A `tradesimr_exchange`.
 #' @param agent_id Account identifier. Each agent has an isolated account.
@@ -322,6 +326,16 @@ sim_portfolio_target_step <- function(exchange,
       rebalance_id, timestamp, agent_id, "rejected", message
     )))
   }
+  supersession <- .portfolio_supersede_pending_targets(
+    exchange, agent_id, targets$asset_id, rebalance_id, timestamp
+  )
+  supersedes_for_asset <- function(asset_ids) {
+    out <- rep(NA_character_, length(asset_ids))
+    index <- match(as.integer(asset_ids), supersession$by_asset$asset_id)
+    matched <- !is.na(index)
+    if (any(matched)) out[matched] <- supersession$by_asset$supersedes_rebalance_id[index[matched]]
+    out
+  }
   plan <- .portfolio_rebalance_plan(exchange, agent_id, targets, decision_bars, execution, allowed_assets, context = context)
   target_rows <- plan$targets[, .(
     rebalance_id,
@@ -335,6 +349,8 @@ sim_portfolio_target_step <- function(exchange,
     decision_equity,
     planned_signed_quantity = desired_signed_qty,
     decision_price,
+    superseded_by_rebalance_id = NA_character_,
+    supersedes_rebalance_id = supersedes_for_asset(asset_id),
     status = outcome_status,
     message = outcome_message
   )]
@@ -345,6 +361,8 @@ sim_portfolio_target_step <- function(exchange,
       rebalance_id = rebalance_id, timestamp = timestamp, agent_id = agent_id,
       status = "no_op", execution_timing = execution$timing, fee_rt = execution$fee_rt,
       slippage = execution$slippage, spread = execution$spread,
+      superseded_by_rebalance_id = NA_character_,
+      supersedes_rebalance_id = supersession$rebalance_id,
       message = "All target quantities already match the current portfolio."
     )), fill = TRUE)
     return(.portfolio_step_result(exchange, agent_id, rebalance_id, fills = fills, context = context, outcomes = .portfolio_outcome_row(
@@ -354,11 +372,14 @@ sim_portfolio_target_step <- function(exchange,
 
   # Plan validation happened before this append: accepted rows appear together or not at all.
   order_rows <- .portfolio_order_rows(exchange, agent_id, rebalance_id, timestamp, plan$orders, execution)
+  order_rows[, supersedes_rebalance_id := supersedes_for_asset(asset_id)]
   exchange$agent_orders <- data.table::rbindlist(list(exchange$agent_orders, order_rows), fill = TRUE)
   exchange$portfolio_rebalances <- data.table::rbindlist(list(exchange$portfolio_rebalances, data.table::data.table(
     rebalance_id = rebalance_id, timestamp = timestamp, agent_id = agent_id,
     status = "accepted", execution_timing = execution$timing, fee_rt = execution$fee_rt,
     slippage = execution$slippage, spread = execution$spread,
+    superseded_by_rebalance_id = NA_character_,
+    supersedes_rebalance_id = supersession$rebalance_id,
     message = as.character(decision_label)
   )), fill = TRUE)
   exchange$event_log <- data.table::rbindlist(list(exchange$event_log, data.table::data.table(
@@ -507,9 +528,8 @@ sim_portfolio_export <- function(exchange,
   }
   unknown <- setdiff(names(weights), allowed_assets$symbol)
   if (length(unknown)) stop("Target symbol(s) are outside the agent allowed universe: ", paste(unknown, collapse = ", "), call. = FALSE)
-  out <- data.table::copy(allowed_assets[, .(symbol, asset_id, contract_size, qty_step)])
+  out <- data.table::copy(allowed_assets[symbol %in% names(weights), .(symbol, asset_id, contract_size, qty_step)])
   out[, target_weight := weights[symbol]]
-  out[is.na(target_weight), target_weight := 0]
   if (sum(abs(out$target_weight)) > max_gross_weight + 1e-10) {
     stop("Absolute target weights exceed `max_gross_weight`.", call. = FALSE)
   }
@@ -685,6 +705,8 @@ sim_portfolio_export <- function(exchange,
     eligible_after = timestamp,
     settlement_timestamp = as.POSIXct(NA, tz = "UTC"),
     rebalance_id = rebalance_id,
+    superseded_by_rebalance_id = NA_character_,
+    supersedes_rebalance_id = NA_character_,
     target_weight = as.numeric(orders$target_weight),
     decision_price = as.numeric(orders$decision_price),
     order_type = "market",
@@ -709,6 +731,93 @@ sim_portfolio_export <- function(exchange,
 #' @keywords internal
 .portfolio_outcome_row <- function(rebalance_id, timestamp, agent_id, status, message) {
   data.table::data.table(rebalance_id = rebalance_id, timestamp = timestamp, agent_id = agent_id, symbol = NA_character_, asset_id = NA_integer_, status = status, message = message)
+}
+
+#' @keywords internal
+.portfolio_ensure_supersession_columns <- function(exchange) {
+  tables <- list(
+    agent_orders = c("superseded_by_rebalance_id", "supersedes_rebalance_id"),
+    portfolio_targets = c("superseded_by_rebalance_id", "supersedes_rebalance_id"),
+    portfolio_rebalances = c("superseded_by_rebalance_id", "supersedes_rebalance_id")
+  )
+  for (table_name in names(tables)) {
+    table <- exchange[[table_name]]
+    for (column in tables[[table_name]]) {
+      if (!column %in% names(table)) data.table::set(table, j = column, value = NA_character_)
+    }
+    exchange[[table_name]] <- table
+  }
+  invisible(exchange)
+}
+
+#' @keywords internal
+.portfolio_supersede_pending_targets <- function(exchange, agent_id, asset_ids, rebalance_id, timestamp) {
+  .portfolio_ensure_supersession_columns(exchange)
+  requested_agent_id <- as.character(agent_id)
+  requested_asset_ids <- unique(as.integer(asset_ids))
+  pending <- exchange$agent_orders[
+    agent_id == requested_agent_id &
+      asset_id %in% requested_asset_ids &
+      status == "accepted" &
+      qty_type == "contracts" &
+      !is.na(rebalance_id)
+  ]
+  if (!nrow(pending)) {
+    return(list(
+      by_asset = data.table::data.table(asset_id = integer(), supersedes_rebalance_id = character()),
+      rebalance_id = NA_character_
+    ))
+  }
+  # Each symbol has one pending target chain: the newest accepted decision
+  # terminates that chain before its own orders are recorded.
+  by_asset <- pending[, .(supersedes_rebalance_id = tail(rebalance_id, 1L)), by = asset_id]
+  order_index <- which(
+    exchange$agent_orders$agent_id == requested_agent_id &
+      exchange$agent_orders$asset_id %in% requested_asset_ids &
+      exchange$agent_orders$status == "accepted" &
+      exchange$agent_orders$qty_type == "contracts" &
+      !is.na(exchange$agent_orders$rebalance_id)
+  )
+  data.table::set(exchange$agent_orders, i = order_index, j = "status", value = "superseded")
+  data.table::set(exchange$agent_orders, i = order_index, j = "reason_code", value = "superseded")
+  data.table::set(exchange$agent_orders, i = order_index, j = "message", value = "Superseded by a later target-weight decision before execution.")
+  data.table::set(exchange$agent_orders, i = order_index, j = "settlement_timestamp", value = timestamp)
+  data.table::set(exchange$agent_orders, i = order_index, j = "superseded_by_rebalance_id", value = rebalance_id)
+
+  old_rebalances <- unique(pending$rebalance_id)
+  target_index <- which(
+    exchange$portfolio_targets$agent_id == requested_agent_id &
+      exchange$portfolio_targets$asset_id %in% requested_asset_ids &
+      exchange$portfolio_targets$rebalance_id %in% old_rebalances &
+      exchange$portfolio_targets$status == "accepted"
+  )
+  if (length(target_index)) {
+    data.table::set(exchange$portfolio_targets, i = target_index, j = "status", value = "superseded")
+    data.table::set(exchange$portfolio_targets, i = target_index, j = "message", value = "Superseded by a later target-weight decision before execution.")
+    data.table::set(exchange$portfolio_targets, i = target_index, j = "superseded_by_rebalance_id", value = rebalance_id)
+  }
+  for (old_rebalance_id in old_rebalances) {
+    still_pending <- exchange$agent_orders[
+      rebalance_id == old_rebalance_id & status == "accepted" & qty_type == "contracts" & !is.na(rebalance_id)
+    ]
+    if (nrow(still_pending)) next
+    has_fills <- nrow(exchange$portfolio_fills[rebalance_id == old_rebalance_id]) > 0L
+    status <- if (has_fills) "partially_superseded" else "superseded"
+    rebalance_index <- which(exchange$portfolio_rebalances$rebalance_id == old_rebalance_id)
+    if (length(rebalance_index)) {
+      data.table::set(exchange$portfolio_rebalances, i = rebalance_index, j = "status", value = status)
+      data.table::set(exchange$portfolio_rebalances, i = rebalance_index, j = "message", value = "Superseded by a later target-weight decision before all legs executed.")
+      data.table::set(exchange$portfolio_rebalances, i = rebalance_index, j = "superseded_by_rebalance_id", value = rebalance_id)
+    }
+  }
+  exchange$event_log <- data.table::rbindlist(list(exchange$event_log, data.table::data.table(
+    timestamp = timestamp, source = "portfolio_rebalance", event = "superseded", ref_id = paste(unique(pending$order_id), collapse = ",")
+  )), fill = TRUE)
+  rebalance_ids <- unique(pending$rebalance_id)
+  list(
+    by_asset = by_asset,
+    rebalance_id = if (length(rebalance_ids) == 1L) rebalance_ids else NA_character_
+  )
 }
 
 #' @keywords internal

@@ -47,6 +47,8 @@ sim_schemas <- function() {
       eligible_after = as.POSIXct(character()),
       settlement_timestamp = as.POSIXct(character()),
       rebalance_id = character(),
+      superseded_by_rebalance_id = character(),
+      supersedes_rebalance_id = character(),
       target_weight = numeric(),
       decision_price = numeric(),
       order_type = character(),
@@ -68,6 +70,8 @@ sim_schemas <- function() {
     ),
     portfolio_targets = data.table::data.table(
       rebalance_id = character(),
+      superseded_by_rebalance_id = character(),
+      supersedes_rebalance_id = character(),
       timestamp = as.POSIXct(character()),
       eligible_after = as.POSIXct(character()),
       agent_id = character(),
@@ -83,6 +87,8 @@ sim_schemas <- function() {
     ),
     portfolio_rebalances = data.table::data.table(
       rebalance_id = character(),
+      superseded_by_rebalance_id = character(),
+      supersedes_rebalance_id = character(),
       timestamp = as.POSIXct(character()),
       agent_id = character(),
       status = character(),

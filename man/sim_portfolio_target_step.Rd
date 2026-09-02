@@ -54,8 +54,9 @@ failed all-cash order. Explicit contract orders retain reject-on-insufficient
 margin semantics.
 }
 \details{
-Missing target weights for active registered assets mean a target weight of
-zero. A \code{NULL} target is a no-decision: positions are retained and no new
-orders are submitted. Repeated/stale bars are ignored, so closed markets can
-retain their last valuation without creating strategy reactions or fills.
+A named target vector updates only its named symbols; supply an explicit
+zero target weight to flatten an asset. A \code{NULL} target is a no-decision:
+positions are retained and no new orders are submitted. Repeated/stale bars
+are ignored, so closed markets can retain their last valuation without
+creating strategy reactions or fills.
 }

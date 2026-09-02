@@ -32,7 +32,7 @@ sim_portfolio_execution_quality <- function(exchange, agent_id = NULL, summary =
   out <- data.table::rbindlist(lapply(seq_len(nrow(targets)), function(i) {
     .portfolio_execution_quality_row(exchange, targets[i])
   }), fill = TRUE)
-  if (isTRUE(summary)) return(.portfolio_execution_quality_summary(out))
+  if (isTRUE(summary)) return(.portfolio_execution_quality_summary(exchange, out))
   out[]
 }
 
@@ -85,6 +85,7 @@ sim_portfolio_execution_quality <- function(exchange, agent_id = NULL, summary =
   ]
   target_status <- as.character(target$status[1L] %||% "accepted")
   order_status <- as.character(orders$status %||% character())
+  superseded <- identical(target_status, "superseded") || any(order_status == "superseded")
   margin_clipped <- "reason_code" %in% names(orders) && any(orders$reason_code == "margin_clipped", na.rm = TRUE)
   terminal <- order_status %in% c("rejected", "cancelled", "failed", "no_op")
   all_filled <- nrow(orders) > 0L && all(order_status == "filled") &&
@@ -96,6 +97,8 @@ sim_portfolio_execution_quality <- function(exchange, agent_id = NULL, summary =
   } else if (any(terminal) && "settlement_timestamp" %in% names(orders)) {
     settled <- orders$settlement_timestamp[!is.na(orders$settlement_timestamp)]
     if (length(settled)) settlement_timestamp <- .portfolio_quality_timestamp(max(settled))
+  } else if (superseded) {
+    settlement_timestamp <- .portfolio_quality_timestamp(decision_timestamp)
   } else if (identical(target_status, "no_op")) {
     settlement_timestamp <- .portfolio_quality_timestamp(decision_timestamp)
   }
@@ -125,7 +128,11 @@ sim_portfolio_execution_quality <- function(exchange, agent_id = NULL, summary =
   settlement_equity <- if (!is.na(settlement_timestamp)) .portfolio_quality_equity(exchange, agent, settlement_timestamp) else NA_real_
   weight_deviation <- if (is.finite(settlement_equity) && settlement_equity != 0) realized_notional / settlement_equity - target_weight else NA_real_
   tolerance <- qty_step / 2
-  if (identical(target_status, "no_op")) {
+  if (superseded) {
+    quality <- "superseded"
+    reasons <- unique(orders$message[order_status == "superseded" & !is.na(orders$message) & nzchar(orders$message)])
+    message <- if (length(reasons)) paste(reasons, collapse = " ") else "Superseded by a later target-weight decision before execution."
+  } else if (identical(target_status, "no_op")) {
     quality <- "no_op"
     message <- as.character(target$message[1L] %||% "Target already matched the rounded contract quantity.")
   } else if (margin_clipped && any_filled) {
@@ -215,9 +222,9 @@ sim_portfolio_execution_quality <- function(exchange, agent_id = NULL, summary =
 }
 
 #' @keywords internal
-.portfolio_execution_quality_summary <- function(quality) {
+.portfolio_execution_quality_summary <- function(exchange, quality) {
   if (!nrow(quality)) return(quality)
-  severity <- c(fulfilled = 0L, no_op = 1L, pending = 2L, partial = 3L, terminal_rejected = 4L)
+  severity <- c(fulfilled = 0L, superseded = 0L, no_op = 1L, pending = 2L, partial = 3L, terminal_rejected = 4L)
   quality[, .severity := severity[execution_quality]]
   out <- quality[, {
     worst <- which.max(.severity)
@@ -233,5 +240,13 @@ sim_portfolio_execution_quality <- function(exchange, agent_id = NULL, summary =
       message = paste(unique(message), collapse = " ")
     )
   }, by = .(rebalance_id, agent_id)]
+  rebalance_status <- exchange$portfolio_rebalances[, .(rebalance_id, rebalance_status = status)]
+  out <- merge(out, rebalance_status, by = "rebalance_id", all.x = TRUE, sort = FALSE)
+  superseded <- out$rebalance_status %in% c("superseded", "partially_superseded")
+  if (any(superseded)) {
+    data.table::set(out, i = which(superseded), j = "execution_quality", value = "superseded")
+    data.table::set(out, i = which(superseded), j = "message", value = "Superseded by a later target-weight decision before all legs executed.")
+  }
+  out[, rebalance_status := NULL]
   out[]
 }

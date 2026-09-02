@@ -616,6 +616,13 @@ sim_exchange_load <- function(path) {
     if ("reason_code" %in% names(exchange$agent_orders)) {
       data.table::set(exchange$agent_orders, j = "reason_code", value = as.character(exchange$agent_orders$reason_code))
     }
+    for (column in intersect(c(
+      "order_id", "client_order_id", "agent_id", "symbol", "rebalance_id",
+      "superseded_by_rebalance_id", "supersedes_rebalance_id", "order_type", "side",
+      "intended_action", "intended_dir", "qty_type", "time_in_force", "status", "message"
+    ), names(exchange$agent_orders))) {
+      data.table::set(exchange$agent_orders, j = column, value = as.character(exchange$agent_orders[[column]]))
+    }
     if ("asset_id" %in% names(exchange$agent_orders)) data.table::set(exchange$agent_orders, j = "asset_id", value = as.integer(exchange$agent_orders$asset_id))
     for (column in intersect(c("timestamp", "eligible_after", "settlement_timestamp"), names(exchange$agent_orders))) {
       data.table::set(exchange$agent_orders, j = column, value = as.POSIXct(exchange$agent_orders[[column]], tz = "UTC"))
@@ -623,12 +630,24 @@ sim_exchange_load <- function(path) {
   }
   if (file.exists(file.path(path, "portfolio_targets.csv"))) {
     exchange$portfolio_targets <- data.table::fread(file.path(path, "portfolio_targets.csv"))
+    for (column in intersect(c(
+      "rebalance_id", "agent_id", "symbol", "superseded_by_rebalance_id",
+      "supersedes_rebalance_id", "status", "message"
+    ), names(exchange$portfolio_targets))) {
+      data.table::set(exchange$portfolio_targets, j = column, value = as.character(exchange$portfolio_targets[[column]]))
+    }
     for (column in intersect(c("timestamp", "eligible_after"), names(exchange$portfolio_targets))) {
       data.table::set(exchange$portfolio_targets, j = column, value = as.POSIXct(exchange$portfolio_targets[[column]], tz = "UTC"))
     }
   }
   if (file.exists(file.path(path, "portfolio_rebalances.csv"))) {
     exchange$portfolio_rebalances <- data.table::fread(file.path(path, "portfolio_rebalances.csv"))
+    for (column in intersect(c(
+      "rebalance_id", "agent_id", "status", "execution_timing", "message",
+      "superseded_by_rebalance_id", "supersedes_rebalance_id"
+    ), names(exchange$portfolio_rebalances))) {
+      data.table::set(exchange$portfolio_rebalances, j = column, value = as.character(exchange$portfolio_rebalances[[column]]))
+    }
     if ("timestamp" %in% names(exchange$portfolio_rebalances)) {
       data.table::set(exchange$portfolio_rebalances, j = "timestamp", value = as.POSIXct(exchange$portfolio_rebalances$timestamp, tz = "UTC"))
     }
