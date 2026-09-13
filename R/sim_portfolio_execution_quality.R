@@ -29,8 +29,9 @@ sim_portfolio_execution_quality <- function(exchange, agent_id = NULL, summary =
   }
   if (!nrow(targets)) return(.portfolio_execution_quality_empty())
   data.table::setorderv(targets, c("timestamp", "rebalance_id", "asset_id"))
+  context <- .portfolio_execution_quality_context(exchange)
   out <- data.table::rbindlist(lapply(seq_len(nrow(targets)), function(i) {
-    .portfolio_execution_quality_row(exchange, targets[i])
+    .portfolio_execution_quality_row(exchange, targets[i], context = context)
   }), fill = TRUE)
   if (isTRUE(summary)) return(.portfolio_execution_quality_summary(exchange, out))
   out[]
@@ -50,7 +51,7 @@ sim_portfolio_execution_quality <- function(exchange, agent_id = NULL, summary =
 }
 
 #' @keywords internal
-.portfolio_execution_quality_row <- function(exchange, target) {
+.portfolio_execution_quality_row <- function(exchange, target, context = NULL) {
   agent <- as.character(target$agent_id[1L])
   requested_asset_id <- as.integer(target$asset_id[1L])
   requested_rebalance_id <- as.character(target$rebalance_id[1L])
@@ -58,31 +59,44 @@ sim_portfolio_execution_quality <- function(exchange, agent_id = NULL, summary =
   rebalance_id <- requested_rebalance_id
   decision_timestamp <- .portfolio_quality_timestamp(target$timestamp[1L])
   eligible_after <- .portfolio_quality_timestamp(target$eligible_after[1L] %||% decision_timestamp)
-  spec <- exchange$assets[exchange$assets$asset_id == requested_asset_id]
+  spec <- if (is.null(context)) {
+    exchange$assets[exchange$assets$asset_id == requested_asset_id]
+  } else {
+    context$assets[context$assets$asset_id == requested_asset_id]
+  }
   qty_step <- if (nrow(spec)) as.numeric(spec$qty_step[1L]) else 1
   contract_size <- if (nrow(spec)) as.numeric(spec$contract_size[1L]) else 1
   if (!is.finite(qty_step) || qty_step <= 0) qty_step <- 1
   if (!is.finite(contract_size) || contract_size <= 0) contract_size <- 1
-  decision_position <- .portfolio_quality_position(exchange, agent, asset_id, decision_timestamp)
+  decision_position <- .portfolio_quality_position(exchange, agent, asset_id, decision_timestamp, context)
   current_signed_quantity <- decision_position$signed_quantity
   decision_equity <- as.numeric(target$decision_equity[1L] %||% NA_real_)
-  if (!is.finite(decision_equity)) decision_equity <- .portfolio_quality_equity(exchange, agent, decision_timestamp)
+  if (!is.finite(decision_equity)) decision_equity <- .portfolio_quality_equity(exchange, agent, decision_timestamp, context)
   decision_price <- as.numeric(target$decision_price[1L] %||% NA_real_)
   target_weight <- as.numeric(target$target_weight[1L])
   planned_quantity <- as.numeric(target$planned_signed_quantity[1L] %||% NA_real_)
   if (!is.finite(planned_quantity) && is.finite(decision_equity) && is.finite(decision_price) && decision_price > 0) {
     planned_quantity <- round((target_weight * decision_equity / (decision_price * contract_size)) / qty_step) * qty_step
   }
-  orders <- exchange$agent_orders[
-    exchange$agent_orders$agent_id == agent &
-      exchange$agent_orders$rebalance_id == requested_rebalance_id &
-      exchange$agent_orders$asset_id == requested_asset_id
-  ]
-  fills <- exchange$portfolio_fills[
-    exchange$portfolio_fills$agent_id == agent &
-      exchange$portfolio_fills$rebalance_id == requested_rebalance_id &
-      exchange$portfolio_fills$asset_id == requested_asset_id
-  ]
+  lookup_key <- .portfolio_quality_key(agent, requested_asset_id, requested_rebalance_id)
+  orders <- if (is.null(context)) {
+    exchange$agent_orders[
+      exchange$agent_orders$agent_id == agent &
+        exchange$agent_orders$rebalance_id == requested_rebalance_id &
+        exchange$agent_orders$asset_id == requested_asset_id
+    ]
+  } else {
+    context$orders[[lookup_key]] %||% exchange$agent_orders[0]
+  }
+  fills <- if (is.null(context)) {
+    exchange$portfolio_fills[
+      exchange$portfolio_fills$agent_id == agent &
+        exchange$portfolio_fills$rebalance_id == requested_rebalance_id &
+        exchange$portfolio_fills$asset_id == requested_asset_id
+    ]
+  } else {
+    context$fills[[lookup_key]] %||% exchange$portfolio_fills[0]
+  }
   target_status <- as.character(target$status[1L] %||% "accepted")
   order_status <- as.character(orders$status %||% character())
   superseded <- identical(target_status, "superseded") || any(order_status == "superseded")
@@ -103,7 +117,7 @@ sim_portfolio_execution_quality <- function(exchange, agent_id = NULL, summary =
     settlement_timestamp <- .portfolio_quality_timestamp(decision_timestamp)
   }
   settlement_position <- if (!is.na(settlement_timestamp)) {
-    .portfolio_quality_position(exchange, agent, asset_id, settlement_timestamp)
+    .portfolio_quality_position(exchange, agent, asset_id, settlement_timestamp, context)
   } else {
     list(signed_quantity = NA_real_, last_px = NA_real_)
   }
@@ -125,7 +139,7 @@ sim_portfolio_execution_quality <- function(exchange, agent_id = NULL, summary =
   realized_notional <- realized_signed_quantity * settlement_price * contract_size
   quantity_deviation <- realized_signed_quantity - expected_signed_quantity
   notional_deviation <- realized_notional - expected_notional
-  settlement_equity <- if (!is.na(settlement_timestamp)) .portfolio_quality_equity(exchange, agent, settlement_timestamp) else NA_real_
+  settlement_equity <- if (!is.na(settlement_timestamp)) .portfolio_quality_equity(exchange, agent, settlement_timestamp, context) else NA_real_
   weight_deviation <- if (is.finite(settlement_equity) && settlement_equity != 0) realized_notional / settlement_equity - target_weight else NA_real_
   tolerance <- qty_step / 2
   if (superseded) {
@@ -174,10 +188,19 @@ sim_portfolio_execution_quality <- function(exchange, agent_id = NULL, summary =
 }
 
 #' @keywords internal
-.portfolio_quality_position <- function(exchange, agent_id, asset_id, timestamp) {
+.portfolio_quality_position <- function(exchange, agent_id, asset_id, timestamp, context = NULL) {
   requested_agent_id <- as.character(agent_id)
   requested_asset_id <- as.integer(asset_id)
   requested_timestamp <- timestamp
+  if (!is.null(context)) {
+    history <- context$positions[[.portfolio_quality_key(requested_agent_id, requested_asset_id)]]
+    if (is.null(history) || !nrow(history) || is.na(requested_timestamp)) {
+      return(list(signed_quantity = 0, last_px = NA_real_))
+    }
+    index <- findInterval(as.numeric(requested_timestamp), history$timestamp)
+    if (index == 0L) return(list(signed_quantity = 0, last_px = NA_real_))
+    return(list(signed_quantity = as.numeric(history$signed_quantity[index]), last_px = as.numeric(history$last_px[index])))
+  }
   snapshots <- exchange$step_snapshots
   if (is.null(snapshots) || !nrow(snapshots) || is.na(requested_timestamp)) {
     return(list(signed_quantity = 0, last_px = NA_real_))
@@ -191,9 +214,16 @@ sim_portfolio_execution_quality <- function(exchange, agent_id = NULL, summary =
 }
 
 #' @keywords internal
-.portfolio_quality_equity <- function(exchange, agent_id, timestamp) {
+.portfolio_quality_equity <- function(exchange, agent_id, timestamp, context = NULL) {
   requested_agent_id <- as.character(agent_id)
   requested_timestamp <- timestamp
+  if (!is.null(context)) {
+    history <- context$accounts[[requested_agent_id]]
+    if (is.null(history) || !nrow(history) || is.na(requested_timestamp)) return(NA_real_)
+    index <- findInterval(as.numeric(requested_timestamp), history$timestamp)
+    if (index == 0L) return(NA_real_)
+    return(as.numeric(history$equity[index]))
+  }
   snapshots <- exchange$step_snapshots
   if (is.null(snapshots) || !nrow(snapshots) || is.na(requested_timestamp)) return(NA_real_)
   rows <- snapshots[snapshots$agent_id == requested_agent_id & snapshots$timestamp <= requested_timestamp]
@@ -202,6 +232,51 @@ sim_portfolio_execution_quality <- function(exchange, agent_id = NULL, summary =
   account <- .aggregate_account_snapshots(rows[rows$timestamp == latest_timestamp], latest = TRUE)
   value <- account$equity[account$agent_id == requested_agent_id]
   if (length(value)) as.numeric(value[1L]) else NA_real_
+}
+
+#' @keywords internal
+.portfolio_quality_key <- function(agent_id, asset_id, rebalance_id = NULL) {
+  if (is.null(rebalance_id)) return(paste(as.character(agent_id), as.integer(asset_id), sep = "\r"))
+  paste(as.character(agent_id), as.integer(asset_id), as.character(rebalance_id), sep = "\r")
+}
+
+#' @keywords internal
+.portfolio_execution_quality_context <- function(exchange) {
+  snapshots <- data.table::copy(exchange$step_snapshots)
+  positions <- list()
+  accounts <- list()
+  if (nrow(snapshots)) {
+    data.table::setorderv(snapshots, c("agent_id", "asset_id", "timestamp"))
+    for (index in split(seq_len(nrow(snapshots)), .portfolio_quality_key(snapshots$agent_id, snapshots$asset_id))) {
+      rows <- snapshots[index]
+      positions[[.portfolio_quality_key(rows$agent_id[1L], rows$asset_id[1L])]] <- data.table::data.table(
+        timestamp = as.numeric(rows$timestamp),
+        signed_quantity = as.numeric(rows$pos_dir) * as.numeric(rows$ctr_unit),
+        last_px = as.numeric(rows$last_px)
+      )
+    }
+    account_rows <- .aggregate_account_snapshots(sim_account(snapshots), latest = FALSE)
+    data.table::setorderv(account_rows, c("agent_id", "timestamp"))
+    for (index in split(seq_len(nrow(account_rows)), account_rows$agent_id)) {
+      rows <- account_rows[index]
+      accounts[[as.character(rows$agent_id[1L])]] <- data.table::data.table(
+        timestamp = as.numeric(rows$timestamp), equity = as.numeric(rows$equity)
+      )
+    }
+  }
+  make_groups <- function(table) {
+    if (!nrow(table)) return(list())
+    keys <- .portfolio_quality_key(table$agent_id, table$asset_id, table$rebalance_id)
+    groups <- split(seq_len(nrow(table)), keys)
+    lapply(groups, function(index) data.table::copy(table[index]))
+  }
+  list(
+    assets = data.table::copy(exchange$assets),
+    positions = positions,
+    accounts = accounts,
+    orders = make_groups(exchange$agent_orders),
+    fills = make_groups(exchange$portfolio_fills)
+  )
 }
 
 #' @keywords internal
