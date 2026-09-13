@@ -335,8 +335,10 @@ sim_exchange_step <- function(exchange, bars) {
 #' @keywords internal
 .sim_exchange_step_portfolio <- function(exchange, new_bars) {
   profile_timings <- exchange$.profile_timings %||% NULL
+  append_started <- .sim_profile_start(exchange)
   exchange$market_events <- data.table::rbindlist(list(exchange$market_events, new_bars), fill = TRUE)
   data.table::setorderv(new_bars, intersect(c("timestamp", "asset_id"), names(new_bars)))
+  .sim_profile_add(exchange, "durable_append_bind", append_started)
   step_results <- list()
   new_event_list <- list()
   timestamps <- unique(new_bars$timestamp)
@@ -344,12 +346,14 @@ sim_exchange_step <- function(exchange, bars) {
   for (ts_val in timestamps) {
     batch <- new_bars[timestamp == ts_val]
     asset_ids <- as.integer(batch$asset_id)
-    agents <- unique(unlist(lapply(asset_ids, function(asset_id) {
-      .exchange_agents_to_step(exchange, batch$timestamp[1L], asset_id = asset_id)
-    }), use.names = FALSE))
+    boundary_index <- .portfolio_boundary_step_index(exchange, batch$timestamp[1L])
+    registered_agents <- if (nrow(exchange$agents)) exchange$agents$agent_id[exchange$agents$status != "removed"] else character()
+    order_agents <- unlist(boundary_index$order_agents_by_asset[as.character(asset_ids)], use.names = FALSE)
+    agents <- unique(c(registered_agents, order_agents))
     if (!length(agents)) next
 
     for (agent_id in agents) {
+      state_started <- .sim_profile_start(exchange)
       permitted <- vapply(asset_ids, function(asset_id) .portfolio_agent_asset_allowed(exchange, agent_id, asset_id), logical(1L))
       for (asset_id in asset_ids[!permitted]) .portfolio_reject_forbidden_orders(exchange, agent_id, asset_id)
       agent_batch <- batch[permitted]
@@ -360,13 +364,8 @@ sim_exchange_step <- function(exchange, bars) {
       state_or_order <- vapply(seq_len(nrow(agent_batch)), function(i) {
         asset_id <- as.integer(agent_batch$asset_id[i])
         state_key <- .agent_state_key(agent_id, asset_id)
-        has_state <- !is.null(exchange$agent_states[[state_key]])
-        has_order <- any(
-          exchange$agent_orders$agent_id == agent_id &
-            exchange$agent_orders$asset_id == asset_id &
-            exchange$agent_orders$status == "accepted" &
-            exchange$agent_orders$qty_type == "contracts"
-        )
+        has_state <- state_key %in% boundary_index$state_keys
+        has_order <- state_key %in% boundary_index$accepted_order_keys
         has_state || has_order
       }, logical(1L))
       agent_batch <- agent_batch[state_or_order]
@@ -378,7 +377,10 @@ sim_exchange_step <- function(exchange, bars) {
         .ensure_agent_account(exchange, agent_id, asset_id = asset$asset_id, symbol = asset$symbol, agent_type = "human")
         state_key <- .agent_state_key(agent_id, asset$asset_id)
         states[[as.character(asset$asset_id)]] <- .sync_state_cash_from_account(exchange, agent_id, exchange$agent_states[[state_key]])
-        orders <- .exchange_orders_for_bar(exchange, agent_batch$timestamp[i], agent_id = agent_id, asset_id = asset$asset_id)
+        orders <- .exchange_orders_for_bar(
+          exchange, agent_batch$timestamp[i], agent_id = agent_id, asset_id = asset$asset_id,
+          candidate_orders = boundary_index$eligible_orders[[state_key]] %||% exchange$agent_orders[0]
+        )
         if (nrow(orders) > 0L) {
           data.table::set(orders, j = "asset_id", value = asset$asset_id)
           data.table::set(orders, j = "symbol", value = asset$symbol)
@@ -399,9 +401,11 @@ sim_exchange_step <- function(exchange, bars) {
       step_config$portfolio_margin_floor <- as.numeric(exchange$config$portfolio_margin_floor %||% exchange$config$mmr %||% 0.02)
       attr(states, "tradesimr_profile_timings") <- profile_timings
       step_args <- c(list(states = states, bars = agent_batch, orders = orders), step_config)
+      .sim_profile_add(exchange, "exchange_state_updates", state_started)
       step <- do.call(sim_portfolio_step, step_args)
 
       ledger_started <- proc.time()[["elapsed"]]
+      state_started <- .sim_profile_start(exchange)
       exchange$agent_accounts[[as.character(agent_id)]]$cash <- as.numeric(step$cash %||% 0)
       exchange$agent_accounts[[as.character(agent_id)]]$liquidated <- isTRUE(step$liquidated)
       for (asset_id in names(step$states)) {
@@ -418,19 +422,25 @@ sim_exchange_step <- function(exchange, bars) {
           data.table::set(step$events, j = "symbol", value = symbols)
         }
         new_event_list[[length(new_event_list) + 1L]] <- step$events
+        .sim_profile_add(exchange, "exchange_state_updates", state_started)
+        append_started <- .sim_profile_start(exchange)
         .mark_orders_from_events(exchange, orders, step$events)
+        .sim_profile_add(exchange, "durable_append_bind", append_started)
+        state_started <- .sim_profile_start(exchange)
       }
       account_snapshots <- .agent_position_snapshots(exchange, agent_id, agent_batch$timestamp[1L])
       if (nrow(account_snapshots) > 0L) {
         data.table::set(account_snapshots, j = "maintenance_margin", value = as.numeric(step$maintenance_margin %||% 0))
       }
       step_results[[length(step_results) + 1L]] <- account_snapshots
+      .sim_profile_add(exchange, "exchange_state_updates", state_started)
       if (is.environment(profile_timings)) {
         profile_timings$ledger <- (profile_timings$ledger %||% 0) + (proc.time()[["elapsed"]] - ledger_started)
       }
     }
   }
 
+  append_started <- .sim_profile_start(exchange)
   new_snapshots <- data.table::rbindlist(step_results, fill = TRUE)
   exchange$new_events <- data.table::rbindlist(new_event_list, fill = TRUE)
   accumulator <- exchange$.bulk_accumulator %||% NULL
@@ -449,6 +459,7 @@ sim_exchange_step <- function(exchange, bars) {
   data.table::setattr(exchange$result, "orders", sim_orders(exchange$step_events))
   exchange$last_events <- exchange$step_events
   exchange$last_bar_count <- nrow(exchange$market_events)
+  .sim_profile_add(exchange, "durable_append_bind", append_started)
   exchange$result
 }
 
@@ -854,23 +865,27 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
 }
 
 #' @keywords internal
-.exchange_orders_for_bar <- function(exchange, timestamp, agent_id = NULL, asset_id = NULL) {
+.exchange_orders_for_bar <- function(exchange, timestamp, agent_id = NULL, asset_id = NULL, candidate_orders = NULL) {
   bar_timestamp <- timestamp
-  orders <- exchange$agent_orders[
-    exchange$agent_orders$status == "accepted" &
-      exchange$agent_orders$qty_type == "contracts" &
-      exchange$agent_orders$timestamp <= bar_timestamp
-  ]
-  if ("eligible_after" %in% names(orders)) {
-    orders <- orders[is.na(eligible_after) | eligible_after < bar_timestamp]
-  }
-  if (!is.null(agent_id)) {
-    requested_agent_id <- as.character(agent_id)
-    orders <- orders[orders[["agent_id"]] == requested_agent_id]
-  }
-  if (!is.null(asset_id) && "asset_id" %in% names(orders)) {
-    requested_asset_id <- as.integer(asset_id)
-    orders <- orders[orders[["asset_id"]] == requested_asset_id]
+  if (is.null(candidate_orders)) {
+    orders <- exchange$agent_orders[
+      exchange$agent_orders$status == "accepted" &
+        exchange$agent_orders$qty_type == "contracts" &
+        exchange$agent_orders$timestamp <= bar_timestamp
+    ]
+    if ("eligible_after" %in% names(orders)) {
+      orders <- orders[is.na(eligible_after) | eligible_after < bar_timestamp]
+    }
+    if (!is.null(agent_id)) {
+      requested_agent_id <- as.character(agent_id)
+      orders <- orders[orders[["agent_id"]] == requested_agent_id]
+    }
+    if (!is.null(asset_id) && "asset_id" %in% names(orders)) {
+      requested_asset_id <- as.integer(asset_id)
+      orders <- orders[orders[["asset_id"]] == requested_asset_id]
+    }
+  } else {
+    orders <- data.table::copy(candidate_orders)
   }
   if (nrow(orders) == 0L) {
     return(data.table::data.table(
@@ -1003,6 +1018,35 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
     fee_aware_target = fee_aware_target,
     rebalance_id = rebalance_id,
     target_weight = target_weight
+  )
+}
+
+#' @keywords internal
+.portfolio_boundary_step_index <- function(exchange, timestamp) {
+  bar_timestamp <- timestamp
+  orders <- exchange$agent_orders
+  accepted <- orders[orders$status == "accepted" & orders$qty_type == "contracts"]
+  accepted_keys <- if (nrow(accepted)) .agent_state_key(accepted$agent_id, accepted$asset_id) else character()
+  order_agents <- accepted[accepted$timestamp <= bar_timestamp]
+  order_agents_by_asset <- if (nrow(order_agents)) {
+    split(as.character(order_agents$agent_id), as.character(order_agents$asset_id))
+  } else {
+    list()
+  }
+  eligible <- order_agents
+  if ("eligible_after" %in% names(eligible)) {
+    eligible <- eligible[is.na(eligible_after) | eligible_after < bar_timestamp]
+  }
+  eligible_orders <- if (nrow(eligible)) {
+    split(eligible, .agent_state_key(eligible$agent_id, eligible$asset_id))
+  } else {
+    list()
+  }
+  list(
+    state_keys = names(exchange$agent_states),
+    accepted_order_keys = unique(accepted_keys),
+    order_agents_by_asset = order_agents_by_asset,
+    eligible_orders = eligible_orders
   )
 }
 

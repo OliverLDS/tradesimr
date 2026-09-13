@@ -61,12 +61,13 @@ sim_portfolio_market_step <- function(exchange,
   .portfolio_apply_execution_config(exchange, execution)
 
   sim_exchange_step(exchange, boundary_bars)
+  bookkeeping_started <- .sim_profile_start(exchange)
   exchange$portfolio_market_boundaries <- data.table::rbindlist(list(
     exchange$portfolio_market_boundaries,
     boundary_bars[, .(timestamp, symbol, asset_id)]
   ), fill = TRUE)
   fills <- .portfolio_fills_for_events(exchange, exchange$new_events)
-  list(
+  result <- list(
     timestamp = boundary_bars$timestamp[1L],
     bars = data.table::copy(boundary_bars),
     fills = fills,
@@ -81,6 +82,26 @@ sim_portfolio_market_step <- function(exchange,
       message = "Completed market bars accepted; only earlier eligible orders were executed."
     )
   )
+  .sim_profile_add(exchange, "boundary_snapshot_bookkeeping", bookkeeping_started)
+  result
+}
+
+#' @keywords internal
+.portfolio_market_step_compact <- function(exchange,
+                                           bars,
+                                           execution = sim_portfolio_execution()) {
+  stopifnot(inherits(exchange, "tradesimr_exchange"))
+  execution <- .portfolio_validate_execution(execution)
+  boundary_bars <- .portfolio_validate_decision_bars(exchange, bars)
+  .portfolio_require_one_timestamp(boundary_bars)
+  .portfolio_require_new_bars(exchange, boundary_bars)
+  .portfolio_apply_execution_config(exchange, execution)
+  sim_exchange_step(exchange, boundary_bars)
+  exchange$portfolio_market_boundaries <- data.table::rbindlist(list(
+    exchange$portfolio_market_boundaries,
+    boundary_bars[, .(timestamp, symbol, asset_id)]
+  ), fill = TRUE)
+  invisible(exchange)
 }
 
 #' Submit one Arena target-weight decision after a market boundary
@@ -170,6 +191,7 @@ sim_portfolio_target_submit_batch <- function(exchange,
   .portfolio_require_one_timestamp(decision_bars)
   .portfolio_require_accepted_boundary(exchange, decision_bars)
   .portfolio_apply_execution_config(exchange, execution)
+  bookkeeping_started <- .sim_profile_start(exchange)
   prepared <- vector("list", length(decisions))
   names(prepared) <- names(decisions)
   for (i in seq_along(decisions)) {
@@ -189,7 +211,12 @@ sim_portfolio_target_submit_batch <- function(exchange,
     .portfolio_set_agent_universe(exchange, agent_id, allowed_assets$asset_id)
     prepared[[i]] <- list(agent_id = agent_id, decision = decision, allowed_assets = allowed_assets)
   }
-  context <- .portfolio_submission_context(exchange)
+  context <- .portfolio_submission_context(
+    exchange,
+    decision_bars = decision_bars,
+    agent_ids = vapply(prepared, `[[`, character(1L), "agent_id")
+  )
+  .sim_profile_add(exchange, "boundary_snapshot_bookkeeping", bookkeeping_started)
   submissions <- vector("list", length(decisions))
   names(submissions) <- names(decisions)
   for (i in seq_along(prepared)) {
@@ -207,12 +234,70 @@ sim_portfolio_target_submit_batch <- function(exchange,
       context = context
     )
   }
-  list(
+  bookkeeping_started <- .sim_profile_start(exchange)
+  result <- list(
     timestamp = decision_bars$timestamp[1L],
     positions = data.table::copy(context$positions),
     account = data.table::copy(context$account),
     submissions = submissions
   )
+  .sim_profile_add(exchange, "boundary_snapshot_bookkeeping", bookkeeping_started)
+  result
+}
+
+#' @keywords internal
+.portfolio_target_submit_batch_compact <- function(exchange,
+                                                    bars,
+                                                    decisions,
+                                                    execution = sim_portfolio_execution()) {
+  stopifnot(inherits(exchange, "tradesimr_exchange"))
+  if (!is.list(decisions) || is.null(names(decisions)) || any(!nzchar(names(decisions))) || anyDuplicated(names(decisions))) {
+    stop("`decisions` must be a named list keyed by unique agent ids.", call. = FALSE)
+  }
+  execution <- .portfolio_validate_execution(execution)
+  decision_bars <- .portfolio_validate_decision_bars(exchange, bars)
+  .portfolio_require_one_timestamp(decision_bars)
+  .portfolio_require_accepted_boundary(exchange, decision_bars)
+  .portfolio_apply_execution_config(exchange, execution)
+  prepared <- vector("list", length(decisions))
+  names(prepared) <- names(decisions)
+  for (i in seq_along(decisions)) {
+    agent_id <- names(decisions)[i]
+    decision <- decisions[[i]]
+    if (is.null(decision)) decision <- list(target_weights = NULL)
+    if (!is.list(decision)) {
+      stop("Each `decisions` element must be a list or NULL.", call. = FALSE)
+    }
+    unknown <- setdiff(names(decision), c("target_weights", "decision_label", "allowed_symbols", "allowed_asset_ids"))
+    if (length(unknown)) stop("Unknown decision field(s): ", paste(unknown, collapse = ", "), call. = FALSE)
+    first_asset <- .bar_asset_key(decision_bars[1L])
+    .ensure_agent_account(exchange, agent_id, asset_id = first_asset$asset_id, symbol = first_asset$symbol, agent_type = "arena")
+    allowed_assets <- .portfolio_resolve_allowed_assets(
+      exchange, agent_id, decision$allowed_symbols %||% NULL, decision$allowed_asset_ids %||% NULL
+    )
+    .portfolio_set_agent_universe(exchange, agent_id, allowed_assets$asset_id)
+    prepared[[i]] <- list(agent_id = agent_id, decision = decision, allowed_assets = allowed_assets)
+  }
+  context <- .portfolio_submission_context(
+    exchange,
+    decision_bars = decision_bars,
+    agent_ids = vapply(prepared, `[[`, character(1L), "agent_id")
+  )
+  for (entry in prepared) {
+    .portfolio_submit_target(
+      exchange = exchange,
+      agent_id = entry$agent_id,
+      decision_bars = decision_bars,
+      target_weights = entry$decision$target_weights %||% NULL,
+      execution = execution,
+      decision_label = entry$decision$decision_label %||% "target_weight",
+      fills = sim_schemas()$events[0],
+      allowed_assets = entry$allowed_assets,
+      context = context,
+      .compact = TRUE
+    )
+  }
+  invisible(exchange)
 }
 
 #' Step one agent portfolio from target weights
@@ -300,8 +385,10 @@ sim_portfolio_target_step <- function(exchange,
                                      decision_label,
                                      fills,
                                      allowed_assets,
-                                     context = NULL) {
+                                     context = NULL,
+                                     .compact = FALSE) {
   if (is.null(target_weights)) {
+    if (isTRUE(.compact)) return(invisible(NULL))
     return(.portfolio_step_result(exchange, agent_id, fills = fills, context = context, outcomes = .portfolio_outcome_row(
       rebalance_id = NA_character_, timestamp = decision_bars$timestamp[1L], agent_id = agent_id,
       status = "no_decision", message = "No target-weight decision; prior positions were retained."
@@ -311,24 +398,32 @@ sim_portfolio_target_step <- function(exchange,
   timestamp <- decision_bars$timestamp[1L]
   rebalance_id <- paste0("RB", sprintf("%06d", exchange$next_rebalance_id %||% 1L))
   exchange$next_rebalance_id <- as.integer(exchange$next_rebalance_id %||% 1L) + 1L
+  planning_started <- .sim_profile_start(exchange)
   targets <- tryCatch(
     .portfolio_normalize_targets(exchange, target_weights, execution$max_gross_weight, allowed_assets),
     error = function(error) error
   )
   if (inherits(targets, "error")) {
     message <- conditionMessage(targets)
+    append_started <- .sim_profile_start(exchange)
     exchange$portfolio_rebalances <- data.table::rbindlist(list(exchange$portfolio_rebalances, data.table::data.table(
       rebalance_id = rebalance_id, timestamp = timestamp, agent_id = agent_id,
       status = "rejected", execution_timing = execution$timing, fee_rt = execution$fee_rt,
       slippage = execution$slippage, spread = execution$spread, message = message
     )), fill = TRUE)
+    .sim_profile_add(exchange, "durable_append_bind", append_started)
+    if (isTRUE(.compact)) return(invisible(NULL))
     return(.portfolio_step_result(exchange, agent_id, rebalance_id, fills = fills, context = context, outcomes = .portfolio_outcome_row(
       rebalance_id, timestamp, agent_id, "rejected", message
     )))
   }
+  .sim_profile_add(exchange, "target_planning", planning_started)
+  supersession_started <- .sim_profile_start(exchange)
   supersession <- .portfolio_supersede_pending_targets(
     exchange, agent_id, targets$asset_id, rebalance_id, timestamp
   )
+  .sim_profile_add(exchange, "supersession_checks", supersession_started)
+  planning_started <- .sim_profile_start(exchange)
   supersedes_for_asset <- function(asset_ids) {
     out <- rep(NA_character_, length(asset_ids))
     index <- match(as.integer(asset_ids), supersession$by_asset$asset_id)
@@ -337,6 +432,8 @@ sim_portfolio_target_step <- function(exchange,
     out
   }
   plan <- .portfolio_rebalance_plan(exchange, agent_id, targets, decision_bars, execution, allowed_assets, context = context)
+  .sim_profile_add(exchange, "target_planning", planning_started)
+  append_started <- .sim_profile_start(exchange)
   target_rows <- plan$targets[, .(
     rebalance_id,
     timestamp,
@@ -365,6 +462,8 @@ sim_portfolio_target_step <- function(exchange,
       supersedes_rebalance_id = supersession$rebalance_id,
       message = "All target quantities already match the current portfolio."
     )), fill = TRUE)
+    .sim_profile_add(exchange, "durable_append_bind", append_started)
+    if (isTRUE(.compact)) return(invisible(NULL))
     return(.portfolio_step_result(exchange, agent_id, rebalance_id, fills = fills, context = context, outcomes = .portfolio_outcome_row(
       rebalance_id, timestamp, agent_id, "no_op", "No rebalance was required."
     )))
@@ -385,6 +484,8 @@ sim_portfolio_target_step <- function(exchange,
   exchange$event_log <- data.table::rbindlist(list(exchange$event_log, data.table::data.table(
     timestamp = timestamp, source = "portfolio_rebalance", event = "accepted", ref_id = rebalance_id
   )), fill = TRUE)
+  .sim_profile_add(exchange, "durable_append_bind", append_started)
+  if (isTRUE(.compact)) return(invisible(NULL))
   .portfolio_step_result(exchange, agent_id, rebalance_id, fills = fills, context = context, outcomes = plan$targets[, .(
     rebalance_id, timestamp, agent_id, symbol, asset_id, status = outcome_status, message = outcome_message
   )])
@@ -637,32 +738,46 @@ sim_portfolio_export <- function(exchange,
     stop("Agent has a non-zero position outside its allowed universe.", call. = FALSE)
   }
   latest <- data.table::copy(targets)
-  latest[, decision_price := vapply(seq_len(.N), function(i) {
-    bar_price <- bars[asset_id == latest$asset_id[i], close]
-    if (length(bar_price)) return(as.numeric(bar_price[1L]))
-    pos_price <- if (nrow(positions) && "asset_id" %in% names(positions)) positions[positions$asset_id == latest$asset_id[i], last_px] else numeric()
-    if (length(pos_price)) return(as.numeric(pos_price[1L]))
-    market_events <- if (is.null(context)) exchange$market_events else context$market_events
-    historical <- market_events[asset_id == latest$asset_id[i], close]
-    if (length(historical)) return(as.numeric(tail(historical, 1L)))
-    NA_real_
-  }, numeric(1L))]
+  planning_rows <- if (!is.null(context)) context$planning[context$planning$agent_id == requested_agent_id] else data.table::data.table()
+  if (nrow(planning_rows)) {
+    index <- match(latest$asset_id, planning_rows$asset_id)
+    latest[, `:=`(
+      decision_price = as.numeric(planning_rows$decision_price[index]),
+      current_signed_qty = as.numeric(planning_rows$current_signed_qty[index]),
+      realized_weight_before = as.numeric(planning_rows$realized_weight_before[index])
+    )]
+  } else {
+    latest[, decision_price := vapply(seq_len(.N), function(i) {
+      bar_price <- bars[asset_id == latest$asset_id[i], close]
+      if (length(bar_price)) return(as.numeric(bar_price[1L]))
+      pos_price <- if (nrow(positions) && "asset_id" %in% names(positions)) positions[positions$asset_id == latest$asset_id[i], last_px] else numeric()
+      if (length(pos_price)) return(as.numeric(pos_price[1L]))
+      market_events <- if (is.null(context)) exchange$market_events else context$market_events
+      historical <- market_events[asset_id == latest$asset_id[i], close]
+      if (length(historical)) return(as.numeric(tail(historical, 1L)))
+      NA_real_
+    }, numeric(1L))]
+  }
   if (any(!is.finite(latest$decision_price) | latest$decision_price <= 0)) {
     missing <- latest$symbol[!is.finite(latest$decision_price) | latest$decision_price <= 0]
     stop("Cannot value target symbol(s) without a completed or carried price: ", paste(missing, collapse = ", "), call. = FALSE)
   }
   latest[, desired_signed_qty := round((target_weight * equity / (decision_price * contract_size)) / qty_step) * qty_step]
   latest[, decision_equity := equity]
-  latest[, current_signed_qty := vapply(asset_id, function(requested_asset_id) {
-    row <- if (nrow(positions) && "asset_id" %in% names(positions)) positions[positions$asset_id == requested_asset_id] else positions[0]
-    if (!nrow(row)) return(0)
-    as.numeric(row$pos_dir[1L] * row$ctr_unit[1L])
-  }, numeric(1L))]
-  latest[, realized_weight_before := vapply(seq_len(.N), function(i) {
-    row <- if (nrow(positions) && "asset_id" %in% names(positions)) positions[positions$asset_id == latest$asset_id[i]] else positions[0]
-    if (!nrow(row) || equity <= 0) return(0)
-    as.numeric(row$notional[1L] / equity)
-  }, numeric(1L))]
+  if (!"current_signed_qty" %in% names(latest)) {
+    latest[, current_signed_qty := vapply(asset_id, function(requested_asset_id) {
+      row <- if (nrow(positions) && "asset_id" %in% names(positions)) positions[positions$asset_id == requested_asset_id] else positions[0]
+      if (!nrow(row)) return(0)
+      as.numeric(row$pos_dir[1L] * row$ctr_unit[1L])
+    }, numeric(1L))]
+  }
+  if (!"realized_weight_before" %in% names(latest)) {
+    latest[, realized_weight_before := vapply(seq_len(.N), function(i) {
+      row <- if (nrow(positions) && "asset_id" %in% names(positions)) positions[positions$asset_id == latest$asset_id[i]] else positions[0]
+      if (!nrow(row) || equity <= 0) return(0)
+      as.numeric(row$notional[1L] / equity)
+    }, numeric(1L))]
+  }
   latest[, delta_qty := desired_signed_qty - current_signed_qty]
   latest[, `:=`(outcome_status = data.table::fifelse(abs(delta_qty) <= qty_step / 2, "no_op", "accepted"), outcome_message = data.table::fifelse(abs(delta_qty) <= qty_step / 2, "Target already matches rounded contract quantity.", "Target translated to executable contract actions."))]
   orders <- data.table::rbindlist(lapply(seq_len(nrow(latest)), function(i) .portfolio_asset_actions(latest[i])), fill = TRUE)
@@ -903,11 +1018,57 @@ sim_portfolio_export <- function(exchange,
 }
 
 #' @keywords internal
-.portfolio_submission_context <- function(exchange) {
-  list(
-    account = data.table::copy(sim_exchange_account(exchange)),
-    positions = data.table::copy(sim_exchange_positions(exchange)),
-    market_events = data.table::copy(exchange$market_events),
-    valuations = .portfolio_valuation_snapshot(exchange)
+.portfolio_submission_context <- function(exchange, decision_bars = NULL, agent_ids = NULL) {
+  account <- data.table::copy(sim_exchange_account(exchange))
+  positions <- data.table::copy(sim_exchange_positions(exchange))
+  market_events <- data.table::copy(exchange$market_events)
+  valuations <- .portfolio_valuation_snapshot(exchange)
+  context <- list(
+    account = account,
+    positions = positions,
+    market_events = market_events,
+    valuations = valuations,
+    planning = data.table::data.table()
   )
+  if (is.null(decision_bars) || is.null(agent_ids) || !length(agent_ids)) return(context)
+
+  assets <- sim_assets(exchange)[status == "active", .(symbol, asset_id)]
+  planning <- data.table::CJ(agent_id = unique(as.character(agent_ids)), asset_id = assets$asset_id, unique = TRUE)
+  planning[, symbol := assets$symbol[match(asset_id, assets$asset_id)]]
+  bar_price <- data.table::copy(decision_bars)[, .(asset_id, bar_close = as.numeric(close))]
+  planning[, bar_close := bar_price$bar_close[match(asset_id, bar_price$asset_id)]]
+  valuation_price <- valuations[, .(asset_id, valuation_price = as.numeric(last_px))]
+  planning[, valuation_price := valuation_price$valuation_price[match(asset_id, valuation_price$asset_id)]]
+  position_index <- if (nrow(positions)) match(
+    paste(planning$agent_id, planning$asset_id, sep = "\r"),
+    paste(positions$agent_id, positions$asset_id, sep = "\r")
+  ) else rep.int(NA_integer_, nrow(planning))
+  position_price <- rep.int(NA_real_, nrow(planning))
+  current_signed_qty <- rep.int(0, nrow(planning))
+  position_notional <- rep.int(NA_real_, nrow(planning))
+  if (nrow(positions)) {
+    matched <- !is.na(position_index)
+    position_price[matched] <- as.numeric(positions$last_px[position_index[matched]])
+    current_signed_qty[matched] <- as.numeric(positions$pos_dir[position_index[matched]]) * as.numeric(positions$ctr_unit[position_index[matched]])
+    position_notional[matched] <- as.numeric(positions$notional[position_index[matched]])
+  }
+  planning[, `:=`(
+    position_price = position_price,
+    current_signed_qty = current_signed_qty,
+    position_notional = position_notional
+  )]
+  planning[, decision_price := data.table::fcoalesce(bar_close, position_price, valuation_price)]
+  equity_rows <- if (all(c("agent_id", "equity") %in% names(account))) {
+    account[, .(agent_id, equity = as.numeric(equity))]
+  } else {
+    data.table::data.table(agent_id = character(), equity = numeric())
+  }
+  planning[, decision_equity := equity_rows$equity[match(agent_id, equity_rows$agent_id)]]
+  planning[, realized_weight_before := data.table::fifelse(
+    is.finite(decision_equity) & decision_equity != 0 & is.finite(position_notional),
+    position_notional / decision_equity,
+    0
+  )]
+  context$planning <- planning[]
+  context
 }

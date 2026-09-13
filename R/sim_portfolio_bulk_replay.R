@@ -69,6 +69,12 @@ sim_portfolio_target_replay <- function(exchange,
   timings$orchestration <- 0
   timings$portfolio_step_rcpp <- 0
   timings$ledger <- 0
+  timings$boundary_normalization <- 0
+  timings$target_planning <- 0
+  timings$exchange_state_updates <- 0
+  timings$durable_append_bind <- 0
+  timings$supersession_checks <- 0
+  timings$boundary_snapshot_bookkeeping <- 0
   timings$execution_quality <- 0
   timings$serialization_export <- 0
   exchange$.bulk_accumulator <- accumulator
@@ -81,8 +87,11 @@ sim_portfolio_target_replay <- function(exchange,
   started <- proc.time()[["elapsed"]]
   for (boundary_timestamp in unique(bars$timestamp)) {
     boundary_started <- proc.time()[["elapsed"]]
+    normalization_started <- .sim_profile_start(exchange)
     boundary_bars <- bars[as.numeric(timestamp) == as.numeric(boundary_timestamp)]
-    sim_portfolio_market_step(exchange, boundary_bars, execution)
+    .sim_profile_add(exchange, "boundary_normalization", normalization_started)
+    .portfolio_market_step_compact(exchange, boundary_bars, execution)
+    normalization_started <- .sim_profile_start(exchange)
     decision_rows <- panel[as.numeric(timestamp) == as.numeric(boundary_timestamp)]
     if (nrow(decision_rows)) {
       decisions <- lapply(split(decision_rows, decision_rows$agent_id), function(rows) {
@@ -92,7 +101,10 @@ sim_portfolio_target_replay <- function(exchange,
           decision_label = if ("decision_label" %in% names(rows)) as.character(rows$decision_label[1L]) else "target_weight"
         )
       })
-      sim_portfolio_target_submit_batch(exchange, boundary_bars, decisions, execution)
+      .sim_profile_add(exchange, "boundary_normalization", normalization_started)
+      .portfolio_target_submit_batch_compact(exchange, boundary_bars, decisions, execution)
+    } else {
+      .sim_profile_add(exchange, "boundary_normalization", normalization_started)
     }
     if (isTRUE(profile)) {
       timings$orchestration <- timings$orchestration + (proc.time()[["elapsed"]] - boundary_started)
@@ -137,4 +149,18 @@ sim_portfolio_target_replay <- function(exchange,
     exports = exports,
     timings = as.list(timings)
   )
+}
+
+#' @keywords internal
+.sim_profile_start <- function(exchange) {
+  if (!is.environment(exchange$.profile_timings %||% NULL)) return(NULL)
+  proc.time()[["elapsed"]]
+}
+
+#' @keywords internal
+.sim_profile_add <- function(exchange, category, started) {
+  timings <- exchange$.profile_timings %||% NULL
+  if (!is.environment(timings) || is.null(started)) return(invisible(NULL))
+  timings[[category]] <- (timings[[category]] %||% 0) + (proc.time()[["elapsed"]] - started)
+  invisible(NULL)
 }
