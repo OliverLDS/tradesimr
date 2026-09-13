@@ -310,9 +310,19 @@ sim_exchange_step <- function(exchange, bars) {
   }
 
   new_snapshots <- data.table::rbindlist(step_results, fill = TRUE)
-  exchange$step_snapshots <- data.table::rbindlist(list(exchange$step_snapshots, new_snapshots), fill = TRUE)
   exchange$new_events <- data.table::rbindlist(new_event_list, fill = TRUE)
-  exchange$step_events <- data.table::rbindlist(list(exchange$step_events, exchange$new_events), fill = TRUE)
+  accumulator <- exchange$.bulk_accumulator %||% NULL
+  if (is.environment(accumulator)) {
+    accumulator$step_snapshots[[length(accumulator$step_snapshots) + 1L]] <- new_snapshots
+    accumulator$step_events[[length(accumulator$step_events) + 1L]] <- exchange$new_events
+    # Target translation needs only the latest mark/account snapshot. The
+    # complete durable history is materialized once when bulk replay ends.
+    exchange$step_snapshots <- new_snapshots
+    exchange$step_events <- exchange$new_events
+  } else {
+    exchange$step_snapshots <- data.table::rbindlist(list(exchange$step_snapshots, new_snapshots), fill = TRUE)
+    exchange$step_events <- data.table::rbindlist(list(exchange$step_events, exchange$new_events), fill = TRUE)
+  }
   exchange$result <- exchange$step_snapshots
   data.table::setattr(exchange$result, "market_events", exchange$market_events)
   data.table::setattr(exchange$result, "events", exchange$step_events)
@@ -324,6 +334,7 @@ sim_exchange_step <- function(exchange, bars) {
 
 #' @keywords internal
 .sim_exchange_step_portfolio <- function(exchange, new_bars) {
+  profile_timings <- exchange$.profile_timings %||% NULL
   exchange$market_events <- data.table::rbindlist(list(exchange$market_events, new_bars), fill = TRUE)
   data.table::setorderv(new_bars, intersect(c("timestamp", "asset_id"), names(new_bars)))
   step_results <- list()
@@ -386,9 +397,11 @@ sim_exchange_step <- function(exchange, bars) {
       step_config$cov <- cov
       step_config$shared_cash <- .shared_cash(exchange, agent_id)
       step_config$portfolio_margin_floor <- as.numeric(exchange$config$portfolio_margin_floor %||% exchange$config$mmr %||% 0.02)
+      attr(states, "tradesimr_profile_timings") <- profile_timings
       step_args <- c(list(states = states, bars = agent_batch, orders = orders), step_config)
       step <- do.call(sim_portfolio_step, step_args)
 
+      ledger_started <- proc.time()[["elapsed"]]
       exchange$agent_accounts[[as.character(agent_id)]]$cash <- as.numeric(step$cash %||% 0)
       exchange$agent_accounts[[as.character(agent_id)]]$liquidated <- isTRUE(step$liquidated)
       for (asset_id in names(step$states)) {
@@ -412,13 +425,24 @@ sim_exchange_step <- function(exchange, bars) {
         data.table::set(account_snapshots, j = "maintenance_margin", value = as.numeric(step$maintenance_margin %||% 0))
       }
       step_results[[length(step_results) + 1L]] <- account_snapshots
+      if (is.environment(profile_timings)) {
+        profile_timings$ledger <- (profile_timings$ledger %||% 0) + (proc.time()[["elapsed"]] - ledger_started)
+      }
     }
   }
 
   new_snapshots <- data.table::rbindlist(step_results, fill = TRUE)
-  exchange$step_snapshots <- data.table::rbindlist(list(exchange$step_snapshots, new_snapshots), fill = TRUE)
   exchange$new_events <- data.table::rbindlist(new_event_list, fill = TRUE)
-  exchange$step_events <- data.table::rbindlist(list(exchange$step_events, exchange$new_events), fill = TRUE)
+  accumulator <- exchange$.bulk_accumulator %||% NULL
+  if (is.environment(accumulator)) {
+    accumulator$step_snapshots[[length(accumulator$step_snapshots) + 1L]] <- new_snapshots
+    accumulator$step_events[[length(accumulator$step_events) + 1L]] <- exchange$new_events
+    exchange$step_snapshots <- new_snapshots
+    exchange$step_events <- exchange$new_events
+  } else {
+    exchange$step_snapshots <- data.table::rbindlist(list(exchange$step_snapshots, new_snapshots), fill = TRUE)
+    exchange$step_events <- data.table::rbindlist(list(exchange$step_events, exchange$new_events), fill = TRUE)
+  }
   exchange$result <- exchange$step_snapshots
   data.table::setattr(exchange$result, "market_events", exchange$market_events)
   data.table::setattr(exchange$result, "events", exchange$step_events)

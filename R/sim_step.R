@@ -164,6 +164,9 @@ sim_portfolio_step <- function(states,
   if (!all(dim(cov) == c(nrow(bars), nrow(bars)))) {
     stop("`cov` must be aligned to `bars` and have dimension nrow(bars) x nrow(bars).", call. = FALSE)
   }
+  profile_timings <- attr(states, "tradesimr_profile_timings", exact = TRUE)
+  attr(states, "tradesimr_profile_timings") <- NULL
+  started <- proc.time()[["elapsed"]]
   out <- portfolio_step_rcpp(
     states = states,
     bars = data.frame(
@@ -193,6 +196,10 @@ sim_portfolio_step <- function(states,
     spread = as.numeric(spread),
     rec = isTRUE(record)
   )
+  if (is.environment(profile_timings)) {
+    profile_timings$portfolio_step_rcpp <- (profile_timings$portfolio_step_rcpp %||% 0) +
+      (proc.time()[["elapsed"]] - started)
+  }
   out$events <- if (isTRUE(record)) .portfolio_kernel_events(out$events) else data.table::data.table()
   out
 }

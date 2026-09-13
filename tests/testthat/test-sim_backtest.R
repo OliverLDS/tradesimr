@@ -707,7 +707,9 @@ test_that("optional portfolio margin uses correlation-aware maintenance", {
   sim_exchange_add_bars(reject_exchange, reject_bar)
   sim_submit_order(reject_exchange, "risk-limited", timestamp = reject_exchange$market_events$timestamp[1L], symbol = "VOL", asset_id = 33L, side = "buy", qty = 8, process = TRUE)
   sim_exchange_step(reject_exchange, reject_bar)
-  expect_equal(sim_exchange_orders(reject_exchange)$status, "failed")
+  # Orders expose the durable public terminal status; the C++ event itself
+  # retains its lower-level `failed` status label.
+  expect_equal(sim_exchange_orders(reject_exchange)$status, "rejected")
 })
 
 test_that("C++ portfolio step applies shared-cash portfolio margin before accepting orders", {
