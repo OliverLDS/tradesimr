@@ -10,6 +10,7 @@ sim_portfolio_target_replay(
   target_weights,
   allowed_symbols = NULL,
   execution = sim_portfolio_execution(),
+  rebalance_policy = NULL,
   export_path = NULL,
   profile = FALSE
 )
@@ -28,6 +29,16 @@ agent. When omitted, each agent's universe is inferred from all symbols in
 its panel rows.}
 
 \item{execution}{Execution assumptions from \code{\link[=sim_portfolio_execution]{sim_portfolio_execution()}}.}
+
+\item{rebalance_policy}{Optional policy for sparse deterministic target
+panels. \code{NULL} (the default) preserves historical behavior and submits
+every agent/timestamp target group. When supplied, it must be a list with
+\code{rebalance_due_column} (default \code{"rebalance_due"}) and a non-negative
+\code{drift_tolerance}. A group is submitted only when its due flag is \code{TRUE}
+and either its target vector differs from the last submitted vector or a
+supplied symbol's post-market realized-weight drift exceeds the tolerance.
+A skipped group is an absent decision: it creates no target, rebalance, or
+order record.}
 
 \item{export_path}{Optional directory for public-safe per-agent exports.}
 

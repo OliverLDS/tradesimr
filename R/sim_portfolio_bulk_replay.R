@@ -15,6 +15,15 @@
 #'   agent. When omitted, each agent's universe is inferred from all symbols in
 #'   its panel rows.
 #' @param execution Execution assumptions from [sim_portfolio_execution()].
+#' @param rebalance_policy Optional policy for sparse deterministic target
+#'   panels. `NULL` (the default) preserves historical behavior and submits
+#'   every agent/timestamp target group. When supplied, it must be a list with
+#'   `rebalance_due_column` (default `"rebalance_due"`) and a non-negative
+#'   `drift_tolerance`. A group is submitted only when its due flag is `TRUE`
+#'   and either its target vector differs from the last submitted vector or a
+#'   supplied symbol's post-market realized-weight drift exceeds the tolerance.
+#'   A skipped group is an absent decision: it creates no target, rebalance, or
+#'   order record.
 #' @param export_path Optional directory for public-safe per-agent exports.
 #' @param profile Whether to return wall-time categories.
 #' @return A list with the exchange, durable orders/fills/positions/accounts,
@@ -25,6 +34,7 @@ sim_portfolio_target_replay <- function(exchange,
                                         target_weights,
                                         allowed_symbols = NULL,
                                         execution = sim_portfolio_execution(),
+                                        rebalance_policy = NULL,
                                         export_path = NULL,
                                         profile = FALSE) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
@@ -61,6 +71,7 @@ sim_portfolio_target_replay <- function(exchange,
   if (!is.list(allowed_symbols) || is.null(names(allowed_symbols)) || !all(agent_ids %in% names(allowed_symbols))) {
     stop("`allowed_symbols` must be a named list covering every panel agent.", call. = FALSE)
   }
+  rebalance_policy <- .portfolio_validate_rebalance_policy(rebalance_policy, names(panel))
 
   accumulator <- new.env(parent = emptyenv())
   accumulator$step_snapshots <- list(data.table::copy(exchange$step_snapshots))
@@ -94,15 +105,37 @@ sim_portfolio_target_replay <- function(exchange,
     normalization_started <- .sim_profile_start(exchange)
     decision_rows <- panel[as.numeric(timestamp) == as.numeric(boundary_timestamp)]
     if (nrow(decision_rows)) {
+      policy_context <- if (is.null(rebalance_policy)) NULL else .portfolio_submission_context(
+        exchange,
+        decision_bars = boundary_bars,
+        agent_ids = unique(decision_rows$agent_id)
+      )
       decisions <- lapply(split(decision_rows, decision_rows$agent_id), function(rows) {
+        agent_id <- as.character(rows$agent_id[1L])
         list(
           target_weights = stats::setNames(rows$target_weight, rows$symbol),
-          allowed_symbols = as.character(allowed_symbols[[as.character(rows$agent_id[1L])]]),
+          allowed_symbols = as.character(allowed_symbols[[agent_id]]),
           decision_label = if ("decision_label" %in% names(rows)) as.character(rows$decision_label[1L]) else "target_weight"
         )
       })
+      if (!is.null(rebalance_policy)) {
+        keep <- vapply(names(decisions), function(current_agent_id) {
+          rows <- decision_rows[decision_rows$agent_id == current_agent_id]
+          .portfolio_rebalance_due(
+            exchange = exchange,
+            agent_id = current_agent_id,
+            rows = rows,
+            allowed_symbols = allowed_symbols[[current_agent_id]],
+            policy = rebalance_policy,
+            context = policy_context
+          )
+        }, logical(1L))
+        decisions <- decisions[keep]
+      }
       .sim_profile_add(exchange, "boundary_normalization", normalization_started)
-      .portfolio_target_submit_batch_compact(exchange, boundary_bars, decisions, execution)
+      if (length(decisions)) {
+        .portfolio_target_submit_batch_compact(exchange, boundary_bars, decisions, execution)
+      }
     } else {
       .sim_profile_add(exchange, "boundary_normalization", normalization_started)
     }
@@ -149,6 +182,68 @@ sim_portfolio_target_replay <- function(exchange,
     exports = exports,
     timings = as.list(timings)
   )
+}
+
+#' @keywords internal
+.portfolio_validate_rebalance_policy <- function(policy, panel_columns) {
+  if (is.null(policy)) return(NULL)
+  if (!is.list(policy)) stop("`rebalance_policy` must be NULL or a list.", call. = FALSE)
+  unknown <- setdiff(names(policy), c("rebalance_due_column", "drift_tolerance", "target_tolerance"))
+  if (length(unknown)) stop("Unknown `rebalance_policy` field(s): ", paste(unknown, collapse = ", "), call. = FALSE)
+  due_column <- as.character(policy$rebalance_due_column %||% "rebalance_due")
+  if (length(due_column) != 1L || is.na(due_column) || !nzchar(due_column) || !due_column %in% panel_columns) {
+    stop("`rebalance_policy$rebalance_due_column` must name a column in `target_weights`.", call. = FALSE)
+  }
+  drift_tolerance <- as.numeric(policy$drift_tolerance %||% 0)
+  target_tolerance <- as.numeric(policy$target_tolerance %||% 1e-12)
+  if (length(drift_tolerance) != 1L || !is.finite(drift_tolerance) || drift_tolerance < 0 ||
+      length(target_tolerance) != 1L || !is.finite(target_tolerance) || target_tolerance < 0) {
+    stop("`rebalance_policy` tolerances must be finite non-negative scalars.", call. = FALSE)
+  }
+  list(rebalance_due_column = due_column, drift_tolerance = drift_tolerance, target_tolerance = target_tolerance)
+}
+
+#' @keywords internal
+.portfolio_rebalance_due <- function(exchange,
+                                     agent_id,
+                                     rows,
+                                     allowed_symbols,
+                                     policy,
+                                     context) {
+  requested_agent_id <- as.character(agent_id)
+  due <- rows[[policy$rebalance_due_column]]
+  if (is.logical(due)) {
+    due <- as.logical(due)
+  } else if (is.numeric(due)) {
+    if (any(!is.finite(due) | !due %in% c(0, 1))) stop("`rebalance_due` must be logical or 0/1.", call. = FALSE)
+    due <- as.logical(due)
+  } else {
+    stop("`rebalance_due` must be logical or 0/1.", call. = FALSE)
+  }
+  if (anyNA(due) || length(unique(due)) != 1L) {
+    stop("Every agent/timestamp target group must have one non-missing `rebalance_due` value.", call. = FALSE)
+  }
+  if (!due[1L]) return(FALSE)
+
+  symbols <- as.character(rows$symbol)
+  desired <- as.numeric(rows$target_weight)
+  prior <- exchange$portfolio_targets[
+    agent_id == requested_agent_id & symbol %in% symbols
+  ]
+  changed <- TRUE
+  if (nrow(prior)) {
+    data.table::setorderv(prior, c("timestamp", "rebalance_id"))
+    latest <- prior[, .SD[.N], by = symbol]
+    index <- match(symbols, latest$symbol)
+    changed <- any(is.na(index)) || any(abs(desired - latest$target_weight[index]) > policy$target_tolerance)
+  }
+  if (changed) return(TRUE)
+
+  allowed_assets <- .portfolio_resolve_allowed_assets(exchange, agent_id, allowed_symbols = allowed_symbols)
+  requested_asset_ids <- allowed_assets$asset_id[match(symbols, allowed_assets$symbol)]
+  planning <- context$planning[agent_id == requested_agent_id & asset_id %in% requested_asset_ids]
+  realized <- planning$realized_weight_before[match(requested_asset_ids, planning$asset_id)]
+  any(!is.finite(realized) | abs(desired - realized) > policy$drift_tolerance)
 }
 
 #' @keywords internal

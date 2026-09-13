@@ -155,3 +155,57 @@ test_that("bulk replay retains target no-op outcomes", {
   expect_equal(result$quality$execution_quality, "no_op")
   expect_equal(nrow(result$orders), 0L)
 })
+
+test_that("policy-aware bulk replay matches sparse sequential Arena decisions", {
+  bars <- bulk_replay_bars(5L)
+  timestamps <- unique(bars$timestamp)
+  panel <- data.table::data.table(
+    timestamp = timestamps,
+    agent_id = "policy",
+    symbol = "SPY",
+    target_weight = c(.5, .5, .5, .6, .6),
+    # The third row is due and unchanged, but its post-market drift is nonzero.
+    # The fifth row is not due, so it remains an absent decision.
+    rebalance_due = c(TRUE, FALSE, TRUE, TRUE, FALSE),
+    decision_label = "deterministic"
+  )
+  execution <- sim_portfolio_execution(fee_rt = .0007, lev = 1)
+  sequential <- bulk_replay_exchange()
+  sim_agent_add(sequential, "policy", "human")
+  for (i in seq_along(timestamps)) {
+    boundary <- bars[as.numeric(timestamp) == as.numeric(timestamps[i])]
+    sim_portfolio_market_step(sequential, boundary, execution)
+    if (i %in% c(1L, 3L, 4L)) {
+      sim_portfolio_target_submit_batch(sequential, boundary, list(policy = list(
+        target_weights = c(SPY = panel$target_weight[i]),
+        allowed_symbols = "SPY", decision_label = "deterministic"
+      )), execution)
+    }
+  }
+
+  bulk_exchange <- bulk_replay_exchange()
+  sim_agent_add(bulk_exchange, "policy", "human")
+  sequential_export <- tempfile("tradesimr-policy-sequential-")
+  bulk_export <- tempfile("tradesimr-policy-bulk-")
+  sim_portfolio_export(sequential, "policy", sequential_export)
+  bulk <- sim_portfolio_target_replay(
+    bulk_exchange, bars, panel,
+    allowed_symbols = list(policy = "SPY"), execution = execution,
+    rebalance_policy = list(drift_tolerance = 0), export_path = bulk_export
+  )$exchange
+
+  expect_equal(bulk_replay_tables(bulk), bulk_replay_tables(sequential))
+  expect_equal(nrow(bulk$portfolio_rebalances), 3L)
+  expect_equal(nrow(bulk$portfolio_targets), 3L)
+  expect_equal(as.numeric(bulk$portfolio_rebalances$timestamp), as.numeric(timestamps[c(1L, 3L, 4L)]))
+  expect_equal(bulk$agent_orders$status, c("filled", "filled"))
+  expect_equal(sim_portfolio_execution_quality(bulk), sim_portfolio_execution_quality(sequential))
+  if (requireNamespace("jsonlite", quietly = TRUE)) {
+    for (name in c("orders", "fills", "positions", "valuations", "account", "targets", "rebalances", "realized_weights")) {
+      expect_equal(
+        jsonlite::read_json(file.path(bulk_export, "policy", paste0(name, ".json")), simplifyVector = TRUE),
+        jsonlite::read_json(file.path(sequential_export, paste0(name, ".json")), simplifyVector = TRUE)
+      )
+    }
+  }
+})
