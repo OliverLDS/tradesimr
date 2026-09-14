@@ -13,3 +13,15 @@ portfolio_step_rcpp <- function(states, bars, orders, cov, shared_cash, ctr_size
     .Call(`_tradesimr_portfolio_step_rcpp`, states, bars, orders, cov, shared_cash, ctr_size, ctr_step, lev, fee_rt, maker_fee_rt, taker_fee_rt, fund_rt, funding_interval_hours, mmr, portfolio_margin_sigma, portfolio_margin_floor, old_timestamp, slippage, spread, rec)
 }
 
+spot_step_rcpp <- function(state, close, signed_qty = 0.0, execution_price = NA_real_, contract_size = 1.0, fee_rt = 0.0, dividend_per_unit = 0.0, split_ratio = 1.0) {
+    .Call(`_tradesimr_spot_step_rcpp`, state, close, signed_qty, execution_price, contract_size, fee_rt, dividend_per_unit, split_ratio)
+}
+
+account_variation_margin_rcpp <- function(margin_positions, fx_rates, base_currency) {
+    .Call(`_tradesimr_account_variation_margin_rcpp`, margin_positions, fx_rates, base_currency)
+}
+
+heterogeneous_account_step_rcpp <- function(base_currency, cash_balances, inventory_positions, margin_positions, bars, fx_rates, settlements, corporate_actions, orders, timestamp) {
+    .Call(`_tradesimr_heterogeneous_account_step_rcpp`, base_currency, cash_balances, inventory_positions, margin_positions, bars, fx_rates, settlements, corporate_actions, orders, timestamp)
+}
+

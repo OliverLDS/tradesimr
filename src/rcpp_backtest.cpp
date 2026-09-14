@@ -6,6 +6,7 @@
 
 #include "base_ids.h"
 #include "ker_backtest.h"
+#include "eng_account.h"
 
 template <typename EnumT>
 Rcpp::IntegerVector enum_vec_to_int(const std::vector<EnumT>& x) {
@@ -847,4 +848,240 @@ Rcpp::List portfolio_step_rcpp(const Rcpp::List& states,
     Rcpp::Named("liquidated") = liquidated,
     Rcpp::Named("events") = event_out
   );
+}
+
+// [[Rcpp::export]]
+Rcpp::List spot_step_rcpp(const Rcpp::List& state,
+                          double close,
+                          double signed_qty = 0.0,
+                          double execution_price = NA_REAL,
+                          double contract_size = 1.0,
+                          double fee_rt = 0.0,
+                          double dividend_per_unit = 0.0,
+                          double split_ratio = 1.0) {
+  if (!R_finite(close) || close <= 0.0 || !R_finite(contract_size) || contract_size <= 0.0 ||
+      !R_finite(fee_rt) || fee_rt < 0.0 || !R_finite(split_ratio) || split_ratio <= 0.0) {
+    Rcpp::stop("Spot prices, contract size, and split ratio must be positive; fees must be non-negative.");
+  }
+  double cash = state.containsElementNamed("cash") ? Rcpp::as<double>(state["cash"]) : 0.0;
+  double units = state.containsElementNamed("units") ? Rcpp::as<double>(state["units"]) : 0.0;
+  double avg_cost = state.containsElementNamed("avg_cost") ? Rcpp::as<double>(state["avg_cost"]) : NA_REAL;
+  if (!R_finite(cash) || !R_finite(units) || units < 0.0) Rcpp::stop("Spot state requires finite non-negative cash and units.");
+  if (units == 0.0) avg_cost = NA_REAL;
+
+  const double px = R_finite(execution_price) ? execution_price : close;
+  if (!R_finite(px) || px <= 0.0) Rcpp::stop("`execution_price` must be positive when supplied.");
+  const double units_before = units;
+  double fee = 0.0;
+  double realized_pnl = 0.0;
+  double dividend_cash = 0.0;
+  bool filled = true;
+  std::string status = "no_op";
+
+  if (split_ratio != 1.0 && units > 0.0) {
+    units *= split_ratio;
+    avg_cost /= split_ratio;
+  }
+  if (dividend_per_unit != 0.0 && units > 0.0) {
+    dividend_cash = units * dividend_per_unit * contract_size;
+    cash += dividend_cash;
+  }
+  if (signed_qty > 0.0) {
+    const double notional = signed_qty * px * contract_size;
+    fee = notional * fee_rt;
+    if (cash + 1e-10 < notional + fee) {
+      filled = false;
+      fee = 0.0;
+      status = "rejected_insufficient_cash";
+    } else {
+      const double prior_cost = units * (R_finite(avg_cost) ? avg_cost : 0.0);
+      cash -= notional + fee;
+      units += signed_qty;
+      avg_cost = (prior_cost + signed_qty * px) / units;
+      status = "filled_buy";
+    }
+  } else if (signed_qty < 0.0) {
+    const double sell_units = -signed_qty;
+    if (sell_units > units + 1e-10) {
+      filled = false;
+      status = "rejected_insufficient_inventory";
+    } else {
+      const double notional = sell_units * px * contract_size;
+      fee = notional * fee_rt;
+      realized_pnl = (px - avg_cost) * sell_units * contract_size - fee;
+      cash += notional - fee;
+      units -= sell_units;
+      if (units <= 1e-10) {
+        units = 0.0;
+        avg_cost = NA_REAL;
+      }
+      status = "filled_sell";
+    }
+  }
+  const double market_value = units * close * contract_size;
+  const double unrealized_pnl = units > 0.0 ? (close - avg_cost) * units * contract_size : 0.0;
+  return Rcpp::List::create(
+    Rcpp::Named("cash") = cash,
+    Rcpp::Named("units") = units,
+    Rcpp::Named("avg_cost") = avg_cost,
+    Rcpp::Named("last_price") = close,
+    Rcpp::Named("market_value") = market_value,
+    Rcpp::Named("equity") = cash + market_value,
+    Rcpp::Named("unrealized_pnl") = unrealized_pnl,
+    Rcpp::Named("realized_pnl") = realized_pnl,
+    Rcpp::Named("fee") = fee,
+    Rcpp::Named("dividend_cash") = dividend_cash,
+    Rcpp::Named("units_before") = units_before,
+    Rcpp::Named("filled") = filled,
+    Rcpp::Named("status") = status
+  );
+}
+
+// [[Rcpp::export]]
+Rcpp::List account_variation_margin_rcpp(const Rcpp::DataFrame& margin_positions,
+                                         const Rcpp::DataFrame& fx_rates,
+                                         const std::string& base_currency) {
+  Rcpp::IntegerVector asset_id = margin_positions["asset_id"];
+  Rcpp::CharacterVector currency = margin_positions["currency"];
+  Rcpp::NumericVector signed_units = margin_positions["signed_units"];
+  Rcpp::NumericVector settlement_price = margin_positions["settlement_price"];
+  Rcpp::NumericVector last_price = margin_positions["last_price"];
+  Rcpp::NumericVector contract_size = margin_positions["contract_size"];
+  Rcpp::NumericVector maintenance_rate = margin_positions["maintenance_rate"];
+  Rcpp::CharacterVector fx_currency = fx_rates["currency"];
+  Rcpp::NumericVector fx_rate = fx_rates["rate_to_base"];
+  const R_xlen_t n = asset_id.size();
+  Rcpp::NumericVector variation(n), variation_base(n), maintenance_base(n), next_settlement_price(n);
+  double total_variation_base = 0.0;
+  double total_maintenance_base = 0.0;
+  for (R_xlen_t i = 0; i < n; ++i) {
+    MarginPosition p;
+    p.asset_id = asset_id[i];
+    p.currency = Rcpp::as<std::string>(currency[i]);
+    p.signed_units = signed_units[i];
+    p.settlement_price = settlement_price[i];
+    p.last_price = last_price[i];
+    p.contract_size = contract_size[i];
+    p.maintenance_rate = maintenance_rate[i];
+    double rate = p.currency == base_currency ? 1.0 : NA_REAL;
+    for (R_xlen_t j = 0; j < fx_currency.size(); ++j) {
+      if (Rcpp::as<std::string>(fx_currency[j]) == p.currency) { rate = fx_rate[j]; break; }
+    }
+    if (!std::isfinite(rate) || rate <= 0.0) Rcpp::stop("Missing positive FX rate for a margin position currency.");
+    variation[i] = variation_margin(p);
+    variation_base[i] = variation[i] * rate;
+    maintenance_base[i] = std::abs(margin_notional(p)) * p.maintenance_rate * rate;
+    next_settlement_price[i] = p.last_price;
+    total_variation_base += variation_base[i];
+    total_maintenance_base += maintenance_base[i];
+  }
+  return Rcpp::List::create(
+    Rcpp::Named("asset_id") = asset_id,
+    Rcpp::Named("variation_margin") = variation,
+    Rcpp::Named("variation_margin_base") = variation_base,
+    Rcpp::Named("maintenance_margin_base") = maintenance_base,
+    Rcpp::Named("next_settlement_price") = next_settlement_price,
+    Rcpp::Named("total_variation_margin_base") = total_variation_base,
+    Rcpp::Named("total_maintenance_margin_base") = total_maintenance_base
+  );
+}
+
+// [[Rcpp::export]]
+Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
+                                           const Rcpp::DataFrame& cash_balances,
+                                           const Rcpp::DataFrame& inventory_positions,
+                                           const Rcpp::DataFrame& margin_positions,
+                                           const Rcpp::DataFrame& bars,
+                                           const Rcpp::DataFrame& fx_rates,
+                                           const Rcpp::DataFrame& settlements,
+                                           const Rcpp::DataFrame& corporate_actions,
+                                           const Rcpp::DataFrame& orders,
+                                           double timestamp) {
+  Rcpp::CharacterVector cash_ccy = cash_balances["currency"];
+  Rcpp::NumericVector cash_settled = Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(cash_balances["settled"]));
+  Rcpp::NumericVector cash_unsettled = Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(cash_balances["unsettled"]));
+  const bool has_inventory = inventory_positions.containsElementNamed("asset_id");
+  Rcpp::IntegerVector inventory_asset = has_inventory ? Rcpp::as<Rcpp::IntegerVector>(inventory_positions["asset_id"]) : Rcpp::IntegerVector();
+  Rcpp::CharacterVector inventory_ccy = has_inventory ? Rcpp::as<Rcpp::CharacterVector>(inventory_positions["currency"]) : Rcpp::CharacterVector();
+  Rcpp::NumericVector inventory_units = has_inventory ? Rcpp::as<Rcpp::NumericVector>(inventory_positions["units"]) : Rcpp::NumericVector();
+  Rcpp::NumericVector inventory_cost = has_inventory ? Rcpp::as<Rcpp::NumericVector>(inventory_positions["average_cost"]) : Rcpp::NumericVector();
+  Rcpp::NumericVector inventory_last = has_inventory ? Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(inventory_positions["last_price"])) : Rcpp::NumericVector();
+  Rcpp::NumericVector inventory_size = has_inventory ? Rcpp::as<Rcpp::NumericVector>(inventory_positions["contract_size"]) : Rcpp::NumericVector();
+  Rcpp::IntegerVector margin_asset = margin_positions["asset_id"];
+  Rcpp::CharacterVector margin_ccy = margin_positions["currency"];
+  Rcpp::NumericVector margin_units = margin_positions["signed_units"];
+  Rcpp::NumericVector margin_settle = Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(margin_positions["settlement_price"]));
+  Rcpp::NumericVector margin_last = Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(margin_positions["last_price"]));
+  Rcpp::NumericVector margin_size = margin_positions["contract_size"];
+  Rcpp::NumericVector margin_mmr = margin_positions["maintenance_rate"];
+  Rcpp::IntegerVector bar_asset = bars["asset_id"];
+  Rcpp::NumericVector bar_close = bars["close"];
+  Rcpp::CharacterVector bar_profile = bars.containsElementNamed("instrument_profile") ? bars["instrument_profile"] : Rcpp::CharacterVector(bar_asset.size(), "future");
+  Rcpp::CharacterVector fx_ccy = fx_rates["currency"];
+  Rcpp::NumericVector fx_to_base = fx_rates["rate_to_base"];
+
+  auto rate_for = [&](const std::string& ccy) {
+    if (ccy == base_currency) return 1.0;
+    for (R_xlen_t i = 0; i < fx_ccy.size(); ++i) if (Rcpp::as<std::string>(fx_ccy[i]) == ccy) return fx_to_base[i];
+    Rcpp::stop("Missing positive FX rate for account currency.");
+    return 0.0;
+  };
+  auto cash_index = [&](const std::string& ccy) {
+    for (R_xlen_t i = 0; i < cash_ccy.size(); ++i) if (Rcpp::as<std::string>(cash_ccy[i]) == ccy) return i;
+    return static_cast<R_xlen_t>(-1);
+  };
+  std::vector<double> event_amount;
+  std::vector<int> event_asset;
+  std::vector<std::string> event_ccy;
+  std::vector<double> event_settlement;
+  // Mark inventory before valuing the unified account. Inventory execution and
+  // corporate actions remain explicit inputs to a later kernel iteration.
+  for (R_xlen_t i = 0; i < inventory_asset.size(); ++i) {
+    for (R_xlen_t j = 0; j < bar_asset.size(); ++j) {
+      if (bar_asset[j] == inventory_asset[i]) {
+        inventory_last[i] = bar_close[j];
+        break;
+      }
+    }
+  }
+  for (R_xlen_t i = 0; i < margin_asset.size(); ++i) {
+    for (R_xlen_t j = 0; j < bar_asset.size(); ++j) {
+      if (bar_asset[j] != margin_asset[i]) continue;
+      const std::string profile = Rcpp::as<std::string>(bar_profile[j]);
+      if (profile != "future" && profile != "crypto_perp") continue;
+      margin_last[i] = bar_close[j];
+      MarginPosition position;
+      position.asset_id = margin_asset[i]; position.currency = Rcpp::as<std::string>(margin_ccy[i]);
+      position.signed_units = margin_units[i]; position.settlement_price = margin_settle[i];
+      position.last_price = margin_last[i]; position.contract_size = margin_size[i]; position.maintenance_rate = margin_mmr[i];
+      const double vm = variation_margin(position);
+      const R_xlen_t ci = cash_index(position.currency);
+      if (ci < 0) Rcpp::stop("Every margin currency requires a cash balance row.");
+      cash_settled[ci] += vm;
+      margin_settle[i] = position.last_price;
+      if (std::abs(vm) > 1e-12) {
+        event_amount.push_back(vm); event_asset.push_back(position.asset_id);
+        event_ccy.push_back(position.currency); event_settlement.push_back(position.last_price);
+      }
+      break;
+    }
+  }
+  double equity = 0.0, maintenance = 0.0;
+  for (R_xlen_t i = 0; i < cash_ccy.size(); ++i) equity += (cash_settled[i] + cash_unsettled[i]) * rate_for(Rcpp::as<std::string>(cash_ccy[i]));
+  for (R_xlen_t i = 0; i < inventory_asset.size(); ++i) {
+    InventoryPosition position;
+    position.asset_id = inventory_asset[i]; position.currency = Rcpp::as<std::string>(inventory_ccy[i]);
+    position.units = inventory_units[i]; position.average_cost = inventory_cost[i];
+    position.last_price = inventory_last[i]; position.contract_size = inventory_size[i];
+    equity += inventory_value(position) * rate_for(position.currency);
+  }
+  for (R_xlen_t i = 0; i < margin_asset.size(); ++i) {
+    maintenance += std::abs(margin_units[i] * margin_last[i] * margin_size[i]) * margin_mmr[i] * rate_for(Rcpp::as<std::string>(margin_ccy[i]));
+  }
+  const bool liquidated = !std::isfinite(equity) || equity < maintenance;
+  Rcpp::DataFrame cash_out = Rcpp::DataFrame::create(Rcpp::Named("currency") = cash_ccy, Rcpp::Named("settled") = cash_settled, Rcpp::Named("unsettled") = cash_unsettled);
+  Rcpp::DataFrame inventory_out = Rcpp::DataFrame::create(Rcpp::Named("asset_id") = inventory_asset, Rcpp::Named("currency") = inventory_ccy, Rcpp::Named("units") = inventory_units, Rcpp::Named("average_cost") = inventory_cost, Rcpp::Named("last_price") = inventory_last, Rcpp::Named("contract_size") = inventory_size);
+  Rcpp::DataFrame margin_out = Rcpp::DataFrame::create(Rcpp::Named("asset_id") = margin_asset, Rcpp::Named("currency") = margin_ccy, Rcpp::Named("signed_units") = margin_units, Rcpp::Named("settlement_price") = margin_settle, Rcpp::Named("last_price") = margin_last, Rcpp::Named("contract_size") = margin_size, Rcpp::Named("maintenance_rate") = margin_mmr);
+  Rcpp::DataFrame events = Rcpp::DataFrame::create(Rcpp::Named("timestamp") = Rcpp::NumericVector(event_amount.size(), timestamp), Rcpp::Named("event_type") = Rcpp::CharacterVector(event_amount.size(), "variation_margin"), Rcpp::Named("asset_id") = Rcpp::wrap(event_asset), Rcpp::Named("currency") = Rcpp::wrap(event_ccy), Rcpp::Named("amount") = Rcpp::wrap(event_amount), Rcpp::Named("settlement_price") = Rcpp::wrap(event_settlement));
+  return Rcpp::List::create(Rcpp::Named("cash_balances") = cash_out, Rcpp::Named("inventory_positions") = inventory_out, Rcpp::Named("margin_positions") = margin_out, Rcpp::Named("equity") = equity, Rcpp::Named("maintenance_margin") = maintenance, Rcpp::Named("liquidated") = liquidated, Rcpp::Named("events") = events);
 }

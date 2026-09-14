@@ -14,7 +14,11 @@ as_market_bars(
   open_col = "open",
   high_col = "high",
   low_col = "low",
-  close_col = "close"
+  close_col = "close",
+  observation_timestamp_col = NULL,
+  bar_start_col = NULL,
+  bar_end_col = NULL,
+  market_timezone = "UTC"
 )
 }
 \arguments{
@@ -30,6 +34,12 @@ as_market_bars(
 
 \item{asset_id}{Optional scalar asset identifier when the input has no asset
 identifier column.}
+
+\item{observation_timestamp_col, bar_start_col, bar_end_col}{Optional source
+columns for explicit market-time metadata. \code{timestamp} remains the
+completed-bar decision boundary for compatibility.}
+
+\item{market_timezone}{Time zone label when the input has no timezone column.}
 }
 \value{
 A data.table with canonical \code{timestamp}, \code{open}, \code{high}, \code{low},

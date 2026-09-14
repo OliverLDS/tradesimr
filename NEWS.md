@@ -3,6 +3,21 @@
 This changelog follows the repository tags. There is no `v0.8.0` tag in the
 current git history; `v0.9.0` follows `v0.7.0`.
 
+## tradesimr 0.16.0
+
+### Instrument And Schema Foundation
+
+- Added canonical instrument profiles for equity, ETF, futures, FX spot,
+  crypto spot, crypto perpetuals, bonds, and generic instruments. Profiles
+  persist accounting, margin, settlement, and market-calendar metadata while
+  retaining the existing contract-size and quantity-step execution semantics.
+- Enriched canonical market bars with explicit observation, bar-start,
+  bar-end, valuation, completion, tradability, and market-timezone fields.
+  Existing `timestamp` remains the completed-bar decision boundary.
+- Added `sim_schema_migrate()` and load-time typed migration for durable
+  tables. Older exports gain missing fields without losing extension columns;
+  CSV reload now restores typed all-`NA` timestamp and lineage columns.
+
 ## tradesimr 0.15.0
 
 ### Batch-Boundary Portfolio Replay

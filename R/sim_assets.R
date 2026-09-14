@@ -7,10 +7,17 @@
 #' @param status Asset status: `active`, `paused`, or `removed`.
 #' @param asset_class Asset class label, such as `crypto_perp`, `stock`,
 #'   `bond`, `etf`, `commodity_future`, `fx`, or `other`.
+#' @param instrument_profile Canonical accounting/calendar profile. Defaults to
+#'   the profile implied by `asset_class`.
 #' @param contract_size Contract multiplier used by execution/accounting.
 #' @param tick_size Minimum price increment.
 #' @param qty_step Minimum order quantity increment.
 #' @param base_ccy,quote_ccy Optional currency labels.
+#' @param calendar_id,timezone Optional market-calendar metadata. Defaults are
+#'   supplied by the selected instrument profile.
+#' @param settlement_lag_days Optional settlement lag override.
+#' @param margin_model Optional margin-model override.
+#' @param metadata Optional named list of durable profile metadata.
 #' @return Invisibly returns the registered asset row.
 #' @export
 sim_asset_add <- function(exchange,
@@ -18,11 +25,17 @@ sim_asset_add <- function(exchange,
                           asset_id = NULL,
                           status = c("active", "paused", "removed"),
                           asset_class = "other",
+                          instrument_profile = NULL,
                           contract_size = 1,
                           tick_size = NA_real_,
                           qty_step = 1,
                           base_ccy = NA_character_,
-                          quote_ccy = NA_character_) {
+                          quote_ccy = NA_character_,
+                          calendar_id = NULL,
+                          timezone = NULL,
+                          settlement_lag_days = NULL,
+                          margin_model = NULL,
+                          metadata = list()) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   if (is.null(symbol) || !nzchar(as.character(symbol))) {
     stop("`symbol` is required.", call. = FALSE)
@@ -30,17 +43,29 @@ sim_asset_add <- function(exchange,
   status <- match.arg(status)
   symbol <- as.character(symbol)
   asset_id <- as.integer(asset_id %||% .asset_id_from_symbol(symbol))
+  profile <- .instrument_profile_resolve(instrument_profile %||% asset_class)
+  if (!is.finite(contract_size) || contract_size <= 0 || !is.finite(qty_step) || qty_step <= 0 ||
+      (!is.na(tick_size) && (!is.finite(tick_size) || tick_size <= 0))) {
+    stop("`contract_size` and `qty_step` must be positive; `tick_size` must be positive or NA.", call. = FALSE)
+  }
   existing <- which(exchange$assets$asset_id == asset_id | exchange$assets$symbol == symbol)
   row <- data.table::data.table(
     asset_id = asset_id,
     symbol = symbol,
     status = status,
-    asset_class = as.character(asset_class %||% "other"),
+    asset_class = as.character(profile$asset_class),
+    instrument_profile = as.character(profile$instrument_profile),
     contract_size = as.numeric(contract_size),
     tick_size = as.numeric(tick_size),
     qty_step = as.numeric(qty_step),
     base_ccy = as.character(base_ccy),
     quote_ccy = as.character(quote_ccy),
+    calendar_id = as.character(calendar_id %||% profile$calendar_id),
+    timezone = as.character(timezone %||% profile$timezone),
+    settlement_lag_days = as.integer(settlement_lag_days %||% profile$settlement_lag_days),
+    margin_model = as.character(margin_model %||% profile$margin_model),
+    accounting_model = as.character(profile$accounting_model),
+    metadata = .instrument_metadata_encode(metadata),
     created_at = Sys.time()
   )
   if (length(existing) > 0L) {

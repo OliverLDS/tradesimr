@@ -114,11 +114,65 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// spot_step_rcpp
+Rcpp::List spot_step_rcpp(const Rcpp::List& state, double close, double signed_qty, double execution_price, double contract_size, double fee_rt, double dividend_per_unit, double split_ratio);
+RcppExport SEXP _tradesimr_spot_step_rcpp(SEXP stateSEXP, SEXP closeSEXP, SEXP signed_qtySEXP, SEXP execution_priceSEXP, SEXP contract_sizeSEXP, SEXP fee_rtSEXP, SEXP dividend_per_unitSEXP, SEXP split_ratioSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::List& >::type state(stateSEXP);
+    Rcpp::traits::input_parameter< double >::type close(closeSEXP);
+    Rcpp::traits::input_parameter< double >::type signed_qty(signed_qtySEXP);
+    Rcpp::traits::input_parameter< double >::type execution_price(execution_priceSEXP);
+    Rcpp::traits::input_parameter< double >::type contract_size(contract_sizeSEXP);
+    Rcpp::traits::input_parameter< double >::type fee_rt(fee_rtSEXP);
+    Rcpp::traits::input_parameter< double >::type dividend_per_unit(dividend_per_unitSEXP);
+    Rcpp::traits::input_parameter< double >::type split_ratio(split_ratioSEXP);
+    rcpp_result_gen = Rcpp::wrap(spot_step_rcpp(state, close, signed_qty, execution_price, contract_size, fee_rt, dividend_per_unit, split_ratio));
+    return rcpp_result_gen;
+END_RCPP
+}
+// account_variation_margin_rcpp
+Rcpp::List account_variation_margin_rcpp(const Rcpp::DataFrame& margin_positions, const Rcpp::DataFrame& fx_rates, const std::string& base_currency);
+RcppExport SEXP _tradesimr_account_variation_margin_rcpp(SEXP margin_positionsSEXP, SEXP fx_ratesSEXP, SEXP base_currencySEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::DataFrame& >::type margin_positions(margin_positionsSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::DataFrame& >::type fx_rates(fx_ratesSEXP);
+    Rcpp::traits::input_parameter< const std::string& >::type base_currency(base_currencySEXP);
+    rcpp_result_gen = Rcpp::wrap(account_variation_margin_rcpp(margin_positions, fx_rates, base_currency));
+    return rcpp_result_gen;
+END_RCPP
+}
+// heterogeneous_account_step_rcpp
+Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency, const Rcpp::DataFrame& cash_balances, const Rcpp::DataFrame& inventory_positions, const Rcpp::DataFrame& margin_positions, const Rcpp::DataFrame& bars, const Rcpp::DataFrame& fx_rates, const Rcpp::DataFrame& settlements, const Rcpp::DataFrame& corporate_actions, const Rcpp::DataFrame& orders, double timestamp);
+RcppExport SEXP _tradesimr_heterogeneous_account_step_rcpp(SEXP base_currencySEXP, SEXP cash_balancesSEXP, SEXP inventory_positionsSEXP, SEXP margin_positionsSEXP, SEXP barsSEXP, SEXP fx_ratesSEXP, SEXP settlementsSEXP, SEXP corporate_actionsSEXP, SEXP ordersSEXP, SEXP timestampSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const std::string& >::type base_currency(base_currencySEXP);
+    Rcpp::traits::input_parameter< const Rcpp::DataFrame& >::type cash_balances(cash_balancesSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::DataFrame& >::type inventory_positions(inventory_positionsSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::DataFrame& >::type margin_positions(margin_positionsSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::DataFrame& >::type bars(barsSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::DataFrame& >::type fx_rates(fx_ratesSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::DataFrame& >::type settlements(settlementsSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::DataFrame& >::type corporate_actions(corporate_actionsSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::DataFrame& >::type orders(ordersSEXP);
+    Rcpp::traits::input_parameter< double >::type timestamp(timestampSEXP);
+    rcpp_result_gen = Rcpp::wrap(heterogeneous_account_step_rcpp(base_currency, cash_balances, inventory_positions, margin_positions, bars, fx_rates, settlements, corporate_actions, orders, timestamp));
+    return rcpp_result_gen;
+END_RCPP
+}
 
 static const R_CallMethodDef CallEntries[] = {
     {"_tradesimr_backtest_rcpp", (DL_FUNC) &_tradesimr_backtest_rcpp, 26},
     {"_tradesimr_step_rcpp", (DL_FUNC) &_tradesimr_step_rcpp, 28},
     {"_tradesimr_portfolio_step_rcpp", (DL_FUNC) &_tradesimr_portfolio_step_rcpp, 20},
+    {"_tradesimr_spot_step_rcpp", (DL_FUNC) &_tradesimr_spot_step_rcpp, 8},
+    {"_tradesimr_account_variation_margin_rcpp", (DL_FUNC) &_tradesimr_account_variation_margin_rcpp, 3},
+    {"_tradesimr_heterogeneous_account_step_rcpp", (DL_FUNC) &_tradesimr_heterogeneous_account_step_rcpp, 10},
     {NULL, NULL, 0}
 };
 

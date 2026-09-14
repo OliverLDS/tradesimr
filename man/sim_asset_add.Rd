@@ -10,11 +10,17 @@ sim_asset_add(
   asset_id = NULL,
   status = c("active", "paused", "removed"),
   asset_class = "other",
+  instrument_profile = NULL,
   contract_size = 1,
   tick_size = NA_real_,
   qty_step = 1,
   base_ccy = NA_character_,
-  quote_ccy = NA_character_
+  quote_ccy = NA_character_,
+  calendar_id = NULL,
+  timezone = NULL,
+  settlement_lag_days = NULL,
+  margin_model = NULL,
+  metadata = list()
 )
 }
 \arguments{
@@ -30,6 +36,9 @@ from \code{symbol}.}
 \item{asset_class}{Asset class label, such as \code{crypto_perp}, \code{stock},
 \code{bond}, \code{etf}, \code{commodity_future}, \code{fx}, or \code{other}.}
 
+\item{instrument_profile}{Canonical accounting/calendar profile. Defaults to
+the profile implied by \code{asset_class}.}
+
 \item{contract_size}{Contract multiplier used by execution/accounting.}
 
 \item{tick_size}{Minimum price increment.}
@@ -37,6 +46,15 @@ from \code{symbol}.}
 \item{qty_step}{Minimum order quantity increment.}
 
 \item{base_ccy, quote_ccy}{Optional currency labels.}
+
+\item{calendar_id, timezone}{Optional market-calendar metadata. Defaults are
+supplied by the selected instrument profile.}
+
+\item{settlement_lag_days}{Optional settlement lag override.}
+
+\item{margin_model}{Optional margin-model override.}
+
+\item{metadata}{Optional named list of durable profile metadata.}
 }
 \value{
 Invisibly returns the registered asset row.

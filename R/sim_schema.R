@@ -1,7 +1,7 @@
 #' tradesimr durable schema version
 #'
 #' @export
-TRADESIMR_SCHEMA_VERSION <- "0.15.0"
+TRADESIMR_SCHEMA_VERSION <- "0.16.0"
 
 #' Simulation table schemas
 #'
@@ -15,15 +15,75 @@ sim_schemas <- function() {
       symbol = character(),
       status = character(),
       asset_class = character(),
+      instrument_profile = character(),
       contract_size = numeric(),
       tick_size = numeric(),
       qty_step = numeric(),
       base_ccy = character(),
       quote_ccy = character(),
+      calendar_id = character(),
+      timezone = character(),
+      settlement_lag_days = integer(),
+      margin_model = character(),
+      accounting_model = character(),
+      metadata = character(),
       created_at = as.POSIXct(character())
+    ),
+    fx_rates = data.table::data.table(
+      timestamp = as.POSIXct(character()),
+      from_ccy = character(),
+      to_ccy = character(),
+      rate = numeric(),
+      source = character()
+    ),
+    profile_cash_ledger = data.table::data.table(
+      entry_id = character(),
+      timestamp = as.POSIXct(character()),
+      agent_id = character(),
+      currency = character(),
+      amount = numeric(),
+      balance_after = numeric(),
+      event_type = character(),
+      asset_id = integer(),
+      symbol = character(),
+      order_id = character(),
+      settlement_id = character(),
+      message = character()
+    ),
+    settlement_ledger = data.table::data.table(
+      settlement_id = character(),
+      trade_timestamp = as.POSIXct(character()),
+      due_timestamp = as.POSIXct(character()),
+      settled_timestamp = as.POSIXct(character()),
+      agent_id = character(),
+      currency = character(),
+      amount = numeric(),
+      asset_id = integer(),
+      symbol = character(),
+      order_id = character(),
+      status = character(),
+      message = character()
+    ),
+    corporate_actions = data.table::data.table(
+      action_id = character(),
+      effective_timestamp = as.POSIXct(character()),
+      asset_id = integer(),
+      symbol = character(),
+      action_type = character(),
+      amount = numeric(),
+      currency = character(),
+      status = character(),
+      message = character()
     ),
     market_events = data.table::data.table(
       timestamp = as.POSIXct(character()),
+      observation_timestamp = as.POSIXct(character()),
+      bar_start = as.POSIXct(character()),
+      bar_end = as.POSIXct(character()),
+      valuation_timestamp = as.POSIXct(character()),
+      market_timezone = character(),
+      is_completed = logical(),
+      is_tradable = logical(),
       symbol = character(),
       asset_id = integer(),
       open = numeric(),
@@ -275,6 +335,7 @@ sim_schemas <- function() {
       agent_id = character(),
       symbol = character(),
       asset_id = integer(),
+      accounting_model = character(),
       equity = numeric(),
       cash = numeric(),
       notional = numeric(),
@@ -302,6 +363,53 @@ sim_schemas <- function() {
 #' @export
 sim_schema_version <- function() {
   TRADESIMR_SCHEMA_VERSION
+}
+
+#' Migrate durable tables to the current schema
+#'
+#' Missing columns are added with typed `NA` values and existing columns are
+#' retained unchanged. This makes older CSV/fst exports readable without
+#' silently discarding consumer-defined extension columns.
+#'
+#' @param tables A named list of durable data tables.
+#' @return A named list upgraded to [sim_schema_version()].
+#' @export
+sim_schema_migrate <- function(tables) {
+  if (!is.list(tables) || is.null(names(tables))) stop("`tables` must be a named list.", call. = FALSE)
+  schemas <- sim_schemas()
+  out <- lapply(names(tables), function(name) {
+    table <- data.table::as.data.table(tables[[name]])
+    if (!name %in% names(schemas)) return(table)
+    schema <- schemas[[name]]
+    for (column in setdiff(names(schema), names(table))) {
+      data.table::set(table, j = column, value = .schema_typed_na(schema[[column]], nrow(table)))
+    }
+    for (column in intersect(names(schema), names(table))) {
+      data.table::set(table, j = column, value = .schema_cast_column(table[[column]], schema[[column]]))
+    }
+    table
+  })
+  names(out) <- names(tables)
+  attr(out, "schema_version") <- TRADESIMR_SCHEMA_VERSION
+  out
+}
+
+#' @keywords internal
+.schema_typed_na <- function(prototype, n) {
+  if (inherits(prototype, "POSIXt")) return(as.POSIXct(rep(NA_real_, n), origin = "1970-01-01", tz = "UTC"))
+  if (is.integer(prototype)) return(rep.int(NA_integer_, n))
+  if (is.logical(prototype)) return(rep.int(NA, n))
+  if (is.numeric(prototype)) return(rep.int(NA_real_, n))
+  rep.int(NA_character_, n)
+}
+
+#' @keywords internal
+.schema_cast_column <- function(value, prototype) {
+  if (inherits(prototype, "POSIXt")) return(as.POSIXct(value, tz = "UTC"))
+  if (is.integer(prototype)) return(as.integer(value))
+  if (is.logical(prototype)) return(as.logical(value))
+  if (is.numeric(prototype)) return(as.numeric(value))
+  as.character(value)
 }
 
 #' Build an export manifest
@@ -384,6 +492,10 @@ validate_intents <- function(data, tgt_pos_col = "tgt_pos", tol_pos_col = NULL) 
 #' @param symbol Optional scalar symbol when the input has no symbol column.
 #' @param asset_id Optional scalar asset identifier when the input has no asset
 #'   identifier column.
+#' @param observation_timestamp_col,bar_start_col,bar_end_col Optional source
+#'   columns for explicit market-time metadata. `timestamp` remains the
+#'   completed-bar decision boundary for compatibility.
+#' @param market_timezone Time zone label when the input has no timezone column.
 #' @return A data.table with canonical `timestamp`, `open`, `high`, `low`,
 #'   `close` columns.
 #' @export
@@ -396,7 +508,11 @@ as_market_bars <- function(data,
                            open_col = "open",
                            high_col = "high",
                            low_col = "low",
-                           close_col = "close") {
+                           close_col = "close",
+                           observation_timestamp_col = NULL,
+                           bar_start_col = NULL,
+                           bar_end_col = NULL,
+                           market_timezone = "UTC") {
   validate_market_data(data, timestamp_col, open_col, high_col, low_col, close_col)
   DT <- data.table::as.data.table(data)
   if (is.null(symbol_col) && "symbol" %in% names(DT)) symbol_col <- "symbol"
@@ -414,7 +530,18 @@ as_market_bars <- function(data,
   }
   data.table::set(out, j = "symbol", value = symbol_values)
   data.table::set(out, j = "asset_id", value = asset_values)
-  data.table::setcolorder(out, c("timestamp", "symbol", "asset_id", "open", "high", "low", "close"))
+  observation_timestamp_col <- observation_timestamp_col %||% if ("observation_timestamp" %in% names(DT)) "observation_timestamp" else NULL
+  bar_start_col <- bar_start_col %||% if ("bar_start" %in% names(DT)) "bar_start" else NULL
+  bar_end_col <- bar_end_col %||% if ("bar_end" %in% names(DT)) "bar_end" else NULL
+  time_value <- function(column, default) if (!is.null(column) && column %in% names(DT)) as.POSIXct(DT[[column]], tz = "UTC") else default
+  data.table::set(out, j = "observation_timestamp", value = time_value(observation_timestamp_col, as.POSIXct(out$timestamp, tz = "UTC")))
+  data.table::set(out, j = "bar_start", value = time_value(bar_start_col, as.POSIXct(rep(NA_real_, nrow(out)), origin = "1970-01-01", tz = "UTC")))
+  data.table::set(out, j = "bar_end", value = time_value(bar_end_col, as.POSIXct(out$timestamp, tz = "UTC")))
+  data.table::set(out, j = "valuation_timestamp", value = as.POSIXct(out$timestamp, tz = "UTC"))
+  data.table::set(out, j = "market_timezone", value = if ("market_timezone" %in% names(DT)) as.character(DT$market_timezone) else rep.int(as.character(market_timezone), nrow(out)))
+  data.table::set(out, j = "is_completed", value = if ("is_completed" %in% names(DT)) as.logical(DT$is_completed) else rep.int(TRUE, nrow(out)))
+  data.table::set(out, j = "is_tradable", value = if ("is_tradable" %in% names(DT)) as.logical(DT$is_tradable) else rep.int(TRUE, nrow(out)))
+  data.table::setcolorder(out, c("timestamp", "observation_timestamp", "bar_start", "bar_end", "valuation_timestamp", "market_timezone", "is_completed", "is_tradable", "symbol", "asset_id", "open", "high", "low", "close"))
   out[]
 }
 
