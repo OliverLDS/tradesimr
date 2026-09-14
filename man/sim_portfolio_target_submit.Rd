@@ -52,4 +52,9 @@ the exact target infeasible. Explicit contract orders remain all-or-nothing.
 A later accepted target decision supersedes still-unfilled target-derived
 orders for the same agent and overlapping allowed assets; explicit contract
 orders are never superseded.
+For a multi-asset allowed universe, a non-\code{NULL} target decision is accepted
+only when the same market boundary contains exactly one completed bar for
+every allowed asset. This prevents target allocation from being planned from
+a partial cross-asset information set. Single-asset submissions are
+unaffected.
 }

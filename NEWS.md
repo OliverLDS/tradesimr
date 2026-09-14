@@ -3,6 +3,19 @@
 This changelog follows the repository tags. There is no `v0.8.0` tag in the
 current git history; `v0.9.0` follows `v0.7.0`.
 
+## tradesimr 0.16.1
+
+### Complete-Universe Target Decisions
+
+- Multi-asset portfolio target submissions now require exactly one completed
+  market bar for every asset in the agent's allowed universe at the decision
+  boundary. This prevents allocations from being planned with a partial
+  cross-asset information set.
+- Single-asset target submissions retain their existing behavior.
+- Bulk target replay treats incomplete multi-asset boundaries as absent
+  decisions, matching the safe incremental policy without creating a durable
+  rebalance, order, or target record.
+
 ## tradesimr 0.16.0
 
 ### Instrument And Schema Foundation

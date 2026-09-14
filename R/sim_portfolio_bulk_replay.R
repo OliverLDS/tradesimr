@@ -13,7 +13,9 @@
 #'   and `target_weight`. Each agent/timestamp group is submitted atomically.
 #' @param allowed_symbols Optional named list of allowed-symbol vectors by
 #'   agent. When omitted, each agent's universe is inferred from all symbols in
-#'   its panel rows.
+#'   its panel rows. Multi-asset target groups are submitted only at boundaries
+#'   containing one completed bar for every allowed symbol; incomplete groups
+#'   are treated as absent decisions.
 #' @param execution Execution assumptions from [sim_portfolio_execution()].
 #' @param rebalance_policy Optional policy for sparse deterministic target
 #'   panels. `NULL` (the default) preserves historical behavior and submits
@@ -118,6 +120,15 @@ sim_portfolio_target_replay <- function(exchange,
           decision_label = if ("decision_label" %in% names(rows)) as.character(rows$decision_label[1L]) else "target_weight"
         )
       })
+      # Historical feeds can have partial market calendars. Do not create a
+      # multi-asset decision from an incomplete information boundary.
+      complete <- vapply(names(decisions), function(current_agent_id) {
+        allowed_assets <- .portfolio_resolve_allowed_assets(
+          exchange, current_agent_id, allowed_symbols = allowed_symbols[[current_agent_id]]
+        )
+        .portfolio_has_complete_universe_boundary(boundary_bars, allowed_assets)
+      }, logical(1L))
+      decisions <- decisions[complete]
       if (!is.null(rebalance_policy)) {
         keep <- vapply(names(decisions), function(current_agent_id) {
           rows <- decision_rows[decision_rows$agent_id == current_agent_id]

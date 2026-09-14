@@ -32,5 +32,6 @@ boundary once and snapshots account, position, and carried-price state once
 before translating each agent's decision atomically. Each \code{decisions}
 element is a named list containing \code{target_weights} (or \code{NULL} for a
 no-decision), and optionally \code{decision_label}, \code{allowed_symbols}, and
-\code{allowed_asset_ids}.
+\code{allowed_asset_ids}. A multi-asset decision requires exactly one completed
+bar for every allowed asset at the common decision boundary.
 }

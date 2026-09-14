@@ -117,6 +117,11 @@ sim_portfolio_market_step <- function(exchange,
 #' A later accepted target decision supersedes still-unfilled target-derived
 #' orders for the same agent and overlapping allowed assets; explicit contract
 #' orders are never superseded.
+#' For a multi-asset allowed universe, a non-`NULL` target decision is accepted
+#' only when the same market boundary contains exactly one completed bar for
+#' every allowed asset. This prevents target allocation from being planned from
+#' a partial cross-asset information set. Single-asset submissions are
+#' unaffected.
 #'
 #' @param exchange A `tradesimr_exchange`.
 #' @param agent_id Account identifier. Each agent has an isolated account.
@@ -149,9 +154,10 @@ sim_portfolio_target_submit <- function(exchange,
   .portfolio_require_one_timestamp(decision_bars)
   .portfolio_require_accepted_boundary(exchange, decision_bars)
   .portfolio_apply_execution_config(exchange, execution)
+  allowed_assets <- .portfolio_resolve_allowed_assets(exchange, agent_id, allowed_symbols, allowed_asset_ids)
+  if (!is.null(target_weights)) .portfolio_require_complete_universe_boundary(decision_bars, allowed_assets)
   first_asset <- .bar_asset_key(decision_bars[1L])
   .ensure_agent_account(exchange, agent_id, asset_id = first_asset$asset_id, symbol = first_asset$symbol, agent_type = "arena")
-  allowed_assets <- .portfolio_resolve_allowed_assets(exchange, agent_id, allowed_symbols, allowed_asset_ids)
   .portfolio_set_agent_universe(exchange, agent_id, allowed_assets$asset_id)
   .portfolio_submit_target(
     exchange, agent_id, decision_bars, target_weights, execution, decision_label,
@@ -168,7 +174,8 @@ sim_portfolio_target_submit <- function(exchange,
 #' before translating each agent's decision atomically. Each `decisions`
 #' element is a named list containing `target_weights` (or `NULL` for a
 #' no-decision), and optionally `decision_label`, `allowed_symbols`, and
-#' `allowed_asset_ids`.
+#' `allowed_asset_ids`. A multi-asset decision requires exactly one completed
+#' bar for every allowed asset at the common decision boundary.
 #'
 #' @param exchange A `tradesimr_exchange`.
 #' @param bars The already accepted timestamped completed-bar batch.
@@ -203,11 +210,12 @@ sim_portfolio_target_submit_batch <- function(exchange,
     }
     unknown <- setdiff(names(decision), c("target_weights", "decision_label", "allowed_symbols", "allowed_asset_ids"))
     if (length(unknown)) stop("Unknown decision field(s): ", paste(unknown, collapse = ", "), call. = FALSE)
-    first_asset <- .bar_asset_key(decision_bars[1L])
-    .ensure_agent_account(exchange, agent_id, asset_id = first_asset$asset_id, symbol = first_asset$symbol, agent_type = "arena")
     allowed_assets <- .portfolio_resolve_allowed_assets(
       exchange, agent_id, decision$allowed_symbols %||% NULL, decision$allowed_asset_ids %||% NULL
     )
+    if (!is.null(decision$target_weights)) .portfolio_require_complete_universe_boundary(decision_bars, allowed_assets)
+    first_asset <- .bar_asset_key(decision_bars[1L])
+    .ensure_agent_account(exchange, agent_id, asset_id = first_asset$asset_id, symbol = first_asset$symbol, agent_type = "arena")
     .portfolio_set_agent_universe(exchange, agent_id, allowed_assets$asset_id)
     prepared[[i]] <- list(agent_id = agent_id, decision = decision, allowed_assets = allowed_assets)
   }
@@ -270,11 +278,12 @@ sim_portfolio_target_submit_batch <- function(exchange,
     }
     unknown <- setdiff(names(decision), c("target_weights", "decision_label", "allowed_symbols", "allowed_asset_ids"))
     if (length(unknown)) stop("Unknown decision field(s): ", paste(unknown, collapse = ", "), call. = FALSE)
-    first_asset <- .bar_asset_key(decision_bars[1L])
-    .ensure_agent_account(exchange, agent_id, asset_id = first_asset$asset_id, symbol = first_asset$symbol, agent_type = "arena")
     allowed_assets <- .portfolio_resolve_allowed_assets(
       exchange, agent_id, decision$allowed_symbols %||% NULL, decision$allowed_asset_ids %||% NULL
     )
+    if (!is.null(decision$target_weights)) .portfolio_require_complete_universe_boundary(decision_bars, allowed_assets)
+    first_asset <- .bar_asset_key(decision_bars[1L])
+    .ensure_agent_account(exchange, agent_id, asset_id = first_asset$asset_id, symbol = first_asset$symbol, agent_type = "arena")
     .portfolio_set_agent_universe(exchange, agent_id, allowed_assets$asset_id)
     prepared[[i]] <- list(agent_id = agent_id, decision = decision, allowed_assets = allowed_assets)
   }
@@ -615,6 +624,25 @@ sim_portfolio_export <- function(exchange,
     stop("`bars` must contain at most one completed bar per asset/timestamp.", call. = FALSE)
   }
   bars
+}
+
+#' @keywords internal
+.portfolio_has_complete_universe_boundary <- function(bars, allowed_assets) {
+  if (nrow(allowed_assets) <= 1L) return(TRUE)
+  supplied <- as.integer(bars$asset_id)
+  required <- as.integer(allowed_assets$asset_id)
+  all(required %in% supplied) && !anyDuplicated(supplied[supplied %in% required])
+}
+
+#' @keywords internal
+.portfolio_require_complete_universe_boundary <- function(bars, allowed_assets) {
+  if (.portfolio_has_complete_universe_boundary(bars, allowed_assets)) return(invisible(bars))
+  missing <- allowed_assets$symbol[!(allowed_assets$asset_id %in% bars$asset_id)]
+  stop(
+    "A multi-asset target decision requires exactly one completed bar for every allowed symbol at the same market boundary; missing: ",
+    paste(missing, collapse = ", "),
+    call. = FALSE
+  )
 }
 
 #' @keywords internal

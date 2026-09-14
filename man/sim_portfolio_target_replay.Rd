@@ -26,7 +26,9 @@ and \code{target_weight}. Each agent/timestamp group is submitted atomically.}
 
 \item{allowed_symbols}{Optional named list of allowed-symbol vectors by
 agent. When omitted, each agent's universe is inferred from all symbols in
-its panel rows.}
+its panel rows. Multi-asset target groups are submitted only at boundaries
+containing one completed bar for every allowed symbol; incomplete groups
+are treated as absent decisions.}
 
 \item{execution}{Execution assumptions from \code{\link[=sim_portfolio_execution]{sim_portfolio_execution()}}.}
 

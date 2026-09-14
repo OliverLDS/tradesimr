@@ -52,19 +52,10 @@ test_that("indexed execution quality exactly matches the full-ledger reference",
   exchange$config$portfolio_margin_floor <- 3
   sim_portfolio_market_step(exchange, third[symbol == "TLT"], execution)
 
-  # A later TLT-only boundary supersedes the still-pending SPY order without
-  # permitting a same-bar SPY fill.
-  tlt_boundary <- quality_parity_bars("2026-01-03 12:00:00", "TLT")
-  sim_portfolio_market_step(exchange, tlt_boundary, execution)
-  sim_portfolio_target_submit(
-    exchange, "pending", tlt_boundary, c(SPY = .1), execution,
-    allowed_symbols = c("SPY", "TLT")
-  )
-
   reference <- quality_parity_reference(exchange)
   indexed <- sim_portfolio_execution_quality(exchange)
   expect_equal(indexed, reference)
-  expect_setequal(indexed$execution_quality, c("fulfilled", "no_op", "partial", "terminal_rejected", "pending", "superseded"))
+  expect_setequal(indexed$execution_quality, c("fulfilled", "no_op", "partial", "terminal_rejected", "pending"))
 
   state_path <- tempfile("tradesimr-quality-parity-")
   sim_exchange_save(exchange, state_path)
