@@ -3,6 +3,31 @@
 This changelog follows the repository tags. There is no `v0.8.0` tag in the
 current git history; `v0.9.0` follows `v0.7.0`.
 
+## tradesimr 0.17.0
+
+### Heterogeneous Portfolio Execution
+
+- Added a typed heterogeneous account path for inventory and margin products.
+  Mixed spot, equity/ETF, FX spot, futures, and perpetual target-rebalance
+  groups now cross one atomic C++ admission boundary with shared cash.
+- Durable derivatives state is now held in `margin_positions`; legacy R state
+  lists remain compatibility projections rather than mixed-execution inputs.
+- Mixed target-derived derivative actions now carry action/direction, quantity
+  step, funding, and fee-aware admission metadata into C++. Infeasible target
+  increases clip to the largest feasible contract-step quantity with a public
+  `margin_clipped` outcome; explicit contract orders retain rejection semantics.
+- Atomic group preflight now evaluates all limit legs before any state mutation:
+  GTC groups stay pending, IOC groups cancel, and FOK groups reject as a unit.
+- The heterogeneous ledger records futures variation margin and funding as
+  typed durable cash events. Unified liquidation evaluates inventory and margin
+  equity together.
+
+### Validation
+
+- Added C++/R regression coverage for mixed target rebalances, fee clipping,
+  atomic rollback, limit/TIF group behavior, variation margin, unified
+  liquidation, save/load, JSON export, and typed derivatives compatibility.
+
 ## tradesimr 0.16.1
 
 ### Complete-Universe Target Decisions

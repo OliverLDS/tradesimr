@@ -57,6 +57,20 @@ test_that("heterogeneous account kernel executes profile-tagged spot and futures
   expect_equal(out$cash_balances$settled, 793)
 })
 
+test_that("heterogeneous mixed account liquidates on unified inventory plus margin equity", {
+  out <- sim_heterogeneous_account_step(
+    "USD", data.frame(currency = "USD", settled = 100, unsettled = 0),
+    data.frame(asset_id = 1L, currency = "USD", units = 1, average_cost = 100, last_price = 100, contract_size = 1),
+    data.frame(asset_id = 2L, currency = "USD", signed_units = -10, settlement_price = 100, last_price = 100, contract_size = 1, maintenance_rate = .1),
+    data.frame(asset_id = c(1L, 2L), close = c(200, 200), instrument_profile = c("equity", "future")),
+    data.frame(currency = "USD", rate_to_base = 1),
+    timestamp = as.POSIXct("2025-01-02", tz = "UTC")
+  )
+  expect_true(out$liquidated)
+  expect_lt(out$equity, out$maintenance_margin)
+  expect_equal(out$events$event_type, "variation_margin")
+})
+
 test_that("incremental future exchange books durable variation margin without changing the legacy portfolio kernel", {
   exchange <- sim_exchange_new(list(cash = 1000, lev = 10, mmr = .02))
   sim_asset_add(exchange, "ES", asset_id = 1L, instrument_profile = "future", quote_ccy = "USD", contract_size = 10)

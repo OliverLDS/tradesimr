@@ -1,5 +1,11 @@
 #' Empty normalized heterogeneous order-batch schema
 #'
+#' The schema carries generic order identity and eligibility fields plus
+#' derivative compatibility fields: action/direction codes, strategy/action
+#' identifiers, target-derived admission flag, per-asset quantity step, and
+#' funding settings. Inventory adapters may leave the compatibility fields at
+#' their typed defaults.
+#'
 #' @return A typed empty data.table accepted by
 #'   [sim_heterogeneous_account_step()].
 #' @export
@@ -9,7 +15,10 @@ sim_heterogeneous_order_batch_schema <- function() {
     side = character(), qty = numeric(), order_type = character(),
     limit_price = numeric(), execution_price = numeric(), fee_rt = numeric(),
     eligible_after = as.POSIXct(character()), atomic_group_id = character(),
-    target_derived = logical(), time_in_force = character()
+    target_derived = logical(), time_in_force = character(),
+    action_code = integer(), dir_code = integer(), order_type_code = integer(),
+    strat_id = integer(), action_id = integer(), ctr_step = numeric(),
+    fund_rt = numeric(), funding_interval_hours = numeric()
   )
 }
 
@@ -21,6 +30,12 @@ sim_heterogeneous_order_batch_schema <- function() {
   missing <- setdiff(required, names(orders))
   if (length(missing)) stop("Normalized heterogeneous orders are missing required columns: ", paste(missing, collapse = ", "), call. = FALSE)
   if (!"limit_price" %in% names(orders)) orders[, limit_price := NA_real_]
+  optional <- list(
+    action_code = 0L, dir_code = 0L, order_type_code = 0L,
+    strat_id = 0L, action_id = 0L, ctr_step = 1,
+    fund_rt = 0, funding_interval_hours = 8
+  )
+  for (name in names(optional)) if (!name %in% names(orders)) orders[, (name) := optional[[name]]]
   orders[, eligible_after := as.POSIXct(eligible_after, tz = "UTC")]
   if (any(!(orders$order_type %in% c("market", "limit")))) stop("Heterogeneous orders require `market` or `limit` order types.", call. = FALSE)
   if (any(!(orders$side %in% c("buy", "sell", "flat")))) stop("Heterogeneous orders require buy, sell, or flat sides.", call. = FALSE)

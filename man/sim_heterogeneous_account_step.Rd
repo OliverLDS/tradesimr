@@ -22,32 +22,24 @@ sim_heterogeneous_account_step(
 
 \item{cash_balances}{Data frame with \code{currency}, \code{settled}, and \code{unsettled}.}
 
-\item{inventory_positions}{Reserved inventory-position table.}
+\item{inventory_positions}{Data frame with inventory units and valuation.}
 
-\item{margin_positions}{Data frame with \code{asset_id}, \code{currency},
-\code{signed_units}, \code{settlement_price}, \code{last_price}, \code{contract_size}, and
-\code{maintenance_rate}.}
+\item{margin_positions}{Data frame with margin positions and settlement prices.}
 
-\item{bars}{Profile-tagged bars with \code{asset_id}, \code{close}, and optional
-\code{instrument_profile}.}
+\item{bars}{Profile-tagged market bars.}
 
 \item{fx_rates}{Data frame with \code{currency} and \code{rate_to_base}.}
 
-\item{settlements, corporate_actions, orders}{Reserved durable input tables.
-Normalized order rows require \code{order_id}, \code{asset_id},
-\code{instrument_profile}, \code{side}, \code{qty}, \code{execution_price},
-and \code{fee_rt}.}
+\item{settlements, corporate_actions}{Reserved durable input tables.}
 
-\item{timestamp}{Settlement timestamp.}
+\item{orders}{A normalized heterogeneous order batch.}
+
+\item{timestamp}{Market-boundary timestamp.}
 }
 \value{
-Updated account tables, base-currency equity and maintenance margin,
-liquidation status, typed events, and one typed \code{fills} outcome for each
-normalized supplied order.
+Updated account state, typed events, fills, and group outcomes.
 }
 \description{
-This compatibility-safe primitive marks inventory, settles futures/perpetual
-variation margin, and executes normalized profile-tagged market orders.
-Settlement and corporate-action tables remain reserved inputs while their
-full schedule engines are implemented.
+Marks inventory, settles futures/perpetual variation margin, and evaluates
+a normalized order batch without mutating the supplied R input tables.
 }

@@ -1,6 +1,6 @@
 Package: tradesimr
 Title: Execution and Simulation Engine for Trading Strategies
-Version: 0.16.1
+Version: 0.17.0
 Authors@R: 
     person(given = "Oliver",
            family = "Lee",
@@ -19,9 +19,10 @@ Description:
     live-feed stepping, strategy-backed AI agents with diagnostics, calibrated
     and coordinated multi-asset market simulation with static covariance,
     AR-GARCH, factor, and regime models, durable per-feed simulation state,
-    optional portfolio-margin enforcement through a multi-asset C++ step
-    kernel, local live-service APIs, import/export helpers, separate
-    replay, live-state, and agent dashboard exports, and installed local
+    profile-aware heterogeneous inventory and margin execution with atomic
+    mixed-profile order groups, optional portfolio-margin enforcement through
+    a multi-asset C++ step kernel, local live-service APIs, import/export
+    helpers, separate replay, live-state, and agent dashboard exports, and installed local
     orchestration scripts. It is designed to consume signals, order intents, or
     target exposure decisions from strategy packages such as strategyr and
     market data from adapters such as okxr.

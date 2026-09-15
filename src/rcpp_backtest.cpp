@@ -488,8 +488,11 @@ Rcpp::List step_rcpp(const Rcpp::List& state,
   );
 }
 
-// [[Rcpp::export]]
-Rcpp::List portfolio_step_rcpp(const Rcpp::List& states,
+// Shared derivatives portfolio kernel. Both the legacy exported entry point
+// and the heterogeneous account bridge use this implementation so that
+// admission, fee clipping, funding, covariance margin, and liquidation have
+// one native source of truth.
+static Rcpp::List portfolio_step_kernel(const Rcpp::List& states,
                                const Rcpp::DataFrame& bars,
                                const Rcpp::DataFrame& orders,
                                const Rcpp::NumericMatrix& cov,
@@ -850,6 +853,37 @@ Rcpp::List portfolio_step_rcpp(const Rcpp::List& states,
   );
 }
 
+// Deprecated compatibility endpoint. New portfolio stepping reaches the same
+// native kernel through heterogeneous_account_step_rcpp().
+// [[Rcpp::export]]
+Rcpp::List portfolio_step_rcpp(const Rcpp::List& states,
+                               const Rcpp::DataFrame& bars,
+                               const Rcpp::DataFrame& orders,
+                               const Rcpp::NumericMatrix& cov,
+                               double shared_cash,
+                               const Rcpp::NumericVector& ctr_size,
+                               const Rcpp::NumericVector& ctr_step,
+                               double lev,
+                               double fee_rt,
+                               double maker_fee_rt,
+                               double taker_fee_rt,
+                               double fund_rt,
+                               double funding_interval_hours,
+                               double mmr,
+                               double portfolio_margin_sigma,
+                               double portfolio_margin_floor,
+                               double old_timestamp,
+                               double slippage,
+                               double spread,
+                               bool rec) {
+  return portfolio_step_kernel(
+    states, bars, orders, cov, shared_cash, ctr_size, ctr_step, lev, fee_rt,
+    maker_fee_rt, taker_fee_rt, fund_rt, funding_interval_hours, mmr,
+    portfolio_margin_sigma, portfolio_margin_floor, old_timestamp, slippage,
+    spread, rec
+  );
+}
+
 // [[Rcpp::export]]
 Rcpp::List spot_step_rcpp(const Rcpp::List& state,
                           double close,
@@ -997,6 +1031,189 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
                                            const Rcpp::DataFrame& corporate_actions,
                                            const Rcpp::DataFrame& orders,
                                            double timestamp) {
+  // Derivatives-only portfolio mode uses the native shared kernel below. The
+  // typed heterogeneous batch carries the legacy action semantics until the
+  // public portfolio API is retired.
+  if (settlements.containsElementNamed("execution_mode") && settlements.nrows() > 0 &&
+      Rcpp::as<std::string>(Rcpp::as<Rcpp::CharacterVector>(settlements["execution_mode"])[0]) == "derivatives_native") {
+    auto setting = [&](const char* name, double fallback) {
+      if (!settlements.containsElementNamed(name)) return fallback;
+      Rcpp::NumericVector values = settlements[name];
+      return values.size() ? values[0] : fallback;
+    };
+    auto setting_bool = [&](const char* name, bool fallback) {
+      if (!settlements.containsElementNamed(name)) return fallback;
+      Rcpp::LogicalVector values = settlements[name];
+      return values.size() && values[0] != NA_LOGICAL ? values[0] == TRUE : fallback;
+    };
+    Rcpp::IntegerVector bar_asset = bars["asset_id"];
+    Rcpp::NumericVector bar_timestamp = bars["timestamp"];
+    Rcpp::NumericVector bar_open = bars["open"];
+    Rcpp::NumericVector bar_high = bars["high"];
+    Rcpp::NumericVector bar_low = bars["low"];
+    Rcpp::NumericVector bar_close = bars["close"];
+    Rcpp::NumericVector bar_step = bars.containsElementNamed("ctr_step") ? Rcpp::as<Rcpp::NumericVector>(bars["ctr_step"]) : Rcpp::NumericVector(bar_asset.size(), 1.0);
+    Rcpp::NumericVector margin_units = margin_positions["signed_units"];
+    Rcpp::NumericVector margin_settle = margin_positions["settlement_price"];
+    Rcpp::NumericVector margin_last = margin_positions["last_price"];
+    Rcpp::NumericVector margin_size = margin_positions["contract_size"];
+    Rcpp::IntegerVector margin_asset = margin_positions["asset_id"];
+    Rcpp::IntegerVector margin_strat = margin_positions.containsElementNamed("strat") ? Rcpp::as<Rcpp::IntegerVector>(margin_positions["strat"]) : Rcpp::IntegerVector(margin_asset.size(), 0);
+    Rcpp::IntegerVector margin_action_id = margin_positions.containsElementNamed("action_id_now") ? Rcpp::as<Rcpp::IntegerVector>(margin_positions["action_id_now"]) : Rcpp::IntegerVector(margin_asset.size(), 1);
+    Rcpp::LogicalVector margin_liquidated = margin_positions.containsElementNamed("liquidated") ? Rcpp::as<Rcpp::LogicalVector>(margin_positions["liquidated"]) : Rcpp::LogicalVector(margin_asset.size(), false);
+    Rcpp::List legacy_states;
+    for (R_xlen_t i = 0; i < bar_asset.size(); ++i) {
+      R_xlen_t mi = -1;
+      for (R_xlen_t j = 0; j < margin_asset.size(); ++j) if (margin_asset[j] == bar_asset[i]) { mi = j; break; }
+      const double signed_units = mi >= 0 ? margin_units[mi] : 0.0;
+      legacy_states.push_back(Rcpp::List::create(
+        Rcpp::Named("strat") = mi >= 0 ? margin_strat[mi] : 0,
+        Rcpp::Named("asset") = bar_asset[i],
+        Rcpp::Named("pos_dir") = signed_units > 0 ? 1 : (signed_units < 0 ? -1 : 0),
+        Rcpp::Named("ctr_unit") = std::abs(signed_units),
+        Rcpp::Named("avg_price") = mi >= 0 ? margin_settle[mi] : NA_REAL,
+        Rcpp::Named("last_px") = mi >= 0 ? margin_last[mi] : bar_close[i],
+        Rcpp::Named("action_id_now") = mi >= 0 ? margin_action_id[mi] : 1,
+        Rcpp::Named("liquidated") = mi >= 0 ? margin_liquidated[mi] == TRUE : false
+      ), std::to_string(bar_asset[i]));
+    }
+    Rcpp::CharacterVector order_id = orders.containsElementNamed("order_id") ? Rcpp::as<Rcpp::CharacterVector>(orders["order_id"]) : Rcpp::CharacterVector();
+    Rcpp::IntegerVector order_asset = orders.containsElementNamed("asset_id") ? Rcpp::as<Rcpp::IntegerVector>(orders["asset_id"]) : Rcpp::IntegerVector();
+    Rcpp::IntegerVector action = orders.containsElementNamed("action_code") ? Rcpp::as<Rcpp::IntegerVector>(orders["action_code"]) : Rcpp::IntegerVector(order_asset.size(), 0);
+    Rcpp::IntegerVector dir = orders.containsElementNamed("dir_code") ? Rcpp::as<Rcpp::IntegerVector>(orders["dir_code"]) : Rcpp::IntegerVector(order_asset.size(), 0);
+    Rcpp::IntegerVector order_type = orders.containsElementNamed("order_type_code") ? Rcpp::as<Rcpp::IntegerVector>(orders["order_type_code"]) : Rcpp::IntegerVector(order_asset.size(), 0);
+    Rcpp::NumericVector qty = orders.containsElementNamed("qty") ? Rcpp::as<Rcpp::NumericVector>(orders["qty"]) : Rcpp::NumericVector(order_asset.size(), 0.0);
+    Rcpp::NumericVector price = orders.containsElementNamed("execution_price") ? Rcpp::as<Rcpp::NumericVector>(orders["execution_price"]) : Rcpp::NumericVector(order_asset.size(), NA_REAL);
+    Rcpp::IntegerVector strat_id = orders.containsElementNamed("strat_id") ? Rcpp::as<Rcpp::IntegerVector>(orders["strat_id"]) : Rcpp::IntegerVector(order_asset.size(), 0);
+    Rcpp::IntegerVector action_id = orders.containsElementNamed("action_id") ? Rcpp::as<Rcpp::IntegerVector>(orders["action_id"]) : Rcpp::IntegerVector(order_asset.size(), 0);
+    Rcpp::LogicalVector fee_aware = orders.containsElementNamed("target_derived") ? Rcpp::as<Rcpp::LogicalVector>(orders["target_derived"]) : Rcpp::LogicalVector(order_asset.size(), false);
+    Rcpp::DataFrame legacy_orders = Rcpp::DataFrame::create(
+      Rcpp::Named("order_id") = order_id, Rcpp::Named("asset_id") = order_asset,
+      Rcpp::Named("action") = action, Rcpp::Named("dir") = dir,
+      Rcpp::Named("order_type") = order_type, Rcpp::Named("ctr_qty") = qty,
+      Rcpp::Named("price") = price, Rcpp::Named("strat_id") = strat_id,
+      Rcpp::Named("action_id") = action_id, Rcpp::Named("fee_aware_target") = fee_aware
+    );
+    Rcpp::NumericMatrix covariance(bar_asset.size(), bar_asset.size());
+    if (corporate_actions.containsElementNamed("asset_i") && corporate_actions.containsElementNamed("asset_j") && corporate_actions.containsElementNamed("covariance")) {
+      Rcpp::IntegerVector asset_i = corporate_actions["asset_i"];
+      Rcpp::IntegerVector asset_j = corporate_actions["asset_j"];
+      Rcpp::NumericVector covariance_value = corporate_actions["covariance"];
+      for (R_xlen_t k = 0; k < asset_i.size(); ++k) for (R_xlen_t i = 0; i < bar_asset.size(); ++i) for (R_xlen_t j = 0; j < bar_asset.size(); ++j) {
+        if (asset_i[k] == bar_asset[i] && asset_j[k] == bar_asset[j]) covariance(i, j) = covariance_value[k];
+      }
+    }
+    Rcpp::List result = portfolio_step_kernel(
+      legacy_states,
+      Rcpp::DataFrame::create(Rcpp::Named("asset_id") = bar_asset, Rcpp::Named("timestamp") = bar_timestamp, Rcpp::Named("open") = bar_open, Rcpp::Named("high") = bar_high, Rcpp::Named("low") = bar_low, Rcpp::Named("close") = bar_close),
+      legacy_orders, covariance, setting("shared_cash", 0.0), margin_size, bar_step,
+      setting("lev", 10.0), setting("fee_rt", 0.0), setting("maker_fee_rt", NA_REAL), setting("taker_fee_rt", NA_REAL), setting("fund_rt", 0.0), setting("funding_interval_hours", 8.0), setting("mmr", 0.02), setting("portfolio_margin_sigma", 3.0), setting("portfolio_margin_floor", 0.02), setting("old_timestamp", NA_REAL), setting("slippage", 0.0), setting("spread", 0.0), setting_bool("rec", true)
+    );
+    // Project the shared derivative kernel result into the heterogeneous
+    // account contract. The legacy-shaped fields remain present for public
+    // sim_portfolio_step() compatibility; exchange adapters consume these
+    // typed balances and margin positions instead.
+    Rcpp::List result_states = result["states"];
+    Rcpp::IntegerVector output_asset(bar_asset.size());
+    Rcpp::CharacterVector output_currency(bar_asset.size(), base_currency);
+    Rcpp::NumericVector output_units(bar_asset.size());
+    Rcpp::NumericVector output_settlement(bar_asset.size());
+    Rcpp::NumericVector output_last(bar_asset.size());
+    Rcpp::NumericVector output_size(bar_asset.size());
+    Rcpp::NumericVector output_mmr(bar_asset.size(), setting("mmr", 0.02));
+    for (R_xlen_t i = 0; i < bar_asset.size(); ++i) {
+      Rcpp::List state = result_states[i];
+      output_asset[i] = bar_asset[i];
+      output_units[i] = Rcpp::as<int>(state["pos_dir"]) * Rcpp::as<double>(state["ctr_unit"]);
+      output_settlement[i] = Rcpp::as<double>(state["avg_price"]);
+      output_last[i] = Rcpp::as<double>(state["last_px"]);
+      output_size[i] = margin_size[i];
+    }
+    result["cash_balances"] = Rcpp::DataFrame::create(
+      Rcpp::Named("currency") = Rcpp::CharacterVector::create(base_currency),
+      Rcpp::Named("settled") = Rcpp::NumericVector::create(Rcpp::as<double>(result["cash"])),
+      Rcpp::Named("unsettled") = Rcpp::NumericVector::create(0.0)
+    );
+    result["margin_positions"] = Rcpp::DataFrame::create(
+      Rcpp::Named("asset_id") = output_asset,
+      Rcpp::Named("currency") = output_currency,
+      Rcpp::Named("signed_units") = output_units,
+      Rcpp::Named("settlement_price") = output_settlement,
+      Rcpp::Named("last_price") = output_last,
+      Rcpp::Named("contract_size") = output_size,
+      Rcpp::Named("maintenance_rate") = output_mmr
+    );
+    Rcpp::List legacy_events = result["events"];
+    Rcpp::IntegerVector event_action = legacy_events.containsElementNamed("action_id") ? Rcpp::as<Rcpp::IntegerVector>(legacy_events["action_id"]) : Rcpp::IntegerVector();
+    Rcpp::IntegerVector event_asset_id = legacy_events.containsElementNamed("asset_id") ? Rcpp::as<Rcpp::IntegerVector>(legacy_events["asset_id"]) : Rcpp::IntegerVector();
+    Rcpp::IntegerVector event_status = legacy_events.containsElementNamed("status") ? Rcpp::as<Rcpp::IntegerVector>(legacy_events["status"]) : Rcpp::IntegerVector();
+    Rcpp::NumericVector event_time = legacy_events.containsElementNamed("timestamp") ? Rcpp::as<Rcpp::NumericVector>(legacy_events["timestamp"]) : Rcpp::NumericVector();
+    Rcpp::NumericVector event_qty = legacy_events.containsElementNamed("ctr_qty") ? Rcpp::as<Rcpp::NumericVector>(legacy_events["ctr_qty"]) : Rcpp::NumericVector();
+    Rcpp::NumericVector event_price = legacy_events.containsElementNamed("price") ? Rcpp::as<Rcpp::NumericVector>(legacy_events["price"]) : Rcpp::NumericVector();
+    Rcpp::NumericVector event_fee = legacy_events.containsElementNamed("fee") ? Rcpp::as<Rcpp::NumericVector>(legacy_events["fee"]) : Rcpp::NumericVector();
+    Rcpp::NumericVector event_realized = legacy_events.containsElementNamed("realized_pnl") ? Rcpp::as<Rcpp::NumericVector>(legacy_events["realized_pnl"]) : Rcpp::NumericVector();
+    Rcpp::CharacterVector group_id = orders.containsElementNamed("atomic_group_id") ? Rcpp::as<Rcpp::CharacterVector>(orders["atomic_group_id"]) : order_id;
+    std::vector<std::string> fill_id, fill_order_id, fill_group_id, fill_status, fill_reason;
+    std::vector<int> fill_asset;
+    std::vector<double> fill_timestamp, fill_quantity, fill_price, fill_fee, fill_realized;
+    std::vector<bool> event_used(event_action.size(), false);
+    for (R_xlen_t oi = 0; oi < order_asset.size(); ++oi) {
+      R_xlen_t match = -1;
+      for (R_xlen_t ei = 0; ei < event_action.size(); ++ei) {
+        if (!event_used[ei] && event_action[ei] == action_id[oi] && event_asset_id[ei] == order_asset[oi]) { match = ei; event_used[ei] = true; break; }
+      }
+      const bool filled = match >= 0 && event_status[match] == static_cast<int>(TRADESIMR::ActionStatus::FILLED);
+      const bool rejected = match >= 0 && !filled;
+      fill_id.push_back("HDFILL" + std::to_string(oi + 1));
+      fill_order_id.push_back(Rcpp::as<std::string>(order_id[oi]));
+      fill_group_id.push_back(Rcpp::as<std::string>(group_id[oi]));
+      fill_asset.push_back(order_asset[oi]);
+      fill_status.push_back(filled ? "filled" : (rejected ? "rejected" : "pending"));
+      fill_reason.push_back(filled ? "filled" : (rejected ? "execution_rejected" : "next_bar_not_eligible"));
+      fill_timestamp.push_back(match >= 0 ? event_time[match] : timestamp);
+      fill_quantity.push_back(match >= 0 ? event_qty[match] : 0.0);
+      fill_price.push_back(match >= 0 ? event_price[match] : price[oi]);
+      fill_fee.push_back(match >= 0 ? event_fee[match] : 0.0);
+      fill_realized.push_back(match >= 0 ? event_realized[match] : 0.0);
+    }
+    std::vector<bool> fill_committed_bool;
+    fill_committed_bool.reserve(fill_status.size());
+    for (const auto& status : fill_status) fill_committed_bool.push_back(status == "filled");
+    result["fills"] = Rcpp::DataFrame::create(
+      Rcpp::Named("fill_id") = Rcpp::wrap(fill_id), Rcpp::Named("event_timestamp") = Rcpp::wrap(fill_timestamp),
+      Rcpp::Named("order_id") = Rcpp::wrap(fill_order_id), Rcpp::Named("atomic_group_id") = Rcpp::wrap(fill_group_id),
+      Rcpp::Named("asset_id") = Rcpp::wrap(fill_asset), Rcpp::Named("status") = Rcpp::wrap(fill_status),
+      Rcpp::Named("reason_code") = Rcpp::wrap(fill_reason), Rcpp::Named("committed") = bool_vec_to_logical(fill_committed_bool),
+      Rcpp::Named("qty") = Rcpp::wrap(fill_quantity), Rcpp::Named("price") = Rcpp::wrap(fill_price),
+      Rcpp::Named("fee") = Rcpp::wrap(fill_fee), Rcpp::Named("realized_pnl") = Rcpp::wrap(fill_realized)
+    );
+    std::vector<std::string> group_ids, group_status, group_reason;
+    std::vector<bool> group_committed;
+    std::vector<double> group_timestamp;
+    for (std::size_t i = 0; i < fill_group_id.size(); ++i) {
+      const std::string& id = fill_group_id[i];
+      if (std::find(group_ids.begin(), group_ids.end(), id) != group_ids.end()) continue;
+      bool pending = false, rejected = false;
+      std::string reason = "filled";
+      for (std::size_t j = i; j < fill_group_id.size(); ++j) if (fill_group_id[j] == id) {
+        if (fill_status[j] == "rejected") { rejected = true; reason = fill_reason[j]; }
+        else if (fill_status[j] == "pending" && !rejected) { pending = true; reason = fill_reason[j]; }
+      }
+      group_ids.push_back(id);
+      group_committed.push_back(!pending && !rejected);
+      group_status.push_back(rejected ? "rejected" : (pending ? "pending" : "committed"));
+      group_reason.push_back(reason);
+      group_timestamp.push_back(fill_timestamp[i]);
+    }
+    result["groups"] = Rcpp::DataFrame::create(
+      Rcpp::Named("atomic_group_id") = Rcpp::wrap(group_ids), Rcpp::Named("group_status") = Rcpp::wrap(group_status),
+      Rcpp::Named("group_reason_code") = Rcpp::wrap(group_reason), Rcpp::Named("committed") = bool_vec_to_logical(group_committed),
+      Rcpp::Named("event_timestamp") = Rcpp::wrap(group_timestamp), Rcpp::Named("equity") = Rcpp::NumericVector(group_ids.size(), Rcpp::as<double>(result["equity"])),
+      Rcpp::Named("maintenance_margin") = Rcpp::NumericVector(group_ids.size(), Rcpp::as<double>(result["maintenance_margin"])),
+      Rcpp::Named("liquidated") = Rcpp::LogicalVector(group_ids.size(), Rcpp::as<bool>(result["liquidated"]))
+    );
+    return result;
+  }
   Rcpp::CharacterVector cash_ccy = Rcpp::clone(Rcpp::as<Rcpp::CharacterVector>(cash_balances["currency"]));
   Rcpp::NumericVector cash_settled = Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(cash_balances["settled"]));
   Rcpp::NumericVector cash_unsettled = Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(cash_balances["unsettled"]));
@@ -1014,6 +1231,7 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
   Rcpp::NumericVector margin_last = Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(margin_positions["last_price"]));
   Rcpp::NumericVector margin_size = Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(margin_positions["contract_size"]));
   Rcpp::NumericVector margin_mmr = Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(margin_positions["maintenance_rate"]));
+  Rcpp::NumericVector margin_old_timestamp = margin_positions.containsElementNamed("old_timestamp") ? Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(margin_positions["old_timestamp"])) : Rcpp::NumericVector(margin_asset.size(), NA_REAL);
   Rcpp::IntegerVector bar_asset = bars["asset_id"];
   Rcpp::NumericVector bar_close = bars["close"];
   Rcpp::NumericVector bar_high = bars.containsElementNamed("high") ? bars["high"] : Rcpp::NumericVector(bar_asset.size(), NA_REAL);
@@ -1032,10 +1250,56 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
     for (R_xlen_t i = 0; i < cash_ccy.size(); ++i) if (Rcpp::as<std::string>(cash_ccy[i]) == ccy) return i;
     return static_cast<R_xlen_t>(-1);
   };
+  const bool mixed_portfolio_native = settlements.containsElementNamed("execution_mode") && settlements.nrows() > 0 &&
+    Rcpp::as<std::string>(Rcpp::as<Rcpp::CharacterVector>(settlements["execution_mode"])[0]) == "mixed_portfolio_native";
+  auto numeric_setting = [&](const char* name, double fallback) {
+    if (!settlements.containsElementNamed(name)) return fallback;
+    Rcpp::NumericVector values = settlements[name];
+    return values.size() && std::isfinite(values[0]) ? values[0] : fallback;
+  };
+  const double mixed_lev = numeric_setting("lev", 10.0);
+  const double mixed_sigma = numeric_setting("portfolio_margin_sigma", 3.0);
+  const double mixed_floor = numeric_setting("portfolio_margin_floor", 0.02);
+  Rcpp::IntegerVector covariance_i = corporate_actions.containsElementNamed("asset_i") ? Rcpp::as<Rcpp::IntegerVector>(corporate_actions["asset_i"]) : Rcpp::IntegerVector();
+  Rcpp::IntegerVector covariance_j = corporate_actions.containsElementNamed("asset_j") ? Rcpp::as<Rcpp::IntegerVector>(corporate_actions["asset_j"]) : Rcpp::IntegerVector();
+  Rcpp::NumericVector covariance_value = corporate_actions.containsElementNamed("covariance") ? Rcpp::as<Rcpp::NumericVector>(corporate_actions["covariance"]) : Rcpp::NumericVector();
+  auto unified_equity = [&]() {
+    double value = 0.0;
+    for (R_xlen_t i = 0; i < cash_ccy.size(); ++i) value += (cash_settled[i] + cash_unsettled[i]) * rate_for(Rcpp::as<std::string>(cash_ccy[i]));
+    for (R_xlen_t i = 0; i < inventory_asset.size(); ++i) value += inventory_units[i] * inventory_last[i] * inventory_size[i] * rate_for(Rcpp::as<std::string>(inventory_ccy[i]));
+    for (R_xlen_t i = 0; i < margin_asset.size(); ++i) {
+      const double settle = std::isfinite(margin_settle[i]) ? margin_settle[i] : margin_last[i];
+      value += margin_units[i] * (margin_last[i] - settle) * margin_size[i] * rate_for(Rcpp::as<std::string>(margin_ccy[i]));
+    }
+    return value;
+  };
+  auto unified_margin = [&]() {
+    std::vector<int> assets;
+    std::vector<double> exposures;
+    auto add_exposure = [&](int asset, double exposure) {
+      for (std::size_t i = 0; i < assets.size(); ++i) if (assets[i] == asset) { exposures[i] += exposure; return; }
+      assets.push_back(asset); exposures.push_back(exposure);
+    };
+    for (R_xlen_t i = 0; i < inventory_asset.size(); ++i) add_exposure(inventory_asset[i], inventory_units[i] * inventory_last[i] * inventory_size[i] * rate_for(Rcpp::as<std::string>(inventory_ccy[i])));
+    for (R_xlen_t i = 0; i < margin_asset.size(); ++i) add_exposure(margin_asset[i], margin_units[i] * margin_last[i] * margin_size[i] * rate_for(Rcpp::as<std::string>(margin_ccy[i])));
+    double gross = 0.0, variance = 0.0;
+    for (std::size_t i = 0; i < exposures.size(); ++i) {
+      gross += std::abs(exposures[i]);
+      for (std::size_t j = 0; j < exposures.size(); ++j) {
+        double covariance = i == j ? 1.0 : 0.0;
+        for (R_xlen_t k = 0; k < covariance_value.size(); ++k) {
+          if (covariance_i[k] == assets[i] && covariance_j[k] == assets[j]) { covariance = covariance_value[k]; break; }
+        }
+        variance += exposures[i] * covariance * exposures[j];
+      }
+    }
+    return std::max(mixed_sigma * std::sqrt(std::max(0.0, variance)), mixed_floor * gross);
+  };
   std::vector<double> event_amount;
   std::vector<int> event_asset;
   std::vector<std::string> event_ccy;
   std::vector<double> event_settlement;
+  std::vector<std::string> event_type_label;
   std::vector<std::string> fill_order_id;
   std::vector<int> fill_asset_id;
   std::vector<std::string> fill_status;
@@ -1048,6 +1312,19 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
   std::vector<int> fill_committed;
   std::vector<double> fill_resulting_qty;
   std::vector<double> fill_resulting_cash;
+
+  // Admission is evaluated at the completed boundary.  Seed previously
+  // unvalued inventory with that boundary close before testing a mixed group;
+  // otherwise an initial spot leg produces NA equity and rejects the entire
+  // atomic rebalance.
+  if (mixed_portfolio_native) {
+    for (R_xlen_t i = 0; i < inventory_asset.size(); ++i) {
+      if (std::isfinite(inventory_last[i])) continue;
+      for (R_xlen_t j = 0; j < bar_asset.size(); ++j) {
+        if (bar_asset[j] == inventory_asset[i]) { inventory_last[i] = bar_close[j]; break; }
+      }
+    }
+  }
 
   // Orders are normalized by R before crossing the C++ boundary. The kernel
   // owns profile-specific cash/inventory mutations and returns a typed outcome
@@ -1072,6 +1349,10 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
     Rcpp::CharacterVector order_type = orders["order_type"];
     Rcpp::NumericVector order_limit = orders["limit_price"];
     Rcpp::CharacterVector order_tif = orders["time_in_force"];
+    Rcpp::IntegerVector order_action = orders.containsElementNamed("action_code") ? Rcpp::as<Rcpp::IntegerVector>(orders["action_code"]) : Rcpp::IntegerVector(order_asset.size(), 0);
+    Rcpp::IntegerVector order_dir = orders.containsElementNamed("dir_code") ? Rcpp::as<Rcpp::IntegerVector>(orders["dir_code"]) : Rcpp::IntegerVector(order_asset.size(), 0);
+    Rcpp::LogicalVector order_target_derived = orders.containsElementNamed("target_derived") ? Rcpp::as<Rcpp::LogicalVector>(orders["target_derived"]) : Rcpp::LogicalVector(order_asset.size(), false);
+    Rcpp::NumericVector order_step = orders.containsElementNamed("ctr_step") ? Rcpp::as<Rcpp::NumericVector>(orders["ctr_step"]) : Rcpp::NumericVector(order_asset.size(), 1.0);
     std::string active_group;
     R_xlen_t group_fill_start = 0;
     Rcpp::NumericVector group_cash;
@@ -1095,6 +1376,43 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
         group_margin_settle = Rcpp::clone(margin_settle);
         group_margin_last = Rcpp::clone(margin_last);
         group_rejected = false;
+        // A group is a transaction boundary, not an execution ordering hint.
+        // Check limit eligibility for every member before allowing the first
+        // leg to mutate shared cash, inventory, or margin state.
+        R_xlen_t group_end = oi;
+        bool any_not_eligible = false;
+        bool any_ioc = false;
+        bool any_fok = false;
+        for (; group_end < order_asset.size() && Rcpp::as<std::string>(order_group[group_end]) == group; ++group_end) {
+          const std::string type0 = Rcpp::as<std::string>(order_type[group_end]);
+          const std::string side0 = Rcpp::as<std::string>(order_side[group_end]);
+          if (type0 != "limit" || side0 == "flat") continue;
+          bool eligible0 = false;
+          for (R_xlen_t bi = 0; bi < bar_asset.size(); ++bi) {
+            if (bar_asset[bi] != order_asset[group_end]) continue;
+            eligible0 = side0 == "buy" ? (std::isfinite(bar_low[bi]) && bar_low[bi] <= order_limit[group_end]) :
+              (std::isfinite(bar_high[bi]) && bar_high[bi] >= order_limit[group_end]);
+            break;
+          }
+          if (!eligible0) {
+            any_not_eligible = true;
+            const std::string tif0 = Rcpp::as<std::string>(order_tif[group_end]);
+            any_ioc = any_ioc || tif0 == "ioc";
+            any_fok = any_fok || tif0 == "fok";
+          }
+        }
+        if (any_not_eligible) {
+          const std::string status0 = any_fok ? "rejected" : (any_ioc ? "cancelled" : "pending");
+          const std::string reason0 = any_fok ? "atomic_group_rejected" : "limit_not_eligible";
+          for (R_xlen_t gj = oi; gj < group_end; ++gj) {
+            fill_order_id.push_back(Rcpp::as<std::string>(order_id[gj]));
+            fill_asset_id.push_back(order_asset[gj]); fill_status.push_back(status0); fill_reason.push_back(reason0);
+            fill_qty.push_back(0.0); fill_price.push_back(order_limit[gj]); fill_fee.push_back(0.0); fill_realized.push_back(0.0);
+            fill_group_id.push_back(group); fill_committed.push_back(0); fill_resulting_qty.push_back(0.0); fill_resulting_cash.push_back(NA_REAL);
+          }
+          oi = group_end - 1;
+          continue;
+        }
       }
       const std::string oid = Rcpp::as<std::string>(order_id[oi]);
       const std::string profile = Rcpp::as<std::string>(order_profile[oi]);
@@ -1188,8 +1506,20 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
           if (pi == static_cast<R_xlen_t>(-1)) {
             reason = "missing_margin_position";
           } else {
-            const double signed_qty = side == "buy" ? qty : (side == "sell" ? -qty : -margin_units[pi]);
-            const double units = std::abs(signed_qty);
+            const double prior_units = margin_units[pi];
+            double target_units = side == "buy" ? prior_units + qty : (side == "sell" ? prior_units - qty : 0.0);
+            // Target-weight orders carry the authoritative action plan from R.
+            // Explicit contract orders retain their historical signed-delta path.
+            if (mixed_portfolio_native && order_action[oi] != 0) {
+              const int action = order_action[oi];
+              const int direction = order_dir[oi] > 0 ? 1 : (order_dir[oi] < 0 ? -1 : 0);
+              if (action == 1) target_units = direction * qty;
+              else if (action == 2) target_units = prior_units + direction * qty;
+              else if (action == -2) target_units = prior_units - (prior_units >= 0.0 ? 1.0 : -1.0) * qty;
+              else if (action == -1) target_units = 0.0;
+            }
+            double signed_qty = target_units - prior_units;
+            double units = std::abs(signed_qty);
             const double notional = units * px * margin_size[pi];
             fee = notional * fee_rate;
             const R_xlen_t ci = cash_index(Rcpp::as<std::string>(margin_ccy[pi]));
@@ -1200,11 +1530,44 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
             } else if (std::abs(signed_qty) < 1e-12) {
               status = "no_op"; reason = "no_position_change"; fee = 0.0;
             } else {
-              cash_settled[ci] -= fee;
-              margin_units[pi] += signed_qty;
-              margin_last[pi] = px;
-              if (!std::isfinite(margin_settle[pi])) margin_settle[pi] = px;
-              status = "filled"; reason = "filled"; executed_qty = units;
+              auto feasible = [&](double delta) {
+                if (!mixed_portfolio_native) return true;
+                const double trial_fee = std::abs(delta) * px * margin_size[pi] * fee_rate;
+                if (cash_settled[ci] + 1e-10 < trial_fee) return false;
+                const double saved_cash = cash_settled[ci];
+                const double saved_units = margin_units[pi];
+                cash_settled[ci] -= trial_fee;
+                margin_units[pi] += delta;
+                const bool accepted = unified_equity() + 1e-10 >= unified_margin() &&
+                  std::abs(margin_units[pi] * px * margin_size[pi]) <= (unified_equity() * mixed_lev + 1e-10);
+                cash_settled[ci] = saved_cash;
+                margin_units[pi] = saved_units;
+                return accepted;
+              };
+              if (mixed_portfolio_native && !feasible(signed_qty) && order_target_derived[oi] == TRUE && std::abs(order_step[oi]) > 0.0) {
+                const double step = std::abs(order_step[oi]);
+                const long long max_steps = static_cast<long long>(std::floor(std::abs(signed_qty) / step + 1e-10));
+                long long low = 0, high = max_steps, best = 0;
+                while (low <= high) {
+                  const long long mid = low + (high - low) / 2;
+                  const double trial = (signed_qty >= 0.0 ? 1.0 : -1.0) * static_cast<double>(mid) * step;
+                  if (feasible(trial)) { best = mid; low = mid + 1; } else high = mid - 1;
+                }
+                signed_qty = (signed_qty >= 0.0 ? 1.0 : -1.0) * static_cast<double>(best) * step;
+                units = std::abs(signed_qty);
+                fee = units * px * margin_size[pi] * fee_rate;
+                if (best == 0) reason = "insufficient_portfolio_margin";
+              }
+              if (units > 1e-12 && feasible(signed_qty)) {
+                cash_settled[ci] -= fee;
+                margin_units[pi] += signed_qty;
+                margin_last[pi] = px;
+                if (!std::isfinite(margin_settle[pi])) margin_settle[pi] = px;
+                status = "filled"; reason = (std::abs(signed_qty - (target_units - prior_units)) > 1e-12) ? "margin_clipped" : "filled";
+                executed_qty = units;
+              } else if (units <= 1e-12 && std::abs(target_units - prior_units) > 1e-12) {
+                reason = "insufficient_portfolio_margin";
+              }
             }
           }
         } else {
@@ -1263,6 +1626,21 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
       if (bar_asset[j] != margin_asset[i]) continue;
       const std::string profile = Rcpp::as<std::string>(bar_profile[j]);
       if (profile != "future" && profile != "crypto_perp") continue;
+      if (mixed_portfolio_native && std::isfinite(margin_old_timestamp[i])) {
+        const double funding_rate = numeric_setting("fund_rt", 0.0);
+        const double interval_hours = numeric_setting("funding_interval_hours", 8.0);
+        const double dt = timestamp - margin_old_timestamp[i];
+        const double funding = funding_rate * dt * std::abs(margin_units[i] * margin_last[i] * margin_size[i]) /
+          (60.0 * 60.0 * interval_hours);
+        if (std::abs(funding) > 1e-12) {
+          const R_xlen_t ci = cash_index(Rcpp::as<std::string>(margin_ccy[i]));
+          if (ci < 0) Rcpp::stop("Every margin currency requires a cash balance row.");
+          cash_settled[ci] -= funding;
+          event_amount.push_back(-funding); event_asset.push_back(margin_asset[i]);
+          event_ccy.push_back(Rcpp::as<std::string>(margin_ccy[i])); event_settlement.push_back(margin_last[i]);
+          event_type_label.push_back("funding");
+        }
+      }
       margin_last[i] = bar_close[j];
       MarginPosition position;
       position.asset_id = margin_asset[i]; position.currency = Rcpp::as<std::string>(margin_ccy[i]);
@@ -1276,6 +1654,7 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
       if (std::abs(vm) > 1e-12) {
         event_amount.push_back(vm); event_asset.push_back(position.asset_id);
         event_ccy.push_back(position.currency); event_settlement.push_back(position.last_price);
+        event_type_label.push_back("variation_margin");
       }
       break;
     }
@@ -1296,7 +1675,7 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
   Rcpp::DataFrame cash_out = Rcpp::DataFrame::create(Rcpp::Named("currency") = cash_ccy, Rcpp::Named("settled") = cash_settled, Rcpp::Named("unsettled") = cash_unsettled);
   Rcpp::DataFrame inventory_out = Rcpp::DataFrame::create(Rcpp::Named("asset_id") = inventory_asset, Rcpp::Named("currency") = inventory_ccy, Rcpp::Named("units") = inventory_units, Rcpp::Named("average_cost") = inventory_cost, Rcpp::Named("last_price") = inventory_last, Rcpp::Named("contract_size") = inventory_size);
   Rcpp::DataFrame margin_out = Rcpp::DataFrame::create(Rcpp::Named("asset_id") = margin_asset, Rcpp::Named("currency") = margin_ccy, Rcpp::Named("signed_units") = margin_units, Rcpp::Named("settlement_price") = margin_settle, Rcpp::Named("last_price") = margin_last, Rcpp::Named("contract_size") = margin_size, Rcpp::Named("maintenance_rate") = margin_mmr);
-  Rcpp::DataFrame events = Rcpp::DataFrame::create(Rcpp::Named("timestamp") = Rcpp::NumericVector(event_amount.size(), timestamp), Rcpp::Named("event_type") = Rcpp::CharacterVector(event_amount.size(), "variation_margin"), Rcpp::Named("asset_id") = Rcpp::wrap(event_asset), Rcpp::Named("currency") = Rcpp::wrap(event_ccy), Rcpp::Named("amount") = Rcpp::wrap(event_amount), Rcpp::Named("settlement_price") = Rcpp::wrap(event_settlement));
+  Rcpp::DataFrame events = Rcpp::DataFrame::create(Rcpp::Named("timestamp") = Rcpp::NumericVector(event_amount.size(), timestamp), Rcpp::Named("event_type") = Rcpp::wrap(event_type_label), Rcpp::Named("asset_id") = Rcpp::wrap(event_asset), Rcpp::Named("currency") = Rcpp::wrap(event_ccy), Rcpp::Named("amount") = Rcpp::wrap(event_amount), Rcpp::Named("settlement_price") = Rcpp::wrap(event_settlement));
   std::vector<std::string> fill_id; for (R_xlen_t i = 0; i < static_cast<R_xlen_t>(fill_order_id.size()); ++i) fill_id.push_back("HFILL" + std::to_string(i + 1));
   Rcpp::DataFrame fills = Rcpp::DataFrame::create(Rcpp::Named("fill_id") = Rcpp::wrap(fill_id), Rcpp::Named("event_timestamp") = Rcpp::NumericVector(fill_order_id.size(), timestamp), Rcpp::Named("order_id") = Rcpp::wrap(fill_order_id), Rcpp::Named("atomic_group_id") = Rcpp::wrap(fill_group_id), Rcpp::Named("asset_id") = Rcpp::wrap(fill_asset_id), Rcpp::Named("status") = Rcpp::wrap(fill_status), Rcpp::Named("reason_code") = Rcpp::wrap(fill_reason), Rcpp::Named("committed") = Rcpp::wrap(fill_committed), Rcpp::Named("qty") = Rcpp::wrap(fill_qty), Rcpp::Named("price") = Rcpp::wrap(fill_price), Rcpp::Named("fee") = Rcpp::wrap(fill_fee), Rcpp::Named("realized_pnl") = Rcpp::wrap(fill_realized), Rcpp::Named("resulting_signed_quantity") = Rcpp::wrap(fill_resulting_qty), Rcpp::Named("resulting_currency_cash") = Rcpp::wrap(fill_resulting_cash));
   std::vector<std::string> group_ids, group_status, group_reason;

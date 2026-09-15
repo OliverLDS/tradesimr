@@ -21,8 +21,12 @@ adapters:
 - Incremental live-style exchange stepping.
 - Explicit order APIs and append-only command logs.
 - Registered tradable assets and multi-asset order routing.
-- Per-agent shared-cash live accounts.
-- Optional portfolio-margin enforcement through a multi-asset C++ step kernel.
+- Per-agent shared-cash live accounts with typed inventory and margin positions.
+- Atomic mixed-profile execution for spot/equity/ETF/FX inventory and
+  futures/perpetual margin legs, including durable variation-margin and
+  funding events.
+- Optional covariance-aware portfolio-margin enforcement through a multi-asset
+  C++ step kernel.
 - Durable event schemas with import/export helpers.
 - Scheduled simulated feeds with random walk, AR, GARCH, AR-GARCH, factor, and
   regime-style market models.

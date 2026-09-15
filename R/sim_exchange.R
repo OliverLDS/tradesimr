@@ -28,6 +28,13 @@ sim_exchange_new <- function(config = list()) {
   state$settlement_ledger <- sim_schemas()$settlement_ledger[0]
   state$corporate_actions <- sim_schemas()$corporate_actions[0]
   state$agent_states <- list()
+  # Authoritative derivatives state for heterogeneous portfolio execution.
+  # `agent_states` remains a compatibility projection for older APIs.
+  state$margin_positions <- data.table::data.table(
+    agent_id = character(), asset_id = integer(), currency = character(),
+    signed_units = numeric(), settlement_price = numeric(), last_price = numeric(),
+    contract_size = numeric(), maintenance_rate = numeric(), old_timestamp = numeric()
+  )
   # Spot inventory is deliberately distinct from the derivatives margin state.
   state$spot_states <- list()
   state$agent_accounts <- list()
@@ -427,6 +434,7 @@ sim_exchange_step <- function(exchange, bars) {
 
     for (agent_id in agents) {
       state_started <- .sim_profile_start(exchange)
+      requested_agent_id <- as.character(agent_id)
       permitted <- vapply(asset_ids, function(asset_id) .portfolio_agent_asset_allowed(exchange, agent_id, asset_id), logical(1L))
       for (asset_id in asset_ids[!permitted]) .portfolio_reject_forbidden_orders(exchange, agent_id, asset_id)
       agent_batch <- batch[permitted]
@@ -437,19 +445,19 @@ sim_exchange_step <- function(exchange, bars) {
       state_or_order <- vapply(seq_len(nrow(agent_batch)), function(i) {
         asset_id <- as.integer(agent_batch$asset_id[i])
         state_key <- .agent_state_key(agent_id, asset_id)
-        has_state <- state_key %in% boundary_index$state_keys
+        has_state <- state_key %in% boundary_index$state_keys || nrow(exchange$margin_positions[
+          agent_id == requested_agent_id & asset_id == as.integer(asset_id)
+        ]) > 0L
         has_order <- state_key %in% boundary_index$accepted_order_keys
         has_state || has_order
       }, logical(1L))
       agent_batch <- agent_batch[state_or_order]
       if (nrow(agent_batch) == 0L) next
-      states <- list()
       orders_all <- list()
       for (i in seq_len(nrow(agent_batch))) {
         asset <- .bar_asset_key(agent_batch[i])
         .ensure_agent_account(exchange, agent_id, asset_id = asset$asset_id, symbol = asset$symbol, agent_type = "human")
         state_key <- .agent_state_key(agent_id, asset$asset_id)
-        states[[as.character(asset$asset_id)]] <- .sync_state_cash_from_account(exchange, agent_id, exchange$agent_states[[state_key]])
         orders <- .exchange_orders_for_bar(
           exchange, agent_batch$timestamp[i], agent_id = agent_id, asset_id = asset$asset_id,
           candidate_orders = boundary_index$eligible_orders[[state_key]] %||% exchange$agent_orders[0]
@@ -464,36 +472,35 @@ sim_exchange_step <- function(exchange, bars) {
       orders <- data.table::rbindlist(orders_all, fill = TRUE)
       agent_asset_ids <- as.integer(agent_batch$asset_id)
       cov <- .cross_asset_covariance(exchange, agent_asset_ids)
-      step_config <- exchange$config[intersect(names(exchange$config), names(formals(sim_portfolio_step)))]
       asset_specs <- exchange$assets[match(agent_asset_ids, exchange$assets$asset_id)]
       if (anyNA(asset_specs$asset_id)) stop("Missing registered asset specification for portfolio step.", call. = FALSE)
-      step_config$ctr_step <- as.numeric(asset_specs$qty_step)
-      step_config$ctr_size <- as.numeric(asset_specs$contract_size)
-      step_config$cov <- cov
-      step_config$shared_cash <- .shared_cash(exchange, agent_id)
-      step_config$portfolio_margin_floor <- as.numeric(exchange$config$portfolio_margin_floor %||% exchange$config$mmr %||% 0.02)
-      attr(states, "tradesimr_profile_timings") <- profile_timings
-      step_args <- c(list(states = states, bars = agent_batch, orders = orders), step_config)
+      margin_input <- .heterogeneous_derivative_account_input(exchange, agent_id, agent_batch)
       .sim_profile_add(exchange, "exchange_state_updates", state_started)
-      step <- do.call(sim_portfolio_step, step_args)
+      step <- .heterogeneous_derivatives_account_step(
+        exchange, agent_id, margin_input, agent_batch, orders, cov
+      )
+      step$events <- .portfolio_kernel_events(step$events)
 
       ledger_started <- proc.time()[["elapsed"]]
       state_started <- .sim_profile_start(exchange)
-      exchange$agent_accounts[[as.character(agent_id)]]$cash <- as.numeric(step$cash %||% 0)
-      exchange$agent_accounts[[as.character(agent_id)]]$liquidated <- isTRUE(step$liquidated)
+      .heterogeneous_derivative_commit_state(exchange, agent_id, step, agent_batch$timestamp[1L])
       variation_events <- list()
-      for (asset_id in names(step$states)) {
-        requested_asset_id <- as.integer(asset_id)
+      for (requested_asset_id in as.integer(step$margin_positions$asset_id)) {
         state_key <- .agent_state_key(agent_id, requested_asset_id)
         asset_bar <- agent_batch[agent_batch$asset_id == requested_asset_id][1L]
         asset <- .bar_asset_key(asset_bar)
         variation <- .sim_exchange_apply_future_variation_margin(
-          exchange, step$states[[asset_id]], asset_bar, asset, agent_id
+          exchange, exchange$agent_states[[state_key]], asset_bar, asset, agent_id
         )
-        step$states[[asset_id]] <- variation$state
         if (nrow(variation$events) > 0L) variation_events[[length(variation_events) + 1L]] <- variation$events
         exchange$agent_states[[state_key]] <- variation$state
         exchange$agent_states[[state_key]]$cash <- .shared_cash(exchange, agent_id)
+        position_row <- which(exchange$margin_positions$agent_id == as.character(agent_id) &
+          exchange$margin_positions$asset_id == requested_asset_id)
+        if (length(position_row) == 1L) {
+          data.table::set(exchange$margin_positions, i = position_row, j = "settlement_price", value = variation$state$settlement_price %||% variation$state$avg_price)
+          data.table::set(exchange$margin_positions, i = position_row, j = "last_price", value = variation$state$last_px)
+        }
       }
       if (nrow(step$events) > 0L) {
         data.table::set(step$events, j = "agent_id", value = agent_id)
@@ -517,10 +524,8 @@ sim_exchange_step <- function(exchange, bars) {
         variation_events[, event_id := max(c(0L, exchange$step_events$event_id, step$events$event_id), na.rm = TRUE) + seq_len(.N)]
         new_event_list[[length(new_event_list) + 1L]] <- variation_events
       }
-      # The legacy portfolio kernel remains authoritative for order execution.
-      # Route the resulting account valuation and liquidation decision through
-      # the heterogeneous account kernel so profile-aware balances participate
-      # in the same post-boundary risk decision.
+      # Native heterogeneous derivative output has now committed the account
+      # state. Apply the shared cross-profile liquidation guard afterwards.
       .enforce_cross_margin(exchange, agent_id, agent_batch$timestamp[1L])
       account_snapshots <- .agent_position_snapshots(exchange, agent_id, agent_batch$timestamp[1L])
       if (nrow(account_snapshots) > 0L) {
@@ -677,6 +682,7 @@ sim_exchange_save <- function(exchange, path, format = c("csv", "fst")) {
     settlement_ledger = exchange$settlement_ledger,
     corporate_actions = exchange$corporate_actions,
     currency_cash_state = sim_exchange_cash_balances(exchange),
+    margin_position_state = exchange$margin_positions,
     agent_decisions = exchange$agent_decisions,
     agent_strategy_events = exchange$agent_strategy_events,
     agent_rankings = sim_agent_rankings(exchange),
@@ -856,6 +862,15 @@ sim_exchange_load <- function(path) {
     for (i in seq_len(nrow(balances))) {
       .ensure_shared_account(exchange, balances$agent_id[i])
       .profile_set_cash_balance(exchange, balances$agent_id[i], balances$currency[i], balances$amount[i])
+    }
+  }
+  if (file.exists(file.path(path, "margin_position_state.csv"))) {
+    exchange$margin_positions <- data.table::fread(file.path(path, "margin_position_state.csv"))
+    for (column in intersect(c("asset_id"), names(exchange$margin_positions))) {
+      data.table::set(exchange$margin_positions, j = column, value = as.integer(exchange$margin_positions[[column]]))
+    }
+    for (column in intersect(c("signed_units", "settlement_price", "last_price", "contract_size", "maintenance_rate", "old_timestamp"), names(exchange$margin_positions))) {
+      data.table::set(exchange$margin_positions, j = column, value = as.numeric(exchange$margin_positions[[column]]))
     }
   }
   if (file.exists(file.path(path, "agent_decisions.csv"))) exchange$agent_decisions <- data.table::fread(file.path(path, "agent_decisions.csv"))
@@ -1888,6 +1903,10 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
   agent_id <- as.character(agent_id)
   exchange$agent_accounts[[agent_id]]$cash <- 0
   exchange$agent_accounts[[agent_id]]$liquidated <- TRUE
+  if (nrow(exchange$margin_positions)) {
+    rows <- which(exchange$margin_positions$agent_id == agent_id)
+    if (length(rows)) data.table::set(exchange$margin_positions, i = rows, j = "signed_units", value = 0)
+  }
   keys <- names(exchange$agent_states)
   for (key in keys) {
     parsed <- .parse_agent_state_key(key)

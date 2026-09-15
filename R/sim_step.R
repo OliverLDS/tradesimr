@@ -167,34 +167,15 @@ sim_portfolio_step <- function(states,
   profile_timings <- attr(states, "tradesimr_profile_timings", exact = TRUE)
   attr(states, "tradesimr_profile_timings") <- NULL
   started <- proc.time()[["elapsed"]]
-  out <- portfolio_step_rcpp(
-    states = states,
-    bars = data.frame(
-      asset_id = as.integer(bars$asset_id),
-      timestamp = as.numeric(bars$timestamp),
-      open = as.numeric(bars$open),
-      high = as.numeric(bars$high),
-      low = as.numeric(bars$low),
-      close = as.numeric(bars$close)
-    ),
-    orders = order_batch,
-    cov = cov,
-    shared_cash = as.numeric(shared_cash),
-    ctr_size = ctr_size,
-    ctr_step = ctr_step,
-    lev = as.numeric(lev),
-    fee_rt = as.numeric(fee_rt),
-    maker_fee_rt = as.numeric(maker_fee_rt),
-    taker_fee_rt = as.numeric(taker_fee_rt),
-    fund_rt = as.numeric(fund_rt),
-    funding_interval_hours = as.numeric(funding_interval_hours),
-    mmr = as.numeric(mmr),
-    portfolio_margin_sigma = as.numeric(portfolio_margin_sigma),
-    portfolio_margin_floor = as.numeric(portfolio_margin_floor),
-    old_timestamp = as.numeric(if (length(states)) states[[1L]]$old_timestamp %||% NA_real_ else NA_real_),
-    slippage = as.numeric(slippage),
-    spread = as.numeric(spread),
-    rec = isTRUE(record)
+  out <- .heterogeneous_derivatives_portfolio_step(
+    states = states, bars = bars, orders = order_batch, cov = cov,
+    shared_cash = shared_cash, ctr_size = ctr_size, ctr_step = ctr_step,
+    lev = lev, fee_rt = fee_rt, maker_fee_rt = maker_fee_rt,
+    taker_fee_rt = taker_fee_rt, fund_rt = fund_rt,
+    funding_interval_hours = funding_interval_hours, mmr = mmr,
+    portfolio_margin_sigma = portfolio_margin_sigma,
+    portfolio_margin_floor = portfolio_margin_floor,
+    slippage = slippage, spread = spread, record = record
   )
   if (is.environment(profile_timings)) {
     profile_timings$portfolio_step_rcpp <- (profile_timings$portfolio_step_rcpp %||% 0) +
@@ -202,6 +183,96 @@ sim_portfolio_step <- function(states,
   }
   out$events <- if (isTRUE(record)) .portfolio_kernel_events(out$events) else data.table::data.table()
   out
+}
+
+#' @keywords internal
+.heterogeneous_derivatives_portfolio_step <- function(states,
+                                                       bars,
+                                                       orders,
+                                                       cov,
+                                                       shared_cash,
+                                                       ctr_size,
+                                                       ctr_step,
+                                                       lev,
+                                                       fee_rt,
+                                                       maker_fee_rt,
+                                                       taker_fee_rt,
+                                                       fund_rt,
+                                                       funding_interval_hours,
+                                                       mmr,
+                                                       portfolio_margin_sigma,
+                                                       portfolio_margin_floor,
+                                                       slippage,
+                                                       spread,
+                                                       record) {
+  asset_ids <- as.integer(bars$asset_id)
+  state_for <- function(asset_id, close, ctr_size, ctr_step) {
+    state <- states[[as.character(asset_id)]] %||% list()
+    list(
+      asset_id = as.integer(asset_id), currency = "USD",
+      signed_units = as.numeric(state$pos_dir %||% 0) * as.numeric(state$ctr_unit %||% 0),
+      settlement_price = as.numeric(state$settlement_price %||% state$avg_price %||% close),
+      last_price = as.numeric(state$last_px %||% close),
+      contract_size = as.numeric(ctr_size), maintenance_rate = as.numeric(mmr),
+      strat = as.integer(state$strat %||% 0L),
+      action_id_now = as.integer(state$action_id_now %||% 1L),
+      old_timestamp = as.numeric(state$old_timestamp %||% NA_real_),
+      liquidated = isTRUE(state$liquidated)
+    )
+  }
+  margin <- data.table::rbindlist(lapply(seq_along(asset_ids), function(i) {
+    data.table::as.data.table(state_for(asset_ids[i], bars$close[i], ctr_size[i], ctr_step[i]))
+  }))
+  action_to_side <- function(action, dir) {
+    action <- as.integer(action); dir <- as.integer(dir)
+    if (action == -1L) return("flat")
+    if (action == -2L) return(if (dir > 0L) "sell" else "buy")
+    if (dir > 0L) "buy" else "sell"
+  }
+  normalized_orders <- data.table::as.data.table(orders)
+  if (nrow(normalized_orders)) {
+    normalized_orders[, `:=`(
+      instrument_profile = "future",
+      side = vapply(seq_len(.N), function(i) action_to_side(action[i], dir[i]), character(1L)),
+      qty = as.numeric(ctr_qty),
+      execution_price = as.numeric(price),
+      fee_rt = as.numeric(fee_rt),
+      eligible_after = as.POSIXct(as.numeric(bars$timestamp[1L]) - 1e-6, origin = "1970-01-01", tz = "UTC"),
+      atomic_group_id = ifelse(is.na(order_id) | !nzchar(order_id), paste0("compat-", seq_len(.N)), order_id),
+      target_derived = as.logical(fee_aware_target),
+      time_in_force = "next_eligible_bar",
+      action_code = as.integer(action), dir_code = as.integer(dir),
+      order_type_code = as.integer(order_type), ctr_step = ctr_step[match(asset_id, asset_ids)]
+    )]
+  } else {
+    normalized_orders <- sim_heterogeneous_order_batch_schema()
+    normalized_orders[, `:=`(action_code = integer(), dir_code = integer(), order_type_code = integer(),
+      strat_id = integer(), action_id = integer(), ctr_step = numeric())]
+  }
+  settings <- data.frame(
+    execution_mode = "derivatives_native", shared_cash = as.numeric(shared_cash),
+    lev = as.numeric(lev), fee_rt = as.numeric(fee_rt), maker_fee_rt = as.numeric(maker_fee_rt),
+    taker_fee_rt = as.numeric(taker_fee_rt), fund_rt = as.numeric(fund_rt),
+    funding_interval_hours = as.numeric(funding_interval_hours), mmr = as.numeric(mmr),
+    portfolio_margin_sigma = as.numeric(portfolio_margin_sigma),
+    portfolio_margin_floor = as.numeric(portfolio_margin_floor),
+    old_timestamp = as.numeric(if (length(states)) states[[1L]]$old_timestamp %||% NA_real_ else NA_real_),
+    slippage = as.numeric(slippage), spread = as.numeric(spread), rec = isTRUE(record)
+  )
+  covariance <- data.table::as.data.table(as.data.frame(as.table(cov)))
+  data.table::setnames(covariance, c("asset_i_index", "asset_j_index", "covariance"))
+  covariance[, `:=`(asset_i = asset_ids[as.integer(asset_i_index)], asset_j = asset_ids[as.integer(asset_j_index)])]
+  result <- heterogeneous_account_step_rcpp(
+    "USD",
+    data.frame(currency = "USD", settled = as.numeric(shared_cash), unsettled = 0),
+    data.frame(asset_id = integer(), currency = character(), units = numeric(), average_cost = numeric(), last_price = numeric(), contract_size = numeric()),
+    data.frame(margin),
+    data.frame(asset_id = asset_ids, timestamp = as.numeric(bars$timestamp), open = as.numeric(bars$open), high = as.numeric(bars$high), low = as.numeric(bars$low), close = as.numeric(bars$close), instrument_profile = "future", ctr_step = ctr_step),
+    data.frame(currency = "USD", rate_to_base = 1), settings,
+    data.frame(covariance[, .(asset_i, asset_j, covariance)]), data.frame(normalized_orders),
+    as.numeric(bars$timestamp[1L])
+  )
+  result
 }
 
 #' @keywords internal

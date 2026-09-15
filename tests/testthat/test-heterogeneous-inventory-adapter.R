@@ -98,6 +98,57 @@ test_that("mixed-profile target rebalances use one heterogeneous atomic group", 
   expect_setequal(filled$positions$symbol, c("SPY", "ES"))
   expect_equal(filled$positions$ctr_unit, c(50, 50))
   expect_equal(filled$account$equity, 10000)
+  expect_equal(exchange$margin_positions[agent_id == "arena" & asset_id == 2L, signed_units], 50)
+})
+
+test_that("mixed-profile target groups clip derivative exposure and roll back atomically", {
+  day1 <- as.POSIXct("2025-01-01", tz = "UTC")
+  bars <- data.frame(
+    timestamp = rep(day1, 2L), symbol = c("SPY", "ES"), asset_id = c(1L, 2L),
+    open = c(100, 100), high = c(101, 101), low = c(99, 99), close = c(100, 100)
+  )
+  exchange <- sim_exchange_new(list(cash = 10000, portfolio_margin = TRUE, lev = 1, fee_rt = .001))
+  sim_asset_add(exchange, "SPY", asset_id = 1L, instrument_profile = "equity")
+  sim_asset_add(exchange, "ES", asset_id = 2L, instrument_profile = "future")
+  execution <- sim_portfolio_execution(fee_rt = .001, lev = 1, max_gross_weight = 2)
+  sim_portfolio_target_step(exchange, "arena", bars, c(SPY = 0, ES = 1.5), execution)
+  sim_portfolio_target_step(exchange, "arena", transform(bars, timestamp = timestamp + 86400), NULL, execution)
+  order <- sim_exchange_orders(exchange)[symbol == "ES"]
+  expect_identical(order$status, "filled")
+  expect_equal(order$qty, 150)
+  expect_lt(order$fee, 10)
+  expect_lte(exchange$margin_positions[agent_id == "arena" & asset_id == 2L, signed_units], 100)
+
+  rollback <- sim_exchange_new(list(cash = 10000, portfolio_margin = TRUE, lev = 1))
+  sim_asset_add(rollback, "SPY", asset_id = 1L, instrument_profile = "equity")
+  sim_asset_add(rollback, "ES", asset_id = 2L, instrument_profile = "future")
+  sim_portfolio_target_step(rollback, "arena", bars, c(SPY = 1.1, ES = 0.5), execution)
+  sim_portfolio_target_step(rollback, "arena", transform(bars, timestamp = timestamp + 86400), NULL, execution)
+  expect_true(all(sim_exchange_orders(rollback)$status == "rejected"))
+  expect_true(all(sim_exchange_orders(rollback)$reason_code == "atomic_group_rejected"))
+  expect_equal(sum(sim_exchange_positions(rollback)$ctr_unit), 0)
+})
+
+test_that("mixed-profile heterogeneous state survives save/load", {
+  skip_if_not_installed("jsonlite")
+  exchange <- sim_exchange_new(list(cash = 10000, portfolio_margin = TRUE, lev = 1))
+  sim_asset_add(exchange, "SPY", asset_id = 1L, instrument_profile = "equity")
+  sim_asset_add(exchange, "ES", asset_id = 2L, instrument_profile = "future")
+  day1 <- as.POSIXct("2025-01-01", tz = "UTC")
+  bars <- data.frame(timestamp = rep(day1, 2L), symbol = c("SPY", "ES"), asset_id = c(1L, 2L),
+    open = 100, high = 101, low = 99, close = 100)
+  sim_portfolio_target_step(exchange, "arena", bars, c(SPY = .5, ES = .5))
+  sim_portfolio_target_step(exchange, "arena", transform(bars, timestamp = timestamp + 86400), NULL)
+  path <- tempfile("tradesimr-mixed-heterogeneous-")
+  sim_exchange_save(exchange, path)
+  restored <- sim_exchange_load(path)
+  expect_equal(restored$margin_positions[agent_id == "arena" & asset_id == 2L, signed_units], 50)
+  expect_equal(sim_exchange_positions(restored)[order(asset_id), ctr_unit], c(50, 50))
+  export_path <- tempfile("tradesimr-mixed-heterogeneous-export-")
+  exported <- sim_portfolio_export(restored, "arena", export_path)
+  fills <- data.table::as.data.table(jsonlite::read_json(exported[["fills"]], simplifyDataFrame = TRUE))
+  expect_equal(nrow(fills), 2L)
+  expect_true(all(c("order_id", "rebalance_id", "asset_id", "fee") %in% names(fills)))
 })
 
 test_that("fully paid inventory target weights reject short exposure", {
