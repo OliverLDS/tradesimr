@@ -115,6 +115,21 @@ sim_exchange_cash_balances <- function(exchange, agent_id = NULL) {
   out
 }
 
+#' @keywords internal
+.profile_cash_kernel_input <- function(exchange, agent_id) {
+  balances <- sim_exchange_cash_balances(exchange, agent_id)
+  if (!nrow(balances)) {
+    balances <- data.table::data.table(
+      currency = .profile_base_currency(exchange), amount = .shared_cash(exchange, agent_id), unsettled = 0
+    )
+  }
+  data.frame(
+    currency = as.character(balances$currency),
+    settled = as.numeric(balances$amount),
+    unsettled = as.numeric(balances$unsettled %||% 0)
+  )
+}
+
 #' Register a dividend, split, or bond-accrual corporate action
 #'
 #' Actions are applied at the first exchange step at or after their effective
@@ -311,16 +326,11 @@ sim_spot_target_submit <- function(exchange, agent_id, bars, target_weights, fee
   invisible(id)
 }
 .profile_agent_equity <- function(exchange, agent_id) {
-  cash <- sim_exchange_cash_balances(exchange, agent_id)$base_value
+  balances <- sim_exchange_cash_balances(exchange, agent_id)
+  cash <- balances$total_base_value %||% balances$base_value
   spot <- .agent_position_snapshots(exchange, agent_id, Sys.time())
   inventory <- if (nrow(spot)) sum(spot[accounting_model == "spot_inventory", notional], na.rm = TRUE) else 0
-  unsettled <- sum(vapply(names(exchange$spot_states %||% list()), function(key) {
-    parsed <- .parse_agent_state_key(key)
-    if (!identical(parsed$agent_id, as.character(agent_id))) return(0)
-    state <- exchange$spot_states[[key]]
-    .profile_to_base(exchange, state$unsettled_cash %||% 0, state$currency)
-  }, numeric(1L)), na.rm = TRUE)
-  sum(cash, na.rm = TRUE) + inventory + unsettled
+  sum(cash, na.rm = TRUE) + inventory
 }
 
 .profile_settle_due <- function(exchange, timestamp) {

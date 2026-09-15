@@ -25,6 +25,9 @@ current git history; `v0.9.0` follows `v0.7.0`.
   profile-aware balance state. Legacy account/currency fields are synchronized
   compatibility projections; settlement-lag proceeds survive save/load without
   being treated as settled collateral.
+- Heterogeneous inventory and mixed-profile adapters now pass both balance
+  components into C++ valuation and preserve them on commit, so pending
+  settlement cash is no longer dropped at an execution boundary.
 
 ### Validation
 

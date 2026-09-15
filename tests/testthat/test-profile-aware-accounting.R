@@ -60,6 +60,18 @@ test_that("typed cash balances retain settled and unsettled cash through settlem
   public <- sim_exchange_cash_balances(exchange, "alice")[currency == "EUR"]
   expect_equal(public$amount, 100)
   expect_equal(public$unsettled, 50)
+  input <- tradesimr:::.heterogeneous_inventory_account_input(exchange, "alice", bar)
+  expect_equal(input$cash_balances[input$cash_balances$currency == "EUR", "settled"], 100)
+  expect_equal(input$cash_balances[input$cash_balances$currency == "EUR", "unsettled"], 50)
+  kernel <- sim_heterogeneous_account_step(
+    base_currency = "USD", cash_balances = input$cash_balances,
+    inventory_positions = input$inventory_positions,
+    margin_positions = input$margin_positions,
+    bars = data.frame(asset_id = 1L, close = 50), fx_rates = input$fx_rates,
+    timestamp = day_1 + 2 * 86400
+  )
+  expect_equal(kernel$cash_balances[kernel$cash_balances$currency == "EUR", "unsettled"], 50)
+  expect_equal(kernel$equity, 1000)
 
   path <- tempfile("tradesimr-typed-cash-")
   sim_exchange_save(exchange, path)

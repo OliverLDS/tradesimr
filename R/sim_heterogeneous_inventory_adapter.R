@@ -208,7 +208,7 @@
   balances <- sim_exchange_cash_balances(exchange, agent_id)
   currencies <- unique(c(.profile_base_currency(exchange), balances$currency, inventory$currency))
   list(
-    cash_balances = data.frame(currency = balances$currency, settled = balances$amount, unsettled = 0),
+    cash_balances = .profile_cash_kernel_input(exchange, agent_id),
     inventory_positions = data.frame(inventory),
     margin_positions = data.frame(asset_id = integer(), currency = character(), signed_units = numeric(),
       settlement_price = numeric(), last_price = numeric(), contract_size = numeric(), maintenance_rate = numeric()),
@@ -251,6 +251,9 @@
   for (i in seq_len(nrow(proposed$cash_balances))) {
     row <- proposed$cash_balances[i, ]
     .profile_set_cash_balance(exchange, agent_id, row$currency, row$settled)
+    .profile_typed_cash_upsert(exchange, agent_id, row$currency,
+      unsettled = as.numeric(row$unsettled %||% 0),
+      timestamp = bars$timestamp[1L] %||% Sys.time())
   }
   for (i in seq_len(nrow(proposed$inventory_positions))) {
     row <- proposed$inventory_positions[i, ]
@@ -486,7 +489,7 @@
   balances <- sim_exchange_cash_balances(exchange, agent_id)
   currencies <- unique(c(.profile_base_currency(exchange), balances$currency, inventory$currency, margin$currency))
   list(
-    cash_balances = data.frame(currency = balances$currency, settled = balances$amount, unsettled = 0),
+    cash_balances = .profile_cash_kernel_input(exchange, agent_id),
     inventory_positions = data.frame(inventory), margin_positions = data.frame(margin),
     fx_rates = data.frame(currency = currencies, rate_to_base = vapply(currencies, function(currency) {
       .profile_fx_rate(exchange, currency, .profile_base_currency(exchange))

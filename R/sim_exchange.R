@@ -1440,13 +1440,15 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
   base_currency <- .profile_base_currency(exchange)
   balances <- sim_exchange_cash_balances(exchange, agent_id)
   if (!currency %in% balances$currency) {
-    balances <- data.table::rbindlist(list(balances, data.table::data.table(
-      agent_id = as.character(agent_id), currency = currency, amount = 0, base_value = 0
-    )), fill = TRUE)
+    # The typed kernel requires an explicit settlement-currency balance. Make
+    # it durable before the variation-margin event rather than inventing a
+    # transient zero row only for this C++ invocation.
+    .profile_set_cash_balance(exchange, agent_id, currency, 0)
+    balances <- sim_exchange_cash_balances(exchange, agent_id)
   }
   result <- sim_heterogeneous_account_step(
     base_currency = base_currency,
-    cash_balances = data.frame(currency = balances$currency, settled = balances$amount, unsettled = 0),
+    cash_balances = .profile_cash_kernel_input(exchange, agent_id),
     inventory_positions = data.frame(),
     margin_positions = data.frame(
       asset_id = asset$asset_id, currency = currency,
@@ -2099,7 +2101,7 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
   fx <- data.table::data.table(currency = currencies, rate_to_base = vapply(currencies, function(ccy) .profile_fx_rate(exchange, ccy, base_currency), numeric(1L)))
   sim_heterogeneous_account_step(
     base_currency = base_currency,
-    cash_balances = data.frame(currency = balances$currency, settled = balances$amount, unsettled = 0),
+    cash_balances = .profile_cash_kernel_input(exchange, agent_id),
     inventory_positions = data.frame(inventory), margin_positions = data.frame(margin),
     bars = data.frame(asset_id = integer(), close = numeric()), fx_rates = data.frame(fx),
     timestamp = timestamp
