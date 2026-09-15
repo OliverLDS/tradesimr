@@ -576,13 +576,17 @@
 .heterogeneous_v2_record_state <- function(exchange, agent_id, proposed, timestamp) {
   if (!.exchange_uses_heterogeneous_v2(exchange)) return(invisible(NULL))
   agent_id <- as.character(agent_id)
-  timestamp <- as.POSIXct(timestamp, tz = "UTC")
+  timestamp <- .profile_utc_timestamp(timestamp)
   replace_rows <- function(table_name, rows, key_columns) {
     if (!nrow(rows)) return(invisible(NULL))
     current <- exchange[[table_name]]
     key <- do.call(paste, c(current[, ..key_columns], sep = "\r"))
     replacement_key <- do.call(paste, c(rows[, ..key_columns], sep = "\r"))
     exchange[[table_name]] <- data.table::rbindlist(list(current[!key %in% replacement_key], rows), fill = TRUE)
+    if ("timestamp" %in% names(exchange[[table_name]])) {
+      data.table::set(exchange[[table_name]], j = "timestamp",
+        value = .profile_utc_timestamp(exchange[[table_name]]$timestamp))
+    }
     invisible(NULL)
   }
   cash <- data.table::as.data.table(proposed$cash_balances)

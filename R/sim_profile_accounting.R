@@ -81,22 +81,37 @@ sim_exchange_convert_cash <- function(exchange, agent_id, amount, from_ccy, to_c
 #'
 #' @param exchange A `tradesimr_exchange`.
 #' @param agent_id Optional account identifier.
-#' @return A data.table of currency balances and base-currency values.
+#' @return A data.table where `amount` is settled cash (kept for compatibility),
+#'   `unsettled` is pending settlement cash, and the base-value columns report
+#'   settled-only and total cash valuation respectively.
 #' @export
 sim_exchange_cash_balances <- function(exchange, agent_id = NULL) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
+  typed <- data.table::as.data.table(exchange$cash_balances %||% sim_schemas()$cash_balances[0])
   cash_keys <- names(exchange$currency_cash) %||% character()
-  ids <- if (is.null(agent_id)) unique(c(names(exchange$agent_accounts), sub("\r.*$", "", cash_keys))) else as.character(agent_id)
+  ids <- if (is.null(agent_id)) {
+    unique(c(names(exchange$agent_accounts), sub("\r.*$", "", cash_keys), typed$agent_id))
+  } else {
+    as.character(agent_id)
+  }
   rows <- unlist(lapply(ids, function(id) {
     agent_keys <- cash_keys[startsWith(cash_keys, paste0(id, "\r"))]
-    currencies <- unique(c(.profile_base_currency(exchange), sub("^.*\r", "", agent_keys)))
+    currencies <- unique(c(.profile_base_currency(exchange), sub("^.*\r", "", agent_keys),
+      typed[agent_id == id, currency]))
     lapply(currencies, function(ccy) data.table::data.table(
-      agent_id = id, currency = ccy, amount = .profile_cash_balance(exchange, id, ccy),
-      base_value = .profile_to_base(exchange, .profile_cash_balance(exchange, id, ccy), ccy)
+      agent_id = id, currency = ccy,
+      amount = .profile_cash_balance(exchange, id, ccy),
+      unsettled = .profile_unsettled_cash(exchange, id, ccy),
+      base_value = .profile_to_base(exchange, .profile_cash_balance(exchange, id, ccy), ccy),
+      total_base_value = .profile_to_base(exchange,
+        .profile_cash_balance(exchange, id, ccy) + .profile_unsettled_cash(exchange, id, ccy), ccy)
     ))
   }), recursive = FALSE)
   out <- data.table::rbindlist(rows, fill = TRUE)
-  if (!ncol(out)) out <- data.table::data.table(agent_id = character(), currency = character(), amount = numeric(), base_value = numeric())
+  if (!ncol(out)) {
+    out <- data.table::data.table(agent_id = character(), currency = character(), amount = numeric(),
+      unsettled = numeric(), base_value = numeric(), total_base_value = numeric())
+  }
   out
 }
 
@@ -206,19 +221,76 @@ sim_spot_target_submit <- function(exchange, agent_id, bars, target_weights, fee
 }
 
 .profile_base_currency <- function(exchange) toupper(as.character(exchange$config$base_currency %||% "USD"))
+.profile_utc_timestamp <- function(timestamp) {
+  structure(as.POSIXct(as.numeric(timestamp), origin = "1970-01-01", tz = "UTC"), tzone = "UTC")
+}
 .profile_currency <- function(exchange, currency = NULL) {
   value <- toupper(as.character(currency %||% .profile_base_currency(exchange)))
   if (is.na(value) || !nzchar(value)) .profile_base_currency(exchange) else value
 }
 .profile_cash_key <- function(agent_id, currency) paste(as.character(agent_id), toupper(as.character(currency)), sep = "\r")
+.profile_typed_cash_row <- function(exchange, agent_id, currency) {
+  balances <- exchange$cash_balances %||% sim_schemas()$cash_balances[0]
+  requested_agent_id <- as.character(agent_id)
+  requested_currency <- .profile_currency(exchange, currency)
+  # `which()` avoids creating a secondary data.table index every time a
+  # profile-aware balance is read from the hot execution path.
+  balances[which(agent_id == requested_agent_id & currency == requested_currency)]
+}
+.profile_typed_cash_upsert <- function(exchange, agent_id, currency, settled = NULL,
+                                       unsettled = NULL, timestamp = Sys.time()) {
+  agent_id <- as.character(agent_id)
+  currency <- .profile_currency(exchange, currency)
+  if (is.null(exchange$cash_balances)) exchange$cash_balances <- sim_schemas()$cash_balances[0]
+  existing <- .profile_typed_cash_row(exchange, agent_id, currency)
+  settled <- as.numeric(settled %||% if (nrow(existing)) existing$settled[1L] else 0)
+  unsettled <- as.numeric(unsettled %||% if (nrow(existing)) existing$unsettled[1L] else 0)
+  row <- data.table::data.table(agent_id = agent_id, currency = currency, settled = settled,
+    unsettled = unsettled, timestamp = .profile_utc_timestamp(timestamp))
+  index <- which(exchange$cash_balances$agent_id == agent_id & exchange$cash_balances$currency == currency)
+  if (length(index)) {
+    exchange$cash_balances <- exchange$cash_balances[-index]
+  }
+  exchange$cash_balances <- data.table::rbindlist(list(exchange$cash_balances, row), fill = TRUE)
+  data.table::set(exchange$cash_balances, j = "timestamp",
+    value = .profile_utc_timestamp(exchange$cash_balances$timestamp))
+  invisible(row)
+}
+.profile_project_typed_cash_balances <- function(exchange) {
+  balances <- exchange$cash_balances %||% sim_schemas()$cash_balances[0]
+  if (!nrow(balances)) return(invisible(NULL))
+  for (i in seq_len(nrow(balances))) {
+    row <- balances[i]
+    .ensure_shared_account(exchange, row$agent_id)
+    if (identical(row$currency, .profile_base_currency(exchange))) {
+      exchange$agent_accounts[[row$agent_id]]$cash <- as.numeric(row$settled)
+    } else {
+      exchange$currency_cash[[.profile_cash_key(row$agent_id, row$currency)]] <- as.numeric(row$settled)
+    }
+  }
+  invisible(NULL)
+}
+.profile_unsettled_cash <- function(exchange, agent_id, currency) {
+  row <- .profile_typed_cash_row(exchange, agent_id, currency)
+  if (nrow(row)) as.numeric(row$unsettled[1L]) else 0
+}
 .profile_cash_balance <- function(exchange, agent_id, currency) {
   currency <- .profile_currency(exchange, currency)
   if (identical(currency, .profile_base_currency(exchange))) return(.shared_cash(exchange, agent_id))
+  typed <- .profile_typed_cash_row(exchange, agent_id, currency)
+  if (nrow(typed)) return(as.numeric(typed$settled[1L]))
   as.numeric(exchange$currency_cash[[.profile_cash_key(agent_id, currency)]] %||% 0)
 }
 .profile_set_cash_balance <- function(exchange, agent_id, currency, amount) {
+  .ensure_shared_account(exchange, agent_id)
   currency <- .profile_currency(exchange, currency)
-  if (identical(currency, .profile_base_currency(exchange))) exchange$agent_accounts[[as.character(agent_id)]]$cash <- as.numeric(amount) else exchange$currency_cash[[.profile_cash_key(agent_id, currency)]] <- as.numeric(amount)
+  agent_id <- as.character(agent_id)
+  .profile_typed_cash_upsert(exchange, agent_id, currency, settled = as.numeric(amount))
+  if (identical(currency, .profile_base_currency(exchange))) {
+    exchange$agent_accounts[[agent_id]]$cash <- as.numeric(amount)
+  } else {
+    exchange$currency_cash[[.profile_cash_key(agent_id, currency)]] <- as.numeric(amount)
+  }
   invisible(amount)
 }
 .profile_fx_rate <- function(exchange, from_ccy, to_ccy = .profile_base_currency(exchange)) {
@@ -258,6 +330,9 @@ sim_spot_target_submit <- function(exchange, agent_id, bars, target_weights, fee
     row <- due[i]
     balance <- .profile_cash_balance(exchange, row$agent_id, row$currency) + row$amount
     .profile_set_cash_balance(exchange, row$agent_id, row$currency, balance)
+    .profile_typed_cash_upsert(exchange, row$agent_id, row$currency,
+      unsettled = .profile_unsettled_cash(exchange, row$agent_id, row$currency) - row$amount,
+      timestamp = timestamp)
     state_key <- .agent_state_key(row$agent_id, row$asset_id)
     if (!is.null(exchange$spot_states[[state_key]])) {
       exchange$spot_states[[state_key]]$unsettled_cash <- as.numeric(exchange$spot_states[[state_key]]$unsettled_cash %||% 0) - as.numeric(row$amount)
@@ -283,6 +358,9 @@ sim_spot_target_submit <- function(exchange, agent_id, bars, target_weights, fee
     asset_id = as.integer(asset_id), symbol = as.character(symbol), order_id = as.character(order_id),
     status = "pending", message = as.character(message))
   exchange$settlement_ledger <- data.table::rbindlist(list(exchange$settlement_ledger, row), fill = TRUE)
+  .profile_typed_cash_upsert(exchange, agent_id, currency,
+    unsettled = .profile_unsettled_cash(exchange, agent_id, currency) + as.numeric(amount),
+    timestamp = timestamp)
   invisible(id)
 }
 

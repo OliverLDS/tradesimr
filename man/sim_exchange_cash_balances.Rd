@@ -12,7 +12,9 @@ sim_exchange_cash_balances(exchange, agent_id = NULL)
 \item{agent_id}{Optional account identifier.}
 }
 \value{
-A data.table of currency balances and base-currency values.
+A data.table where \code{amount} is settled cash (kept for compatibility),
+\code{unsettled} is pending settlement cash, and the base-value columns report
+settled-only and total cash valuation respectively.
 }
 \description{
 Get profile-aware cash balances

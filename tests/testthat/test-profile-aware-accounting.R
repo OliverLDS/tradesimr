@@ -39,6 +39,39 @@ test_that("spot sales settle on the profile settlement calendar and corporate ac
   expect_identical(exchange$corporate_actions$status, "applied")
 })
 
+test_that("typed cash balances retain settled and unsettled cash through settlement and load", {
+  exchange <- sim_exchange_new(list(cash = 1000, base_currency = "USD"))
+  sim_asset_add(exchange, "SAP", asset_id = 1L, instrument_profile = "equity",
+    quote_ccy = "EUR", settlement_lag_days = 1)
+  sim_exchange_fx_rate(exchange, "USD", "EUR", 0.8, as.POSIXct("2025-01-01", tz = "UTC"))
+  sim_exchange_convert_cash(exchange, "alice", 250, "USD", "EUR")
+  day_1 <- as.POSIXct("2025-01-01", tz = "UTC")
+  bar <- data.frame(timestamp = day_1, symbol = "SAP", asset_id = 1L,
+    open = 50, high = 51, low = 49, close = 50)
+  sim_exchange_place_order(exchange, "alice", day_1, symbol = "SAP", side = "buy", qty = 2)
+  sim_exchange_step(exchange, bar)
+  sim_exchange_step(exchange, transform(bar, timestamp = timestamp + 86400))
+  sim_exchange_place_order(exchange, "alice", day_1 + 86400, symbol = "SAP", side = "sell", qty = 1)
+  sim_exchange_step(exchange, transform(bar, timestamp = timestamp + 2 * 86400))
+
+  typed <- exchange$cash_balances[agent_id == "alice" & currency == "EUR"]
+  expect_equal(typed$settled, 100)
+  expect_equal(typed$unsettled, 50)
+  public <- sim_exchange_cash_balances(exchange, "alice")[currency == "EUR"]
+  expect_equal(public$amount, 100)
+  expect_equal(public$unsettled, 50)
+
+  path <- tempfile("tradesimr-typed-cash-")
+  sim_exchange_save(exchange, path)
+  restored <- sim_exchange_load(path)
+  expect_equal(restored$cash_balances[agent_id == "alice" & currency == "EUR", settled], 100)
+  expect_equal(restored$cash_balances[agent_id == "alice" & currency == "EUR", unsettled], 50)
+  sim_exchange_settle(restored, day_1 + 3 * 86400)
+  settled <- restored$cash_balances[agent_id == "alice" & currency == "EUR"]
+  expect_equal(settled$settled, 150)
+  expect_equal(settled$unsettled, 0)
+})
+
 test_that("spot target submission plans atomically and executes only after its decision bar", {
   exchange <- sim_exchange_new(list(cash = 1000))
   sim_asset_add(exchange, "SPY", asset_id = 1L, instrument_profile = "etf", quote_ccy = "USD", qty_step = 1)

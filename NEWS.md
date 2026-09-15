@@ -21,6 +21,10 @@ current git history; `v0.9.0` follows `v0.7.0`.
 - The heterogeneous ledger records futures variation margin and funding as
   typed durable cash events. Unified liquidation evaluates inventory and margin
   equity together.
+- `cash_balances` now records settled and unsettled cash as the durable
+  profile-aware balance state. Legacy account/currency fields are synchronized
+  compatibility projections; settlement-lag proceeds survive save/load without
+  being treated as settled collateral.
 
 ### Validation
 

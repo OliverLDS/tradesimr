@@ -2,6 +2,7 @@
 
 export(PaperTrader)
 export(PaperTradingPlatform)
+export(TRADESIMR_ACCOUNT_SCHEMA_VERSION)
 export(TRADESIMR_SCHEMA_VERSION)
 export(as_market_bars)
 export(as_target_positions)

@@ -773,6 +773,8 @@ sim_exchange_load <- function(path) {
     list()
   }
   exchange <- sim_exchange_new(saved_config)
+  has_durable_cash_state <- file.exists(file.path(path, "cash_balances.csv")) ||
+    file.exists(file.path(path, "currency_cash_state.csv"))
   manifest_file <- file.path(path, "manifest.csv")
   if (file.exists(manifest_file)) {
     imported <- sim_import(path)
@@ -894,6 +896,9 @@ sim_exchange_load <- function(path) {
   }
   if (file.exists(file.path(path, "cash_balances.csv"))) {
     exchange$cash_balances <- data.table::fread(file.path(path, "cash_balances.csv"))
+    for (column in intersect(c("settled", "unsettled"), names(exchange$cash_balances))) {
+      data.table::set(exchange$cash_balances, j = column, value = as.numeric(exchange$cash_balances[[column]]))
+    }
     data.table::set(exchange$cash_balances, j = "timestamp", value = as.POSIXct(exchange$cash_balances$timestamp, tz = "UTC"))
   }
   if (file.exists(file.path(path, "inventory_positions.csv"))) {
@@ -919,11 +924,16 @@ sim_exchange_load <- function(path) {
   }
   if (file.exists(file.path(path, "currency_cash_state.csv"))) {
     balances <- data.table::fread(file.path(path, "currency_cash_state.csv"))
-    for (i in seq_len(nrow(balances))) {
-      .ensure_shared_account(exchange, balances$agent_id[i])
-      .profile_set_cash_balance(exchange, balances$agent_id[i], balances$currency[i], balances$amount[i])
+    # Typed balances are authoritative when available. Older saved exchanges
+    # only contain this compatibility projection and are migrated below.
+    if (!nrow(exchange$cash_balances)) {
+      for (i in seq_len(nrow(balances))) {
+        .ensure_shared_account(exchange, balances$agent_id[i])
+        .profile_set_cash_balance(exchange, balances$agent_id[i], balances$currency[i], balances$amount[i])
+      }
     }
   }
+  .profile_project_typed_cash_balances(exchange)
   if (file.exists(file.path(path, "margin_position_state.csv"))) {
     exchange$margin_positions <- data.table::fread(file.path(path, "margin_position_state.csv"))
     for (column in intersect(c("asset_id"), names(exchange$margin_positions))) {
@@ -1020,7 +1030,9 @@ sim_exchange_load <- function(path) {
             old_timestamp = as.numeric(latest$timestamp[i])
           )
         }
-        if (!is_spot_inventory) exchange$agent_accounts[[as.character(latest$agent_id[i])]]$cash <- as.numeric(latest$cash[i])
+        if (!is_spot_inventory && !has_durable_cash_state) {
+          .profile_set_cash_balance(exchange, latest$agent_id[i], .profile_base_currency(exchange), latest$cash[i])
+        }
       }
     }
   }
@@ -1061,10 +1073,16 @@ sim_exchange_load <- function(path) {
 
 #' @keywords internal
 .sim_exchange_migrate_schema <- function(exchange) {
-  durable_names <- intersect(names(sim_schemas()), names(as.list(exchange, all.names = TRUE)))
+  # `margin_positions` is the legacy runtime projection. The typed durable
+  # schema belongs to `typed_margin_positions`; never add typed columns to the
+  # compatibility projection during load-time migration.
+  durable_names <- setdiff(intersect(names(sim_schemas()), names(as.list(exchange, all.names = TRUE))), "margin_positions")
   tables <- lapply(durable_names, function(name) exchange[[name]])
   names(tables) <- durable_names
+  tables$margin_positions <- exchange$typed_margin_positions
   migrated <- sim_schema_migrate(tables)
+  exchange$typed_margin_positions <- migrated$margin_positions
+  migrated$margin_positions <- NULL
   for (name in names(migrated)) exchange[[name]] <- migrated[[name]]
   exchange$config$schema_version <- TRADESIMR_SCHEMA_VERSION
   invisible(exchange)
@@ -1381,6 +1399,13 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
       initial_cash = cash,
       liquidated = FALSE
     )
+  }
+  # Legacy account cash remains a compatibility projection. Keep the typed
+  # balance initialized even for legacy execution paths so profile-aware cash
+  # mutations have one durable source.
+  if (!nrow(.profile_typed_cash_row(exchange, agent_id, .profile_base_currency(exchange)))) {
+    .profile_typed_cash_upsert(exchange, agent_id, .profile_base_currency(exchange),
+      settled = exchange$agent_accounts[[agent_id]]$cash)
   }
   invisible(exchange$agent_accounts[[agent_id]])
 }
@@ -1900,6 +1925,8 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
 
 #' @keywords internal
 .shared_cash <- function(exchange, agent_id) {
+  typed <- .profile_typed_cash_row(exchange, agent_id, .profile_base_currency(exchange))
+  if (nrow(typed)) return(as.numeric(typed$settled[1L]))
   account <- exchange$agent_accounts[[as.character(agent_id)]]
   as.numeric(account$cash %||% exchange$config$cash %||% exchange$config$init_cash %||% 10000)
 }
@@ -1913,11 +1940,9 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
 #' @keywords internal
 .update_shared_cash <- function(exchange, agent_id, delta) {
   agent_id <- as.character(agent_id)
-  if (is.null(exchange$agent_accounts[[agent_id]])) {
-    exchange$agent_accounts[[agent_id]] <- list(cash = as.numeric(exchange$config$cash %||% exchange$config$init_cash %||% 10000), initial_cash = as.numeric(exchange$config$cash %||% exchange$config$init_cash %||% 10000), liquidated = FALSE)
-  }
-  cash <- as.numeric(exchange$agent_accounts[[agent_id]]$cash %||% 0) + as.numeric(delta %||% 0)
-  exchange$agent_accounts[[agent_id]]$cash <- cash
+  .ensure_shared_account(exchange, agent_id)
+  cash <- .shared_cash(exchange, agent_id) + as.numeric(delta %||% 0)
+  .profile_set_cash_balance(exchange, agent_id, .profile_base_currency(exchange), cash)
   invisible(cash)
 }
 
@@ -1988,7 +2013,7 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
   maintenance_margin <- max(as.numeric(account$maintenance_margin %||% 0), covariance_margin, na.rm = TRUE)
   if (!is.finite(equity) || equity >= maintenance_margin) return(invisible(FALSE))
   agent_id <- as.character(agent_id)
-  exchange$agent_accounts[[agent_id]]$cash <- 0
+  .profile_set_cash_balance(exchange, agent_id, .profile_base_currency(exchange), 0)
   exchange$agent_accounts[[agent_id]]$liquidated <- TRUE
   if (nrow(exchange$margin_positions)) {
     rows <- which(exchange$margin_positions$agent_id == agent_id)
@@ -2020,8 +2045,12 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
     state$unsettled_cash <- 0
     exchange$spot_states[[key]] <- state
   }
-  cash_keys <- as.character(names(exchange$currency_cash %||% list()) %||% character())
-  for (key in cash_keys[startsWith(cash_keys, paste0(agent_id, "\r"))]) exchange$currency_cash[[key]] <- 0
+  requested_agent_id <- agent_id
+  cash_rows <- exchange$cash_balances[agent_id == requested_agent_id]
+  for (currency in cash_rows$currency) {
+    .profile_set_cash_balance(exchange, agent_id, currency, 0)
+    .profile_typed_cash_upsert(exchange, agent_id, currency, unsettled = 0, timestamp = timestamp)
+  }
   exchange$event_log <- data.table::rbindlist(list(exchange$event_log, data.table::data.table(
     timestamp = timestamp,
     source = "risk",
