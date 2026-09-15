@@ -55,3 +55,40 @@ test_that("derivative portfolio adapter persists heterogeneous margin state", {
   expect_equal(sim_exchange_positions(resumed), sim_exchange_positions(exchange))
   expect_equal(sim_exchange_account(resumed), sim_exchange_account(exchange))
 })
+
+test_that("complete native derivative boundaries do not need a duplicate R margin pass", {
+  exchange <- sim_exchange_new(list(cash = 100000, lev = 1, portfolio_margin = TRUE, fee_rt = 0.001))
+  sim_asset_add(exchange, "BTC-PERP", asset_id = 7L, asset_class = "crypto_perp", contract_size = 1, qty_step = 0.001)
+  sim_asset_add(exchange, "ETH-PERP", asset_id = 8L, asset_class = "crypto_perp", contract_size = 1, qty_step = 0.001)
+  execution <- sim_portfolio_execution(lev = 1, fee_rt = 0.001)
+  first <- data.frame(
+    timestamp = rep(as.POSIXct("2026-09-01", tz = "UTC"), 2L),
+    symbol = c("BTC-PERP", "ETH-PERP"), asset_id = c(7L, 8L),
+    open = c(100, 50), high = c(101, 51), low = c(99, 49), close = c(100, 50)
+  )
+  second <- first
+  second$timestamp <- second$timestamp + 86400
+  second[, c("open", "high", "low", "close")] <- list(c(101, 49), c(102, 50), c(100, 48), c(101, 49))
+  sim_portfolio_market_step(exchange, first, execution)
+  sim_portfolio_target_submit(exchange, "agent", first,
+    c(`BTC-PERP` = 0.4, `ETH-PERP` = -0.2), execution,
+    allowed_symbols = c("BTC-PERP", "ETH-PERP")
+  )
+  sim_portfolio_market_step(exchange, second, execution)
+
+  expect_true(tradesimr:::.portfolio_native_derivative_account_complete(exchange, "agent", second))
+  before <- list(
+    cash = tradesimr:::.shared_cash(exchange, "agent"),
+    margin = data.table::copy(exchange$margin_positions),
+    states = exchange$agent_states,
+    liquidated = exchange$agent_accounts[["agent"]]$liquidated
+  )
+  expect_false(tradesimr:::.enforce_cross_margin(exchange, "agent", second$timestamp[1L]))
+  after <- list(
+    cash = tradesimr:::.shared_cash(exchange, "agent"),
+    margin = data.table::copy(exchange$margin_positions),
+    states = exchange$agent_states,
+    liquidated = exchange$agent_accounts[["agent"]]$liquidated
+  )
+  expect_equal(after, before)
+})

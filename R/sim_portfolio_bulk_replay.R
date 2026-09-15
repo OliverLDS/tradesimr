@@ -74,6 +74,14 @@ sim_portfolio_target_replay <- function(exchange,
     stop("`allowed_symbols` must be a named list covering every panel agent.", call. = FALSE)
   }
   rebalance_policy <- .portfolio_validate_rebalance_policy(rebalance_policy, names(panel))
+  # Asset registration is immutable during a replay. Resolve every requested
+  # universe once instead of decoding the same agent configuration at each
+  # boundary.
+  allowed_assets_by_agent <- stats::setNames(lapply(agent_ids, function(current_agent_id) {
+    .portfolio_resolve_allowed_assets(
+      exchange, current_agent_id, allowed_symbols = allowed_symbols[[current_agent_id]]
+    )
+  }), agent_ids)
 
   accumulator <- new.env(parent = emptyenv())
   accumulator$step_snapshots <- list(data.table::copy(exchange$step_snapshots))
@@ -83,6 +91,9 @@ sim_portfolio_target_replay <- function(exchange,
   timings$portfolio_step_rcpp <- 0
   timings$ledger <- 0
   timings$boundary_normalization <- 0
+  timings$boundary_bar_slicing <- 0
+  timings$target_panel_slicing <- 0
+  timings$account_position_lookup <- 0
   timings$target_planning <- 0
   timings$exchange_state_updates <- 0
   timings$durable_append_bind <- 0
@@ -90,42 +101,56 @@ sim_portfolio_target_replay <- function(exchange,
   timings$boundary_snapshot_bookkeeping <- 0
   timings$execution_quality <- 0
   timings$serialization_export <- 0
+  timings$order_fill_event_ledger_writes <- 0
+  timings$snapshot_construction <- 0
+  timings$execution_quality_joins <- 0
+  timings$boundary_latency_seconds <- numeric()
   exchange$.bulk_accumulator <- accumulator
+  previous_covariance_cache <- exchange$.portfolio_covariance_cache %||% NULL
+  exchange$.portfolio_covariance_cache <- new.env(parent = emptyenv())
   exchange$.profile_timings <- if (isTRUE(profile)) timings else NULL
   on.exit({
     exchange$.bulk_accumulator <- NULL
+    exchange$.portfolio_covariance_cache <- previous_covariance_cache
     exchange$.profile_timings <- NULL
   }, add = TRUE)
 
   started <- proc.time()[["elapsed"]]
-  for (boundary_timestamp in unique(bars$timestamp)) {
+  boundary_values <- unique(as.numeric(bars$timestamp))
+  # Split once. Repeated logical filtering of the full bar/target panels was
+  # measurable on long Arena reconstructions.
+  bars_by_boundary <- split(bars, factor(as.numeric(bars$timestamp), levels = boundary_values))
+  panel_by_boundary <- split(panel, factor(as.numeric(panel$timestamp), levels = boundary_values))
+  for (boundary_index in seq_along(boundary_values)) {
     boundary_started <- proc.time()[["elapsed"]]
-    normalization_started <- .sim_profile_start(exchange)
-    boundary_bars <- bars[as.numeric(timestamp) == as.numeric(boundary_timestamp)]
-    .sim_profile_add(exchange, "boundary_normalization", normalization_started)
+    slicing_started <- .sim_profile_start(exchange)
+    boundary_bars <- data.table::as.data.table(bars_by_boundary[[boundary_index]])
+    .sim_profile_add(exchange, "boundary_bar_slicing", slicing_started)
     .portfolio_market_step_compact(exchange, boundary_bars, execution)
+    slicing_started <- .sim_profile_start(exchange)
+    decision_rows <- data.table::as.data.table(panel_by_boundary[[boundary_index]])
+    .sim_profile_add(exchange, "target_panel_slicing", slicing_started)
     normalization_started <- .sim_profile_start(exchange)
-    decision_rows <- panel[as.numeric(timestamp) == as.numeric(boundary_timestamp)]
     if (nrow(decision_rows)) {
       policy_context <- if (is.null(rebalance_policy)) NULL else .portfolio_submission_context(
         exchange,
         decision_bars = boundary_bars,
-        agent_ids = unique(decision_rows$agent_id)
+        agent_ids = unique(decision_rows$agent_id),
+        allowed_assets_by_agent = allowed_assets_by_agent
       )
       decisions <- lapply(split(decision_rows, decision_rows$agent_id), function(rows) {
         agent_id <- as.character(rows$agent_id[1L])
         list(
           target_weights = stats::setNames(rows$target_weight, rows$symbol),
           allowed_symbols = as.character(allowed_symbols[[agent_id]]),
+          .allowed_assets = allowed_assets_by_agent[[agent_id]],
           decision_label = if ("decision_label" %in% names(rows)) as.character(rows$decision_label[1L]) else "target_weight"
         )
       })
       # Historical feeds can have partial market calendars. Do not create a
       # multi-asset decision from an incomplete information boundary.
       complete <- vapply(names(decisions), function(current_agent_id) {
-        allowed_assets <- .portfolio_resolve_allowed_assets(
-          exchange, current_agent_id, allowed_symbols = allowed_symbols[[current_agent_id]]
-        )
+        allowed_assets <- allowed_assets_by_agent[[current_agent_id]]
         .portfolio_has_complete_universe_boundary(boundary_bars, allowed_assets)
       }, logical(1L))
       decisions <- decisions[complete]
@@ -151,7 +176,9 @@ sim_portfolio_target_replay <- function(exchange,
       .sim_profile_add(exchange, "boundary_normalization", normalization_started)
     }
     if (isTRUE(profile)) {
-      timings$orchestration <- timings$orchestration + (proc.time()[["elapsed"]] - boundary_started)
+      boundary_elapsed <- proc.time()[["elapsed"]] - boundary_started
+      timings$orchestration <- timings$orchestration + boundary_elapsed
+      timings$boundary_latency_seconds <- c(timings$boundary_latency_seconds, boundary_elapsed)
     }
   }
   # Preserve the exact append ordering of incremental stepping while avoiding
@@ -167,6 +194,7 @@ sim_portfolio_target_replay <- function(exchange,
   quality_started <- proc.time()[["elapsed"]]
   quality <- sim_portfolio_execution_quality(exchange)
   timings$execution_quality <- proc.time()[["elapsed"]] - quality_started
+  timings$execution_quality_joins <- timings$execution_quality
   exports <- list()
   if (!is.null(export_path)) {
     export_started <- proc.time()[["elapsed"]]

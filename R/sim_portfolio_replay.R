@@ -276,9 +276,9 @@ sim_portfolio_target_submit_batch <- function(exchange,
     if (!is.list(decision)) {
       stop("Each `decisions` element must be a list or NULL.", call. = FALSE)
     }
-    unknown <- setdiff(names(decision), c("target_weights", "decision_label", "allowed_symbols", "allowed_asset_ids"))
+    unknown <- setdiff(names(decision), c("target_weights", "decision_label", "allowed_symbols", "allowed_asset_ids", ".allowed_assets"))
     if (length(unknown)) stop("Unknown decision field(s): ", paste(unknown, collapse = ", "), call. = FALSE)
-    allowed_assets <- .portfolio_resolve_allowed_assets(
+    allowed_assets <- decision$.allowed_assets %||% .portfolio_resolve_allowed_assets(
       exchange, agent_id, decision$allowed_symbols %||% NULL, decision$allowed_asset_ids %||% NULL
     )
     if (!is.null(decision$target_weights)) .portfolio_require_complete_universe_boundary(decision_bars, allowed_assets)
@@ -290,8 +290,20 @@ sim_portfolio_target_submit_batch <- function(exchange,
   context <- .portfolio_submission_context(
     exchange,
     decision_bars = decision_bars,
-    agent_ids = vapply(prepared, `[[`, character(1L), "agent_id")
+    agent_ids = vapply(prepared, `[[`, character(1L), "agent_id"),
+    allowed_assets_by_agent = stats::setNames(lapply(prepared, `[[`, "allowed_assets"), vapply(prepared, `[[`, character(1L), "agent_id"))
   )
+  # Historical replay commonly submits dozens of independent agents at one
+  # boundary. Buffer their append-only decision ledgers and bind each durable
+  # table once after all plans have been produced.
+  previous_buffer <- exchange$.portfolio_submission_buffer %||% NULL
+  buffer <- new.env(parent = emptyenv())
+  exchange$.portfolio_submission_buffer <- buffer
+  flushed <- FALSE
+  on.exit({
+    if (!flushed) .portfolio_flush_submission_buffer(exchange, buffer)
+    exchange$.portfolio_submission_buffer <- previous_buffer
+  }, add = TRUE)
   for (entry in prepared) {
     .portfolio_submit_target(
       exchange = exchange,
@@ -306,7 +318,38 @@ sim_portfolio_target_submit_batch <- function(exchange,
       .compact = TRUE
     )
   }
+  append_started <- .sim_profile_start(exchange)
+  .portfolio_flush_submission_buffer(exchange, buffer)
+  .sim_profile_add(exchange, "durable_append_bind", append_started)
+  .sim_profile_add(exchange, "order_fill_event_ledger_writes", append_started)
+  flushed <- TRUE
   invisible(exchange)
+}
+
+#' @keywords internal
+.portfolio_append_submission_rows <- function(exchange, table, rows) {
+  if (is.null(rows) || !nrow(rows)) return(invisible(NULL))
+  buffer <- exchange$.portfolio_submission_buffer %||% NULL
+  if (!is.environment(buffer)) {
+    exchange[[table]] <- data.table::rbindlist(list(exchange[[table]], rows), fill = TRUE)
+    return(invisible(NULL))
+  }
+  entries <- buffer[[table]] %||% list()
+  entries[[length(entries) + 1L]] <- rows
+  buffer[[table]] <- entries
+  invisible(NULL)
+}
+
+#' @keywords internal
+.portfolio_flush_submission_buffer <- function(exchange, buffer = exchange$.portfolio_submission_buffer %||% NULL) {
+  if (!is.environment(buffer)) return(invisible(NULL))
+  for (table in c("portfolio_targets", "portfolio_rebalances", "agent_orders", "event_log")) {
+    entries <- buffer[[table]] %||% list()
+    if (!length(entries)) next
+    exchange[[table]] <- data.table::rbindlist(c(list(exchange[[table]]), entries), fill = TRUE)
+    buffer[[table]] <- list()
+  }
+  invisible(NULL)
 }
 
 #' Step one agent portfolio from target weights
@@ -415,11 +458,11 @@ sim_portfolio_target_step <- function(exchange,
   if (inherits(targets, "error")) {
     message <- conditionMessage(targets)
     append_started <- .sim_profile_start(exchange)
-    exchange$portfolio_rebalances <- data.table::rbindlist(list(exchange$portfolio_rebalances, data.table::data.table(
+    .portfolio_append_submission_rows(exchange, "portfolio_rebalances", data.table::data.table(
       rebalance_id = rebalance_id, timestamp = timestamp, agent_id = agent_id,
       status = "rejected", execution_timing = execution$timing, fee_rt = execution$fee_rt,
       slippage = execution$slippage, spread = execution$spread, message = message
-    )), fill = TRUE)
+    ))
     .sim_profile_add(exchange, "durable_append_bind", append_started)
     if (isTRUE(.compact)) return(invisible(NULL))
     return(.portfolio_step_result(exchange, agent_id, rebalance_id, fills = fills, context = context, outcomes = .portfolio_outcome_row(
@@ -434,11 +477,11 @@ sim_portfolio_target_step <- function(exchange,
   ]
   if (mixed_boundary && any(targets$asset_id %in% inventory_target_ids & targets$target_weight < -1e-12)) {
     message <- "Fully paid inventory target weights must be non-negative; use a margin-profile asset for short exposure."
-    exchange$portfolio_rebalances <- data.table::rbindlist(list(exchange$portfolio_rebalances, data.table::data.table(
+    .portfolio_append_submission_rows(exchange, "portfolio_rebalances", data.table::data.table(
       rebalance_id = rebalance_id, timestamp = timestamp, agent_id = agent_id,
       status = "rejected", execution_timing = execution$timing, fee_rt = execution$fee_rt,
       slippage = execution$slippage, spread = execution$spread, message = message
-    )), fill = TRUE)
+    ))
     if (isTRUE(.compact)) return(invisible(NULL))
     return(.portfolio_step_result(exchange, agent_id, rebalance_id, fills = fills, context = context, outcomes = .portfolio_outcome_row(
       rebalance_id, timestamp, agent_id, "rejected", message
@@ -478,17 +521,17 @@ sim_portfolio_target_step <- function(exchange,
     status = outcome_status,
     message = outcome_message
   )]
-  exchange$portfolio_targets <- data.table::rbindlist(list(exchange$portfolio_targets, target_rows), fill = TRUE)
+  .portfolio_append_submission_rows(exchange, "portfolio_targets", target_rows)
 
   if (nrow(plan$orders) == 0L) {
-    exchange$portfolio_rebalances <- data.table::rbindlist(list(exchange$portfolio_rebalances, data.table::data.table(
+    .portfolio_append_submission_rows(exchange, "portfolio_rebalances", data.table::data.table(
       rebalance_id = rebalance_id, timestamp = timestamp, agent_id = agent_id,
       status = "no_op", execution_timing = execution$timing, fee_rt = execution$fee_rt,
       slippage = execution$slippage, spread = execution$spread,
       superseded_by_rebalance_id = NA_character_,
       supersedes_rebalance_id = supersession$rebalance_id,
       message = "All target quantities already match the current portfolio."
-    )), fill = TRUE)
+    ))
     .sim_profile_add(exchange, "durable_append_bind", append_started)
     if (isTRUE(.compact)) return(invisible(NULL))
     return(.portfolio_step_result(exchange, agent_id, rebalance_id, fills = fills, context = context, outcomes = .portfolio_outcome_row(
@@ -499,18 +542,18 @@ sim_portfolio_target_step <- function(exchange,
   # Plan validation happened before this append: accepted rows appear together or not at all.
   order_rows <- .portfolio_order_rows(exchange, agent_id, rebalance_id, timestamp, plan$orders, execution)
   order_rows[, supersedes_rebalance_id := supersedes_for_asset(asset_id)]
-  exchange$agent_orders <- data.table::rbindlist(list(exchange$agent_orders, order_rows), fill = TRUE)
-  exchange$portfolio_rebalances <- data.table::rbindlist(list(exchange$portfolio_rebalances, data.table::data.table(
+  .portfolio_append_submission_rows(exchange, "agent_orders", order_rows)
+  .portfolio_append_submission_rows(exchange, "portfolio_rebalances", data.table::data.table(
     rebalance_id = rebalance_id, timestamp = timestamp, agent_id = agent_id,
     status = "accepted", execution_timing = execution$timing, fee_rt = execution$fee_rt,
     slippage = execution$slippage, spread = execution$spread,
     superseded_by_rebalance_id = NA_character_,
     supersedes_rebalance_id = supersession$rebalance_id,
     message = as.character(decision_label)
-  )), fill = TRUE)
-  exchange$event_log <- data.table::rbindlist(list(exchange$event_log, data.table::data.table(
+  ))
+  .portfolio_append_submission_rows(exchange, "event_log", data.table::data.table(
     timestamp = timestamp, source = "portfolio_rebalance", event = "accepted", ref_id = rebalance_id
-  )), fill = TRUE)
+  ))
   .sim_profile_add(exchange, "durable_append_bind", append_started)
   if (isTRUE(.compact)) return(invisible(NULL))
   .portfolio_step_result(exchange, agent_id, rebalance_id, fills = fills, context = context, outcomes = plan$targets[, .(
@@ -735,13 +778,19 @@ sim_portfolio_export <- function(exchange,
 
 #' @keywords internal
 .portfolio_set_agent_universe <- function(exchange, agent_id, asset_ids) {
-  index <- match(as.character(agent_id), exchange$agents$agent_id)
+  requested_agent_id <- as.character(agent_id)
+  index <- match(requested_agent_id, exchange$agents$agent_id)
   if (is.na(index)) stop("Cannot persist an allowed universe for an unknown agent.", call. = FALSE)
   config <- .agent_config_decode(exchange$agents$config[index])
-  keys <- names(exchange$agent_states)
+  # Universe validation is account-local. Restricting this scan to the
+  # submitting agent avoids a quadratic pass over every Arena competitor's
+  # state at each decision boundary.
+  state_prefix <- paste0(requested_agent_id, "\r")
+  keys <- as.character(names(exchange$agent_states) %||% character())
+  keys <- keys[startsWith(keys, state_prefix)]
   for (key in keys) {
     parsed <- .parse_agent_state_key(key)
-    if (!identical(parsed$agent_id, as.character(agent_id)) || parsed$asset_id %in% asset_ids) next
+    if (parsed$asset_id %in% asset_ids) next
     state <- exchange$agent_states[[key]]
     if (abs(as.numeric(state$ctr_unit %||% 0)) > 0) {
       stop("Agent has a non-zero position outside its proposed allowed universe.", call. = FALSE)
@@ -749,8 +798,12 @@ sim_portfolio_export <- function(exchange,
     exchange$agent_states[[key]] <- NULL
   }
   config$portfolio_allowed_asset_ids <- paste(sort(unique(as.integer(asset_ids))), collapse = ",")
-  data.table::set(exchange$agents, i = index, j = "config", value = .agent_config_encode(config))
-  if (!is.null(exchange$portfolio_allowed_asset_cache)) {
+  encoded_config <- .agent_config_encode(config)
+  config_changed <- !identical(as.character(exchange$agents$config[index]), encoded_config)
+  if (config_changed) {
+    data.table::set(exchange$agents, i = index, j = "config", value = encoded_config)
+  }
+  if (config_changed && !is.null(exchange$portfolio_allowed_asset_cache)) {
     exchange$portfolio_allowed_asset_cache[[as.character(agent_id)]] <- NULL
   }
   invisible(exchange)
@@ -982,9 +1035,9 @@ sim_portfolio_export <- function(exchange,
       data.table::set(exchange$portfolio_rebalances, i = rebalance_index, j = "superseded_by_rebalance_id", value = rebalance_id)
     }
   }
-  exchange$event_log <- data.table::rbindlist(list(exchange$event_log, data.table::data.table(
+  .portfolio_append_submission_rows(exchange, "event_log", data.table::data.table(
     timestamp = timestamp, source = "portfolio_rebalance", event = "superseded", ref_id = paste(unique(pending$order_id), collapse = ",")
-  )), fill = TRUE)
+  ))
   rebalance_ids <- unique(pending$rebalance_id)
   list(
     by_asset = by_asset,
@@ -1062,9 +1115,10 @@ sim_portfolio_export <- function(exchange,
   valuations <- data.table::copy(assets)
   valuations[, `:=`(timestamp = as.POSIXct(NA, tz = "UTC"), last_px = NA_real_)]
   if (!nrow(market_events)) return(valuations[])
-  latest <- data.table::copy(market_events)
-  data.table::setorderv(latest, c("asset_id", "timestamp"))
-  latest <- latest[, .SD[.N], by = asset_id]
+  # The exchange validates one completed bar per asset and timestamp. Select
+  # the latest source rows without sorting or copying the complete event log.
+  latest_rows <- market_events[, .I[which.max(timestamp)], by = asset_id]$V1
+  latest <- market_events[latest_rows]
   idx <- match(valuations$asset_id, latest$asset_id)
   matched <- !is.na(idx)
   valuations[matched, `:=`(
@@ -1075,11 +1129,19 @@ sim_portfolio_export <- function(exchange,
 }
 
 #' @keywords internal
-.portfolio_submission_context <- function(exchange, decision_bars = NULL, agent_ids = NULL) {
+.portfolio_submission_context <- function(exchange,
+                                          decision_bars = NULL,
+                                          agent_ids = NULL,
+                                          allowed_assets_by_agent = NULL) {
+  lookup_started <- .sim_profile_start(exchange)
   account <- data.table::copy(sim_exchange_account(exchange))
   positions <- data.table::copy(sim_exchange_positions(exchange))
-  market_events <- data.table::copy(exchange$market_events)
+  # Rebalance planning only reads this table for its last-resort price lookup.
+  # Holding the exchange table by reference avoids copying all historical bars
+  # once for every accepted decision boundary.
+  market_events <- exchange$market_events
   valuations <- .portfolio_valuation_snapshot(exchange)
+  .sim_profile_add(exchange, "account_position_lookup", lookup_started)
   context <- list(
     account = account,
     positions = positions,
@@ -1089,10 +1151,18 @@ sim_portfolio_export <- function(exchange,
   )
   if (is.null(decision_bars) || is.null(agent_ids) || !length(agent_ids)) return(context)
 
-  assets <- sim_assets(exchange)[status == "active", .(symbol, asset_id)]
-  planning <- data.table::CJ(agent_id = unique(as.character(agent_ids)), asset_id = assets$asset_id, unique = TRUE)
-  planning[, symbol := assets$symbol[match(asset_id, assets$asset_id)]]
-  bar_price <- data.table::copy(decision_bars)[, .(asset_id, bar_close = as.numeric(close))]
+  requested_agents <- unique(as.character(agent_ids))
+  if (is.list(allowed_assets_by_agent) && all(requested_agents %in% names(allowed_assets_by_agent))) {
+    planning <- data.table::rbindlist(lapply(requested_agents, function(agent_id) {
+      assets <- data.table::as.data.table(allowed_assets_by_agent[[agent_id]])
+      data.table::data.table(agent_id = agent_id, symbol = as.character(assets$symbol), asset_id = as.integer(assets$asset_id))
+    }), fill = TRUE)
+  } else {
+    assets <- exchange$assets[status == "active", .(symbol, asset_id)]
+    planning <- data.table::CJ(agent_id = requested_agents, asset_id = assets$asset_id, unique = TRUE)
+    planning[, symbol := assets$symbol[match(asset_id, assets$asset_id)]]
+  }
+  bar_price <- decision_bars[, .(asset_id, bar_close = as.numeric(close))]
   planning[, bar_close := bar_price$bar_close[match(asset_id, bar_price$asset_id)]]
   valuation_price <- valuations[, .(asset_id, valuation_price = as.numeric(last_px))]
   planning[, valuation_price := valuation_price$valuation_price[match(asset_id, valuation_price$asset_id)]]

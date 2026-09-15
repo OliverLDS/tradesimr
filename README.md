@@ -168,3 +168,35 @@ exchange2 <- sim_exchange_load("exchange-out")
 `tradesimr` is under active development. The current design favors stable event
 schemas, replayability, and explicit exchange/accounting boundaries before
 expanding production-grade live service features.
+
+## Performance Profiling
+
+Bulk portfolio replay exposes phase timings through
+`sim_portfolio_target_replay(..., profile = TRUE)`. The installed Vox-style
+fixture can be run locally without affecting the normal test suite:
+
+```r
+source(system.file("examples", "vox_arena_replay_benchmark.R", package = "tradesimr"))
+run_vox_arena_replay_benchmark(n_days = 252, use_bulk = TRUE, profile = TRUE)$timings
+```
+
+Use `fixture = "vox"` for the Arena-shaped workload: eight assets, 64
+single-asset deterministic accounts, and two multi-asset accounts. Profiling
+artifacts are deliberately local rather than package fixtures:
+
+```r
+run_vox_arena_replay_benchmark(
+  n_days = 252, fixture = "vox", profile = TRUE,
+  memory_profile = TRUE, artifact_path = "local-benchmark/vox"
+)$metrics
+```
+
+The artifact directory receives scalar phase timings, per-boundary latency,
+peak memory, sampled garbage collections, and, when enabled, `Rprof` and
+large-allocation `Rprofmem` traces.
+
+The test suite always verifies the timing contract on a small fixture. To run
+the full 252-boundary performance workload, set `TRADESIMR_RUN_PERF_TESTS=true`.
+Set `TRADESIMR_MAX_BULK_REPLAY_SECONDS` only when enforcing a budget on a
+controlled machine; no hardware-dependent wall-time limit is imposed by
+default.

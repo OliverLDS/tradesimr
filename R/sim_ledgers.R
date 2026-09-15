@@ -263,6 +263,16 @@ sim_cross_asset_risk_empty <- function() {
 .cross_asset_covariance <- function(exchange, asset_ids) {
   model <- exchange$market_model %||% sim_market_model_config()
   requested_ids <- as.integer(asset_ids)
+  cache <- exchange$.portfolio_covariance_cache %||% NULL
+  cache_key <- paste(
+    as.character(model$model %||% "random_walk"),
+    as.integer(model$state$current_regime %||% NA_integer_),
+    paste(sort(unique(requested_ids)), collapse = ","),
+    sep = "|"
+  )
+  if (is.environment(cache) && exists(cache_key, envir = cache, inherits = FALSE)) {
+    return(get(cache_key, envir = cache, inherits = FALSE))
+  }
   full_ids <- sort(unique(as.integer(names(exchange$feeds))))
   if (!length(full_ids)) full_ids <- requested_ids
   feeds <- data.table::rbindlist(lapply(full_ids, function(asset_id) {
@@ -282,17 +292,22 @@ sim_cross_asset_risk_empty <- function() {
     loadings <- .market_model_loadings(factors$loadings %||% matrix(rep(0.7, nrow(feeds)), nrow = nrow(feeds)), nrow(feeds))
     factor_vol <- rep_len(as.numeric(factors$factor_vol %||% 0.01), ncol(loadings))
     idio_vol <- rep_len(as.numeric(factors$idio_vol %||% feeds$vol), nrow(feeds))
-    return(subset_cov(loadings %*% diag(factor_vol^2, nrow = length(factor_vol)) %*% t(loadings) + diag(idio_vol^2, nrow = nrow(feeds))))
+    result <- subset_cov(loadings %*% diag(factor_vol^2, nrow = length(factor_vol)) %*% t(loadings) + diag(idio_vol^2, nrow = nrow(feeds)))
+  } else {
+    if (identical(model$model, "regime_random_walk")) {
+      regimes <- .market_model_regimes(model$regimes, nrow(feeds))
+      current <- as.integer(model$state$current_regime %||% regimes$initial_state)
+      state <- regimes$states[[current]]
+      feeds[, vol := vol * rep_len(as.numeric(state$vol_multiplier %||% 1), .N)]
+      model$corr <- state$corr %||% model$corr
+      model$cov <- state$cov %||% NULL
+    }
+    result <- subset_cov(.market_model_covariance(model, feeds))
   }
-  if (identical(model$model, "regime_random_walk")) {
-    regimes <- .market_model_regimes(model$regimes, nrow(feeds))
-    current <- as.integer(model$state$current_regime %||% regimes$initial_state)
-    state <- regimes$states[[current]]
-    feeds[, vol := vol * rep_len(as.numeric(state$vol_multiplier %||% 1), .N)]
-    model$corr <- state$corr %||% model$corr
-    model$cov <- state$cov %||% NULL
+  if (is.environment(cache)) {
+    assign(cache_key, result, envir = cache)
   }
-  subset_cov(.market_model_covariance(model, feeds))
+  result
 }
 
 #' Export simulation tables to durable files

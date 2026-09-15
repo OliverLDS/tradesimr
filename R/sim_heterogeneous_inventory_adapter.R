@@ -102,14 +102,37 @@
   if (!nrow(margin)) return(invisible(NULL))
   requested_agent_id <- as.character(agent_id)
   margin[, `:=`(agent_id = requested_agent_id, old_timestamp = as.numeric(timestamp))]
-  exchange$margin_positions <- exchange$margin_positions[!(agent_id == requested_agent_id & asset_id %in% margin$asset_id)]
-  exchange$margin_positions <- data.table::rbindlist(list(exchange$margin_positions, margin), fill = TRUE)
+  # A complete portfolio boundary updates the same account rows repeatedly.
+  # Replace matching rows in place rather than rebuilding the full durable
+  # margin table once per agent and boundary.
+  existing_keys <- paste(exchange$margin_positions$agent_id, exchange$margin_positions$asset_id, sep = "\r")
+  proposed_keys <- paste(margin$agent_id, margin$asset_id, sep = "\r")
+  existing_index <- match(proposed_keys, existing_keys)
+  matched <- !is.na(existing_index)
+  update_columns <- intersect(names(margin), names(exchange$margin_positions))
+  if (any(matched)) {
+    for (column in update_columns) {
+      data.table::set(
+        exchange$margin_positions,
+        i = existing_index[matched],
+        j = column,
+        value = margin[[column]][matched]
+      )
+    }
+  }
+  if (any(!matched)) {
+    exchange$margin_positions <- data.table::rbindlist(
+      list(exchange$margin_positions, margin[!matched]),
+      fill = TRUE
+    )
+  }
   balances <- data.table::as.data.table(proposed$cash_balances)
   for (i in seq_len(nrow(balances))) .profile_set_cash_balance(exchange, agent_id, balances$currency[i], balances$settled[i])
   for (i in seq_len(nrow(margin))) {
     row <- margin[i]
-    spec <- exchange$assets[asset_id == row$asset_id]
-    .ensure_agent_account(exchange, agent_id, row$asset_id, spec$symbol[1L])
+    asset_index <- match(as.integer(row$asset_id), exchange$assets$asset_id)
+    if (is.na(asset_index)) stop("Missing registered asset specification for derivative state commit.", call. = FALSE)
+    .ensure_agent_account(exchange, agent_id, row$asset_id, exchange$assets$symbol[asset_index])
     exchange$agent_states[[.agent_state_key(agent_id, row$asset_id)]] <- sim_state(
       cash = .shared_cash(exchange, agent_id), pos_dir = sign(row$signed_units), ctr_unit = abs(row$signed_units),
       avg_price = row$settlement_price, last_px = row$last_price, asset = row$asset_id,

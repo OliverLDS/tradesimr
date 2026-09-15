@@ -476,9 +476,11 @@ sim_exchange_step <- function(exchange, bars) {
       if (anyNA(asset_specs$asset_id)) stop("Missing registered asset specification for portfolio step.", call. = FALSE)
       margin_input <- .heterogeneous_derivative_account_input(exchange, agent_id, agent_batch)
       .sim_profile_add(exchange, "exchange_state_updates", state_started)
+      kernel_started <- .sim_profile_start(exchange)
       step <- .heterogeneous_derivatives_account_step(
         exchange, agent_id, margin_input, agent_batch, orders, cov
       )
+      .sim_profile_add(exchange, "portfolio_step_rcpp", kernel_started)
       step$events <- .portfolio_kernel_events(step$events)
 
       ledger_started <- proc.time()[["elapsed"]]
@@ -515,6 +517,7 @@ sim_exchange_step <- function(exchange, bars) {
         append_started <- .sim_profile_start(exchange)
         .mark_orders_from_events(exchange, orders, step$events)
         .sim_profile_add(exchange, "durable_append_bind", append_started)
+        .sim_profile_add(exchange, "order_fill_event_ledger_writes", append_started)
         state_started <- .sim_profile_start(exchange)
       }
       if (length(variation_events)) {
@@ -524,14 +527,21 @@ sim_exchange_step <- function(exchange, bars) {
         variation_events[, event_id := max(c(0L, exchange$step_events$event_id, step$events$event_id), na.rm = TRUE) + seq_len(.N)]
         new_event_list[[length(new_event_list) + 1L]] <- variation_events
       }
-      # Native heterogeneous derivative output has now committed the account
-      # state. Apply the shared cross-profile liquidation guard afterwards.
-      .enforce_cross_margin(exchange, agent_id, agent_batch$timestamp[1L])
+      # The native derivatives kernel already values the complete derivative
+      # account and applies covariance margin/liquidation. Rebuilding the same
+      # account in R is redundant only when this boundary includes every open
+      # derivative state and the agent has no inventory positions. Partial
+      # calendars and mixed accounts retain the cross-profile guard.
+      if (!.portfolio_native_derivative_account_complete(exchange, agent_id, agent_batch)) {
+        .enforce_cross_margin(exchange, agent_id, agent_batch$timestamp[1L])
+      }
+      snapshot_started <- .sim_profile_start(exchange)
       account_snapshots <- .agent_position_snapshots(exchange, agent_id, agent_batch$timestamp[1L])
       if (nrow(account_snapshots) > 0L) {
         data.table::set(account_snapshots, j = "maintenance_margin", value = as.numeric(step$maintenance_margin %||% 0))
       }
       step_results[[length(step_results) + 1L]] <- account_snapshots
+      .sim_profile_add(exchange, "snapshot_construction", snapshot_started)
       .sim_profile_add(exchange, "exchange_state_updates", state_started)
       if (is.environment(profile_timings)) {
         profile_timings$ledger <- (profile_timings$ledger %||% 0) + (proc.time()[["elapsed"]] - ledger_started)
@@ -559,6 +569,7 @@ sim_exchange_step <- function(exchange, bars) {
   exchange$last_events <- exchange$step_events
   exchange$last_bar_count <- nrow(exchange$market_events)
   .sim_profile_add(exchange, "durable_append_bind", append_started)
+  .sim_profile_add(exchange, "order_fill_event_ledger_writes", append_started)
   exchange$result
 }
 
@@ -569,7 +580,11 @@ sim_exchange_step <- function(exchange, bars) {
 #' @export
 sim_exchange_orders <- function(exchange) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
-  data.table::copy(exchange$agent_orders)
+  out <- data.table::copy(exchange$agent_orders)
+  # Secondary indexes are an implementation detail and must not leak through
+  # the public ledger projection or affect save/load parity comparisons.
+  data.table::setindexv(out, NULL)
+  out
 }
 
 #' Get new events since the previous exchange run
@@ -1197,9 +1212,9 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
 .portfolio_boundary_step_index <- function(exchange, timestamp) {
   bar_timestamp <- timestamp
   orders <- exchange$agent_orders
-  accepted <- orders[orders$status == "accepted" & orders$qty_type == "contracts"]
+  accepted <- orders[status == "accepted" & qty_type == "contracts"]
   accepted_keys <- if (nrow(accepted)) .agent_state_key(accepted$agent_id, accepted$asset_id) else character()
-  order_agents <- accepted[accepted$timestamp <= bar_timestamp]
+  order_agents <- accepted[timestamp <= bar_timestamp]
   order_agents_by_asset <- if (nrow(order_agents)) {
     split(as.character(order_agents$agent_id), as.character(order_agents$asset_id))
   } else {
@@ -1328,17 +1343,17 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
 #' @keywords internal
 .asset_uses_spot_inventory <- function(exchange, asset_id) {
   requested_asset_id <- as.integer(asset_id)
-  asset <- exchange$assets[asset_id == requested_asset_id]
-  if (nrow(asset) != 1L) return(FALSE)
-  identical(as.character(asset$accounting_model[1L]), "spot_inventory") ||
-    as.character(asset$instrument_profile[1L]) %in% c("equity", "etf", "crypto_spot", "fx_spot", "bond")
+  asset_index <- match(requested_asset_id, exchange$assets$asset_id)
+  if (is.na(asset_index)) return(FALSE)
+  identical(as.character(exchange$assets$accounting_model[asset_index]), "spot_inventory") ||
+    as.character(exchange$assets$instrument_profile[asset_index]) %in% c("equity", "etf", "crypto_spot", "fx_spot", "bond")
 }
 
 #' @keywords internal
 .asset_uses_futures_variation_margin <- function(exchange, asset_id) {
   requested_asset_id <- as.integer(asset_id)
-  asset <- exchange$assets[asset_id == requested_asset_id]
-  nrow(asset) == 1L && identical(as.character(asset$instrument_profile[1L]), "future")
+  asset_index <- match(requested_asset_id, exchange$assets$asset_id)
+  !is.na(asset_index) && identical(as.character(exchange$assets$instrument_profile[asset_index]), "future")
 }
 
 #' @keywords internal
@@ -1863,10 +1878,13 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
 
 #' @keywords internal
 .agent_position_snapshots <- function(exchange, agent_id, timestamp) {
-  keys <- names(exchange$agent_states)
+  agent_id <- as.character(agent_id)
+  state_prefix <- paste0(agent_id, "\r")
+  keys <- as.character(names(exchange$agent_states) %||% character())
+  keys <- keys[startsWith(keys, state_prefix)]
   rows <- lapply(keys, function(key) {
     parsed <- .parse_agent_state_key(key)
-    if (!identical(parsed$agent_id, as.character(agent_id))) return(NULL)
+    if (!identical(parsed$agent_id, agent_id)) return(NULL)
     if (!.portfolio_agent_asset_allowed(exchange, parsed$agent_id, parsed$asset_id)) return(NULL)
     symbol <- exchange$asset_symbols[[as.character(parsed$asset_id)]] %||% parsed$symbol
     .state_to_snapshot(
@@ -1877,9 +1895,11 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
       asset_id = parsed$asset_id
     )
   })
-  spot_rows <- lapply(names(exchange$spot_states %||% list()), function(key) {
+  spot_keys <- as.character(names(exchange$spot_states %||% list()) %||% character())
+  spot_keys <- spot_keys[startsWith(spot_keys, state_prefix)]
+  spot_rows <- lapply(spot_keys, function(key) {
     parsed <- .parse_agent_state_key(key)
-    if (!identical(parsed$agent_id, as.character(agent_id))) return(NULL)
+    if (!identical(parsed$agent_id, agent_id)) return(NULL)
     if (!.portfolio_agent_asset_allowed(exchange, parsed$agent_id, parsed$asset_id)) return(NULL)
     symbol <- exchange$asset_symbols[[as.character(parsed$asset_id)]] %||% parsed$symbol
     state <- exchange$spot_states[[key]]
@@ -1887,6 +1907,28 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
     .spot_state_snapshot(exchange, state, timestamp, parsed$agent_id, symbol, parsed$asset_id)
   })
   data.table::rbindlist(c(rows, spot_rows), fill = TRUE)
+}
+
+#' @keywords internal
+.portfolio_native_derivative_account_complete <- function(exchange, agent_id, bars) {
+  bars <- data.table::as.data.table(bars)
+  if (!nrow(bars)) return(FALSE)
+  agent_id <- as.character(agent_id)
+  requested_agent_id <- agent_id
+  bar_asset_ids <- unique(as.integer(bars$asset_id))
+  if (any(vapply(bar_asset_ids, function(asset_id) .asset_uses_spot_inventory(exchange, asset_id), logical(1L)))) {
+    return(FALSE)
+  }
+  state_prefix <- paste0(requested_agent_id, "\r")
+  spot_keys <- as.character(names(exchange$spot_states %||% list()) %||% character())
+  if (any(startsWith(spot_keys, state_prefix))) return(FALSE)
+  margin_keys <- as.character(names(exchange$agent_states %||% list()) %||% character())
+  margin_keys <- margin_keys[startsWith(margin_keys, state_prefix)]
+  state_asset_ids <- vapply(margin_keys, function(key) .parse_agent_state_key(key)$asset_id, integer(1L))
+  margin_asset_ids <- as.integer(exchange$margin_positions[
+    agent_id == requested_agent_id, asset_id
+  ])
+  all(unique(c(state_asset_ids, margin_asset_ids)) %in% bar_asset_ids)
 }
 
 #' @keywords internal
@@ -1947,14 +1989,16 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
 #' @keywords internal
 .heterogeneous_agent_account <- function(exchange, agent_id, timestamp) {
   agent_id <- as.character(agent_id)
+  state_prefix <- paste0(agent_id, "\r")
   base_currency <- .profile_base_currency(exchange)
   balances <- sim_exchange_cash_balances(exchange, agent_id)
   if (!nrow(balances)) balances <- data.table::data.table(
     agent_id = agent_id, currency = base_currency, amount = .shared_cash(exchange, agent_id), base_value = .shared_cash(exchange, agent_id)
   )
-  inventory <- data.table::rbindlist(lapply(names(exchange$spot_states %||% list()), function(key) {
+  spot_keys <- as.character(names(exchange$spot_states %||% list()) %||% character())
+  spot_keys <- spot_keys[startsWith(spot_keys, state_prefix)]
+  inventory <- data.table::rbindlist(lapply(spot_keys, function(key) {
     parsed <- .parse_agent_state_key(key)
-    if (!identical(parsed$agent_id, agent_id)) return(NULL)
     spec <- exchange$assets[asset_id == parsed$asset_id]
     if (nrow(spec) != 1L) return(NULL)
     state <- exchange$spot_states[[key]]
@@ -1963,9 +2007,10 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
       last_price = as.numeric(state$last_price %||% 0), contract_size = as.numeric(spec$contract_size[1L]))
   }), fill = TRUE)
   if (!ncol(inventory)) inventory <- data.table::data.table(asset_id = integer(), currency = character(), units = numeric(), average_cost = numeric(), last_price = numeric(), contract_size = numeric())
-  margin <- data.table::rbindlist(lapply(names(exchange$agent_states %||% list()), function(key) {
+  margin_keys <- as.character(names(exchange$agent_states %||% list()) %||% character())
+  margin_keys <- margin_keys[startsWith(margin_keys, state_prefix)]
+  margin <- data.table::rbindlist(lapply(margin_keys, function(key) {
     parsed <- .parse_agent_state_key(key)
-    if (!identical(parsed$agent_id, agent_id)) return(NULL)
     spec <- exchange$assets[asset_id == parsed$asset_id]
     if (nrow(spec) != 1L) return(NULL)
     state <- exchange$agent_states[[key]]
