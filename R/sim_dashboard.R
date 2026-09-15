@@ -149,6 +149,7 @@ sim_agent_dashboard_open <- function(exchange = sim_exchange_new(), path = tempf
   events <- if (is.null(result)) sim_schemas()$events[0] else sim_events(result)
   agent_orders <- data.table::copy(exchange$agent_orders)
   orders <- if (nrow(agent_orders) > 0L) agent_orders else if (is.null(result)) sim_orders(events) else sim_orders(result)
+  typed_account <- sim_exchange_account_state(exchange)
   list(
     market_events = data.table::copy(exchange$market_events),
     strategy_snapshots = if (is.null(result)) .dashboard_empty_strategy_snapshots() else .dashboard_strategy_snapshots(result),
@@ -163,6 +164,11 @@ sim_agent_dashboard_open <- function(exchange = sim_exchange_new(), path = tempf
     agent_orders = agent_orders,
     agents = data.table::copy(exchange$agents),
     assets = data.table::copy(exchange$assets),
+    typed_account = typed_account$account,
+    cash_balances = typed_account$cash_balances,
+    inventory_positions = typed_account$inventory_positions,
+    margin_positions = typed_account$margin_positions,
+    account_events = typed_account$events,
     agent_decisions = data.table::copy(exchange$agent_decisions),
     agent_rankings = sim_agent_rankings(exchange),
     market_model = .market_model_table(exchange),

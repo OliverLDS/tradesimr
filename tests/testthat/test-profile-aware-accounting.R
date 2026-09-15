@@ -84,6 +84,35 @@ test_that("typed cash balances retain settled and unsettled cash through settlem
   expect_equal(settled$unsettled, 0)
 })
 
+test_that("typed account state projects cash, inventory, and margin in base currency", {
+  exchange <- sim_exchange_new(list(cash = 1000, base_currency = "USD", execution_engine = "heterogeneous_v2"))
+  sim_exchange_cash_adjust(exchange, "alice", 0)
+  timestamp <- as.POSIXct("2025-01-01", tz = "UTC")
+  exchange$inventory_positions <- data.table::data.table(
+    agent_id = "alice", asset_id = 1L, symbol = "SPY", currency = "USD",
+    units = 2, average_cost = 90, last_price = 100, contract_size = 1, timestamp = timestamp
+  )
+  exchange$typed_margin_positions <- data.table::data.table(
+    agent_id = "alice", asset_id = 2L, symbol = "ES", currency = "USD",
+    signed_units = -1, settlement_price = 120, last_price = 100, contract_size = 10,
+    maintenance_rate = 0.02, timestamp = timestamp
+  )
+  state <- sim_exchange_account_state(exchange, "alice")
+  expect_named(state, c("account", "cash_balances", "inventory_positions", "margin_positions", "events"))
+  expect_equal(state$account$cash_settled, 1000)
+  expect_equal(state$account$inventory_value, 200)
+  expect_equal(state$account$margin_unrealized_pnl, 200)
+  expect_equal(state$account$maintenance_margin, 20)
+  expect_equal(state$account$equity, 1400)
+  expect_equal(state$margin_positions$notional, -1000)
+
+  path <- tempfile("tradesimr-typed-dashboard-")
+  paths <- sim_state_dashboard_export(exchange, path)
+  expect_true(all(c("typed_account", "cash_balances", "inventory_positions", "margin_positions", "account_events") %in% names(paths)))
+  exported <- data.table::fread(paths[["typed_account"]])
+  expect_equal(exported$equity, 1400)
+})
+
 test_that("spot target submission plans atomically and executes only after its decision bar", {
   exchange <- sim_exchange_new(list(cash = 1000))
   sim_asset_add(exchange, "SPY", asset_id = 1L, instrument_profile = "etf", quote_ccy = "USD", qty_step = 1)

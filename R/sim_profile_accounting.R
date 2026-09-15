@@ -115,6 +115,110 @@ sim_exchange_cash_balances <- function(exchange, agent_id = NULL) {
   out
 }
 
+#' Get the durable heterogeneous account state
+#'
+#' Returns the typed, profile-aware account projection used by the
+#' heterogeneous execution engine. Cash is valued in the exchange base
+#' currency; fully paid inventory contributes marked market value, while
+#' margin positions contribute marked unrealized P&L and maintenance margin.
+#' `sim_exchange_account()` remains the compatibility account snapshot API.
+#'
+#' @param exchange A `tradesimr_exchange`.
+#' @param agent_id Optional account identifier.
+#' @return A named list containing `account`, `cash_balances`,
+#'   `inventory_positions`, `margin_positions`, and `events` data.tables.
+#' @export
+sim_exchange_account_state <- function(exchange, agent_id = NULL) {
+  stopifnot(inherits(exchange, "tradesimr_exchange"))
+  filter_agents <- function(table, ids) {
+    table <- data.table::copy(table)
+    if (!is.null(ids) && "agent_id" %in% names(table)) table <- table[table[["agent_id"]] %in% ids]
+    table
+  }
+  requested_ids <- if (is.null(agent_id)) NULL else as.character(agent_id)
+  cash <- filter_agents(exchange$cash_balances %||% sim_schemas()$cash_balances[0], requested_ids)
+  inventory <- filter_agents(exchange$inventory_positions %||% sim_schemas()$inventory_positions[0], requested_ids)
+  margin <- filter_agents(exchange$typed_margin_positions %||% sim_schemas()$margin_positions[0], requested_ids)
+  events <- filter_agents(exchange$account_events %||% sim_schemas()$account_events[0], requested_ids)
+  base_currency <- .profile_base_currency(exchange)
+
+  if (nrow(cash)) {
+    cash[, `:=`(
+      settled_base = vapply(seq_len(.N), function(i) .profile_to_base(exchange, settled[i], currency[i]), numeric(1L)),
+      unsettled_base = vapply(seq_len(.N), function(i) .profile_to_base(exchange, unsettled[i], currency[i]), numeric(1L))
+    )]
+    cash[, total_base := settled_base + unsettled_base]
+  } else {
+    cash[, `:=`(settled_base = numeric(), unsettled_base = numeric(), total_base = numeric())]
+  }
+  if (nrow(inventory)) {
+    inventory[, `:=`(
+      market_value = units * last_price * contract_size,
+      unrealized_pnl = (last_price - average_cost) * units * contract_size
+    )]
+    inventory[, `:=`(
+      market_value_base = vapply(seq_len(.N), function(i) .profile_to_base(exchange, market_value[i], currency[i]), numeric(1L)),
+      unrealized_pnl_base = vapply(seq_len(.N), function(i) .profile_to_base(exchange, unrealized_pnl[i], currency[i]), numeric(1L))
+    )]
+  } else {
+    inventory[, `:=`(market_value = numeric(), unrealized_pnl = numeric(),
+      market_value_base = numeric(), unrealized_pnl_base = numeric())]
+  }
+  if (nrow(margin)) {
+    margin[, `:=`(
+      notional = signed_units * last_price * contract_size,
+      unrealized_pnl = (last_price - settlement_price) * signed_units * contract_size,
+      maintenance_margin = abs(signed_units * last_price * contract_size) * maintenance_rate
+    )]
+    margin[, `:=`(
+      notional_base = vapply(seq_len(.N), function(i) .profile_to_base(exchange, notional[i], currency[i]), numeric(1L)),
+      unrealized_pnl_base = vapply(seq_len(.N), function(i) .profile_to_base(exchange, unrealized_pnl[i], currency[i]), numeric(1L)),
+      maintenance_margin_base = vapply(seq_len(.N), function(i) .profile_to_base(exchange, maintenance_margin[i], currency[i]), numeric(1L))
+    )]
+  } else {
+    margin[, `:=`(notional = numeric(), unrealized_pnl = numeric(), maintenance_margin = numeric(),
+      notional_base = numeric(), unrealized_pnl_base = numeric(), maintenance_margin_base = numeric())]
+  }
+
+  ids <- requested_ids %||% unique(c(cash$agent_id, inventory$agent_id, margin$agent_id, events$agent_id,
+    names(exchange$agent_accounts %||% list())))
+  empty_account <- data.table::data.table(
+    timestamp = as.POSIXct(character()), agent_id = character(), base_currency = character(),
+    cash_settled = numeric(), cash_unsettled = numeric(), inventory_value = numeric(),
+    margin_unrealized_pnl = numeric(), notional = numeric(), maintenance_margin = numeric(),
+    equity = numeric(), liquidated = logical()
+  )
+  account_rows <- lapply(ids, function(id) {
+    cash_rows <- cash[cash$agent_id == id]
+    inventory_rows <- inventory[inventory$agent_id == id]
+    margin_rows <- margin[margin$agent_id == id]
+    event_rows <- events[events$agent_id == id]
+    timestamps <- c(cash_rows$timestamp, inventory_rows$timestamp, margin_rows$timestamp, event_rows$timestamp)
+    timestamps <- timestamps[is.finite(as.numeric(timestamps))]
+    if (!length(timestamps) && nrow(exchange$market_events)) timestamps <- tail(exchange$market_events$timestamp, 1L)
+    timestamp <- if (length(timestamps)) .profile_utc_timestamp(max(as.numeric(timestamps))) else as.POSIXct(NA, tz = "UTC")
+    cash_settled <- sum(cash_rows$settled_base, na.rm = TRUE)
+    cash_unsettled <- sum(cash_rows$unsettled_base, na.rm = TRUE)
+    inventory_value <- sum(inventory_rows$market_value_base, na.rm = TRUE)
+    margin_unrealized_pnl <- sum(margin_rows$unrealized_pnl_base, na.rm = TRUE)
+    maintenance_margin <- sum(margin_rows$maintenance_margin_base, na.rm = TRUE)
+    account <- exchange$agent_accounts[[as.character(id)]] %||% list()
+    data.table::data.table(
+      timestamp = timestamp, agent_id = as.character(id), base_currency = base_currency,
+      cash_settled = cash_settled, cash_unsettled = cash_unsettled,
+      inventory_value = inventory_value, margin_unrealized_pnl = margin_unrealized_pnl,
+      notional = sum(margin_rows$notional_base, na.rm = TRUE),
+      maintenance_margin = maintenance_margin,
+      equity = cash_settled + cash_unsettled + inventory_value + margin_unrealized_pnl,
+      liquidated = isTRUE(account$liquidated)
+    )
+  })
+  account <- data.table::rbindlist(account_rows, fill = TRUE)
+  if (!nrow(account)) account <- empty_account
+  list(account = account[], cash_balances = cash[], inventory_positions = inventory[],
+    margin_positions = margin[], events = events[])
+}
+
 #' @keywords internal
 .profile_cash_kernel_input <- function(exchange, agent_id) {
   balances <- sim_exchange_cash_balances(exchange, agent_id)

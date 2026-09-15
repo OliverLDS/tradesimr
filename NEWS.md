@@ -28,6 +28,10 @@ current git history; `v0.9.0` follows `v0.7.0`.
 - Heterogeneous inventory and mixed-profile adapters now pass both balance
   components into C++ valuation and preserve them on commit, so pending
   settlement cash is no longer dropped at an execution boundary.
+- Added `sim_exchange_account_state()` for a public-safe typed account
+  projection covering base-currency account totals, currency cash balances,
+  inventory positions, margin positions, and typed account events. Live
+  dashboard exports now include these durable tables.
 
 ### Validation
 
