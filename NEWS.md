@@ -37,6 +37,11 @@ current git history; `v0.9.0` follows `v0.7.0`.
   emits typed lifecycle events. The v2 exchange adapter persists these events
   to account and cash ledgers, marks their durable action records applied only
   after the market boundary, and preserves them through save/load.
+- Added `sim_bond_schedule_add()` and `sim_bond_schedules()` for durable,
+  fixed ACT/day-count bond schedules. The C++ heterogeneous kernel now emits
+  non-cash accrual events, settles due coupons, and redeems inventory at
+  maturity; schedule cursors persist through exchange save/load and dashboard
+  exports.
 
 ### Validation
 

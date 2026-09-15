@@ -675,6 +675,7 @@
 
 .heterogeneous_portfolio_variation_events <- function(exchange, agent_id, proposed, timestamp) {
   variations <- data.table::as.data.table(proposed$events)
+  if ("cash_effect" %in% names(variations)) variations <- variations[cash_effect == TRUE]
   if (!nrow(variations)) return(data.table::data.table())
   first_event_id <- .next_spot_event_id(exchange)
   rows <- lapply(seq_len(nrow(variations)), function(i) {
@@ -754,6 +755,7 @@
         action_types = c("dividend", "split"))
     }
     bond_actions <- .heterogeneous_portfolio_bond_actions(exchange, boundary_bars, boundary_timestamp)
+    bond_schedules <- .bond_schedule_kernel_rows(exchange, boundary_bars, boundary_timestamp)
     for (agent_id in .heterogeneous_portfolio_agents(exchange, boundary_bars)) {
       input <- .heterogeneous_portfolio_account_input(exchange, agent_id, boundary_bars)
       accepted <- .heterogeneous_portfolio_orders(exchange, agent_id, boundary_bars)
@@ -776,7 +778,7 @@
         portfolio_margin_floor = as.numeric(exchange$config$portfolio_margin_floor %||% exchange$config$mmr %||% 0.02)
       )
       kernel_actions <- data.table::rbindlist(list(
-        covariance[, .(asset_i, asset_j, covariance)], bond_actions
+        covariance[, .(asset_i, asset_j, covariance)], bond_actions, bond_schedules
       ), fill = TRUE)
       proposed <- heterogeneous_account_step_rcpp(
         .profile_base_currency(exchange), input$cash_balances, input$inventory_positions, input$margin_positions,
@@ -806,6 +808,7 @@
       snapshots[[length(snapshots) + 1L]] <- .agent_position_snapshots(exchange, agent_id, boundary_timestamp)
     }
     .heterogeneous_portfolio_mark_bond_actions_applied(exchange, bond_actions)
+    .bond_schedule_advance(exchange, bond_schedules, boundary_timestamp)
   }
   list(events = data.table::rbindlist(events, fill = TRUE), snapshots = data.table::rbindlist(snapshots, fill = TRUE))
 }

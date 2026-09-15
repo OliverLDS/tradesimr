@@ -102,6 +102,13 @@ sim_schemas <- function() {
       status = character(),
       message = character()
     ),
+    bond_schedules = data.table::data.table(
+      asset_id = integer(), symbol = character(), currency = character(),
+      coupon_rate = numeric(), coupon_frequency = numeric(), face_value = numeric(),
+      accrual_day_count = numeric(), issue_timestamp = as.POSIXct(character()),
+      maturity_timestamp = as.POSIXct(character()), last_accrual_timestamp = as.POSIXct(character()),
+      next_coupon_timestamp = as.POSIXct(character()), status = character()
+    ),
     market_events = data.table::data.table(
       timestamp = as.POSIXct(character()),
       observation_timestamp = as.POSIXct(character()),

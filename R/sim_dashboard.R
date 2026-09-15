@@ -164,6 +164,7 @@ sim_agent_dashboard_open <- function(exchange = sim_exchange_new(), path = tempf
     agent_orders = agent_orders,
     agents = data.table::copy(exchange$agents),
     assets = data.table::copy(exchange$assets),
+    bond_schedules = data.table::copy(exchange$bond_schedules),
     typed_account = typed_account$account,
     cash_balances = typed_account$cash_balances,
     inventory_positions = typed_account$inventory_positions,

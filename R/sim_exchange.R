@@ -39,6 +39,7 @@ sim_exchange_new <- function(config = list()) {
   state$account_events <- sim_schemas()$account_events[0]
   state$settlement_ledger <- sim_schemas()$settlement_ledger[0]
   state$corporate_actions <- sim_schemas()$corporate_actions[0]
+  state$bond_schedules <- sim_schemas()$bond_schedules[0]
   state$agent_states <- list()
   # Authoritative derivatives state for heterogeneous portfolio execution.
   # `agent_states` remains a compatibility projection for older APIs.
@@ -724,6 +725,7 @@ sim_exchange_save <- function(exchange, path, format = c("csv", "fst")) {
     account_events = exchange$account_events,
     settlement_ledger = exchange$settlement_ledger,
     corporate_actions = exchange$corporate_actions,
+    bond_schedules = exchange$bond_schedules,
     currency_cash_state = sim_exchange_cash_balances(exchange),
     margin_position_state = exchange$margin_positions,
     agent_decisions = exchange$agent_decisions,
@@ -930,6 +932,12 @@ sim_exchange_load <- function(path) {
     exchange$corporate_actions <- data.table::fread(file.path(path, "corporate_actions.csv"))
     data.table::set(exchange$corporate_actions, j = "effective_timestamp", value = as.POSIXct(exchange$corporate_actions$effective_timestamp, tz = "UTC"))
   }
+  if (file.exists(file.path(path, "bond_schedules.csv"))) {
+    exchange$bond_schedules <- data.table::fread(file.path(path, "bond_schedules.csv"))
+    for (column in intersect(c("issue_timestamp", "maturity_timestamp", "last_accrual_timestamp", "next_coupon_timestamp"), names(exchange$bond_schedules))) {
+      data.table::set(exchange$bond_schedules, j = column, value = as.POSIXct(exchange$bond_schedules[[column]], tz = "UTC"))
+    }
+  }
   if (file.exists(file.path(path, "currency_cash_state.csv"))) {
     balances <- data.table::fread(file.path(path, "currency_cash_state.csv"))
     # Typed balances are authoritative when available. Older saved exchanges
@@ -1074,6 +1082,14 @@ sim_exchange_load <- function(path) {
   if (nrow(exchange$portfolio_fills) > 0L) {
     numeric_fill_ids <- suppressWarnings(as.integer(sub("^FILL", "", exchange$portfolio_fills$fill_id)))
     exchange$next_fill_id <- max(numeric_fill_ids, na.rm = TRUE) + 1L
+  }
+  if (nrow(exchange$profile_cash_ledger) > 0L) {
+    numeric_ledger_ids <- suppressWarnings(as.integer(sub("^LED", "", exchange$profile_cash_ledger$entry_id)))
+    exchange$next_ledger_id <- max(numeric_ledger_ids, na.rm = TRUE) + 1L
+  }
+  if (nrow(exchange$corporate_actions) > 0L) {
+    numeric_action_ids <- suppressWarnings(as.integer(sub("^CA", "", exchange$corporate_actions$action_id)))
+    exchange$next_corporate_action_id <- max(numeric_action_ids, na.rm = TRUE) + 1L
   }
   .sim_exchange_migrate_schema(exchange)
   exchange

@@ -69,7 +69,10 @@ sim_heterogeneous_order_batch_schema <- function() {
 #'   bond lifecycle rows use `asset_id`, `action_type` (`coupon`,
 #'   `bond_accrual`, or `redemption`), `amount`, `currency`, and optional
 #'   `effective_timestamp`; they mutate settled cash and emit typed events at
-#'   the eligible account boundary.
+#'   the eligible account boundary. Calendar rows use `schedule_type = "bond"`
+#'   with coupon, accrual-cursor, and maturity fields from
+#'   [sim_bond_schedule_add()]. C++ emits non-cash accrual events, settles due
+#'   coupons, and redeems inventory at maturity.
 #' @param orders A normalized heterogeneous order batch.
 #' @param timestamp Market-boundary timestamp.
 #' @return Updated account state, typed events, fills, and group outcomes.

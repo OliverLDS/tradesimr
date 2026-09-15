@@ -151,6 +151,35 @@ test_that("heterogeneous v2 persists bond coupon events from the C++ account ker
   expect_true(is.na(restored_event$order_id))
 })
 
+test_that("bond schedules survive load and settle coupon then redemption through v2", {
+  exchange <- sim_exchange_new(list(cash = 1000, base_currency = "USD", portfolio_margin = TRUE,
+    execution_engine = "heterogeneous_v2"))
+  sim_asset_add(exchange, "NOTE", asset_id = 10L, instrument_profile = "bond", quote_ccy = "USD")
+  issue <- as.POSIXct("2025-01-01", tz = "UTC")
+  maturity <- issue + 365 * 86400
+  sim_bond_schedule_add(exchange, "NOTE", coupon_rate = .1, coupon_frequency = 2,
+    issue_timestamp = issue, maturity_timestamp = maturity, face_value = 100)
+  bar <- data.frame(timestamp = issue, symbol = "NOTE", asset_id = 10L,
+    open = 100, high = 101, low = 99, close = 100)
+  sim_portfolio_market_step(exchange, bar)
+  sim_spot_target_submit(exchange, "alice", bar, c(NOTE = 1))
+  sim_portfolio_market_step(exchange, transform(bar, timestamp = timestamp + 86400))
+  coupon_boundary <- issue + 365 * 86400 / 2
+  sim_portfolio_market_step(exchange, transform(bar, timestamp = coupon_boundary))
+  expect_equal(exchange$cash_balances[agent_id == "alice" & currency == "USD", settled], 50)
+  expect_true(any(exchange$account_events$event_type == "bond_accrual"))
+  expect_true(any(exchange$profile_cash_ledger$event_type == "bond_coupon"))
+  path <- tempfile("tradesimr-bond-schedule-")
+  sim_exchange_save(exchange, path)
+  resumed <- sim_exchange_load(path)
+  expect_equal(as.numeric(resumed$bond_schedules$next_coupon_timestamp),
+    as.numeric(exchange$bond_schedules$next_coupon_timestamp))
+  sim_portfolio_market_step(resumed, transform(bar, timestamp = maturity))
+  expect_identical(resumed$bond_schedules$status, "matured")
+  expect_equal(resumed$inventory_positions[agent_id == "alice" & asset_id == 10L, units], 0)
+  expect_true(any(resumed$account_events$event_type == "redemption"))
+})
+
 test_that("spot target submission plans atomically and executes only after its decision bar", {
   exchange <- sim_exchange_new(list(cash = 1000))
   sim_asset_add(exchange, "SPY", asset_id = 1L, instrument_profile = "etf", quote_ccy = "USD", qty_step = 1)

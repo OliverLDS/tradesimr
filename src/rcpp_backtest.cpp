@@ -1300,6 +1300,7 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
   std::vector<std::string> event_ccy;
   std::vector<double> event_settlement;
   std::vector<std::string> event_type_label;
+  std::vector<int> event_cash_effect;
   std::vector<std::string> fill_order_id;
   std::vector<int> fill_asset_id;
   std::vector<std::string> fill_status;
@@ -1370,6 +1371,69 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
         event_ccy.push_back(ccy);
         event_settlement.push_back(std::isfinite(inventory_last[pi]) ? inventory_last[pi] : NA_REAL);
         event_type_label.push_back(type == "coupon" ? "bond_coupon" : type);
+        event_cash_effect.push_back(1);
+      }
+    }
+  }
+
+  // Calendar-driven bond schedules are passed as typed rows. They retain no
+  // hidden C++ state: R persists the boundary cursors, while C++ performs the
+  // day-count, coupon, and redemption accounting deterministically.
+  if (corporate_actions.containsElementNamed("schedule_type") &&
+      corporate_actions.containsElementNamed("asset_id") &&
+      corporate_actions.containsElementNamed("coupon_rate") &&
+      corporate_actions.containsElementNamed("coupon_frequency") &&
+      corporate_actions.containsElementNamed("face_value") &&
+      corporate_actions.containsElementNamed("currency")) {
+    Rcpp::CharacterVector schedule_type = corporate_actions["schedule_type"];
+    Rcpp::IntegerVector schedule_asset = corporate_actions["asset_id"];
+    Rcpp::NumericVector coupon_rate = corporate_actions["coupon_rate"];
+    Rcpp::NumericVector coupon_frequency = corporate_actions["coupon_frequency"];
+    Rcpp::NumericVector face_value = corporate_actions["face_value"];
+    Rcpp::CharacterVector schedule_currency = corporate_actions["currency"];
+    Rcpp::NumericVector day_count = corporate_actions.containsElementNamed("accrual_day_count") ? Rcpp::as<Rcpp::NumericVector>(corporate_actions["accrual_day_count"]) : Rcpp::NumericVector(schedule_asset.size(), 365.0);
+    Rcpp::NumericVector last_accrual = corporate_actions.containsElementNamed("last_accrual_timestamp") ? Rcpp::as<Rcpp::NumericVector>(corporate_actions["last_accrual_timestamp"]) : Rcpp::NumericVector(schedule_asset.size(), NA_REAL);
+    Rcpp::NumericVector next_coupon = corporate_actions.containsElementNamed("next_coupon_timestamp") ? Rcpp::as<Rcpp::NumericVector>(corporate_actions["next_coupon_timestamp"]) : Rcpp::NumericVector(schedule_asset.size(), NA_REAL);
+    Rcpp::NumericVector maturity = corporate_actions.containsElementNamed("maturity_timestamp") ? Rcpp::as<Rcpp::NumericVector>(corporate_actions["maturity_timestamp"]) : Rcpp::NumericVector(schedule_asset.size(), NA_REAL);
+    for (R_xlen_t si = 0; si < schedule_asset.size(); ++si) {
+      if (schedule_type[si] == NA_STRING) continue;
+      if (Rcpp::as<std::string>(schedule_type[si]) != "bond") continue;
+      if (!std::isfinite(coupon_rate[si]) || !std::isfinite(coupon_frequency[si]) || coupon_frequency[si] <= 0.0 ||
+          !std::isfinite(face_value[si]) || face_value[si] <= 0.0) continue;
+      R_xlen_t pi = static_cast<R_xlen_t>(-1);
+      for (R_xlen_t i = 0; i < inventory_asset.size(); ++i) if (inventory_asset[i] == schedule_asset[si]) { pi = i; break; }
+      if (pi == static_cast<R_xlen_t>(-1) || std::abs(inventory_units[pi]) <= 1e-12) continue;
+      const std::string ccy = Rcpp::as<std::string>(schedule_currency[si]);
+      const R_xlen_t ci = cash_index(ccy);
+      if (ci == static_cast<R_xlen_t>(-1)) Rcpp::stop("Every bond-schedule currency requires a cash balance row.");
+      const double cutoff = std::isfinite(maturity[si]) ? std::min(timestamp, maturity[si]) : timestamp;
+      const double denominator = std::isfinite(day_count[si]) && day_count[si] > 0.0 ? day_count[si] : 365.0;
+      if (std::isfinite(last_accrual[si]) && cutoff > last_accrual[si]) {
+        const double accrued = inventory_units[pi] * inventory_size[pi] * face_value[si] * coupon_rate[si] *
+          ((cutoff - last_accrual[si]) / (86400.0 * denominator));
+        if (std::abs(accrued) > 1e-12) {
+          event_amount.push_back(accrued); event_asset.push_back(schedule_asset[si]); event_ccy.push_back(ccy);
+          event_settlement.push_back(std::isfinite(inventory_last[pi]) ? inventory_last[pi] : NA_REAL);
+          event_type_label.push_back("bond_accrual"); event_cash_effect.push_back(0);
+        }
+      }
+      const double period = 365.0 * 86400.0 / coupon_frequency[si];
+      double due = next_coupon[si];
+      while (std::isfinite(due) && due <= cutoff + 1e-8) {
+        const double coupon = inventory_units[pi] * inventory_size[pi] * face_value[si] * coupon_rate[si] / coupon_frequency[si];
+        cash_settled[ci] += coupon;
+        event_amount.push_back(coupon); event_asset.push_back(schedule_asset[si]); event_ccy.push_back(ccy);
+        event_settlement.push_back(std::isfinite(inventory_last[pi]) ? inventory_last[pi] : NA_REAL);
+        event_type_label.push_back("bond_coupon"); event_cash_effect.push_back(1);
+        due += period;
+      }
+      if (std::isfinite(maturity[si]) && timestamp >= maturity[si] && std::abs(inventory_units[pi]) > 1e-12) {
+        const double redemption = inventory_units[pi] * inventory_size[pi] * face_value[si];
+        cash_settled[ci] += redemption;
+        inventory_units[pi] = 0.0; inventory_cost[pi] = NA_REAL;
+        event_amount.push_back(redemption); event_asset.push_back(schedule_asset[si]); event_ccy.push_back(ccy);
+        event_settlement.push_back(std::isfinite(inventory_last[pi]) ? inventory_last[pi] : NA_REAL);
+        event_type_label.push_back("redemption"); event_cash_effect.push_back(1);
       }
     }
   }
@@ -1687,6 +1751,7 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
           event_amount.push_back(-funding); event_asset.push_back(margin_asset[i]);
           event_ccy.push_back(Rcpp::as<std::string>(margin_ccy[i])); event_settlement.push_back(margin_last[i]);
           event_type_label.push_back("funding");
+          event_cash_effect.push_back(1);
         }
       }
       margin_last[i] = bar_close[j];
@@ -1703,6 +1768,7 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
         event_amount.push_back(vm); event_asset.push_back(position.asset_id);
         event_ccy.push_back(position.currency); event_settlement.push_back(position.last_price);
         event_type_label.push_back("variation_margin");
+        event_cash_effect.push_back(1);
       }
       break;
     }
@@ -1723,7 +1789,9 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
   Rcpp::DataFrame cash_out = Rcpp::DataFrame::create(Rcpp::Named("currency") = cash_ccy, Rcpp::Named("settled") = cash_settled, Rcpp::Named("unsettled") = cash_unsettled);
   Rcpp::DataFrame inventory_out = Rcpp::DataFrame::create(Rcpp::Named("asset_id") = inventory_asset, Rcpp::Named("currency") = inventory_ccy, Rcpp::Named("units") = inventory_units, Rcpp::Named("average_cost") = inventory_cost, Rcpp::Named("last_price") = inventory_last, Rcpp::Named("contract_size") = inventory_size);
   Rcpp::DataFrame margin_out = Rcpp::DataFrame::create(Rcpp::Named("asset_id") = margin_asset, Rcpp::Named("currency") = margin_ccy, Rcpp::Named("signed_units") = margin_units, Rcpp::Named("settlement_price") = margin_settle, Rcpp::Named("last_price") = margin_last, Rcpp::Named("contract_size") = margin_size, Rcpp::Named("maintenance_rate") = margin_mmr);
-  Rcpp::DataFrame events = Rcpp::DataFrame::create(Rcpp::Named("timestamp") = Rcpp::NumericVector(event_amount.size(), timestamp), Rcpp::Named("event_type") = Rcpp::wrap(event_type_label), Rcpp::Named("asset_id") = Rcpp::wrap(event_asset), Rcpp::Named("currency") = Rcpp::wrap(event_ccy), Rcpp::Named("amount") = Rcpp::wrap(event_amount), Rcpp::Named("settlement_price") = Rcpp::wrap(event_settlement));
+  Rcpp::LogicalVector event_cash_effect_out(event_cash_effect.size());
+  for (R_xlen_t i = 0; i < event_cash_effect_out.size(); ++i) event_cash_effect_out[i] = event_cash_effect[i] == 1;
+  Rcpp::DataFrame events = Rcpp::DataFrame::create(Rcpp::Named("timestamp") = Rcpp::NumericVector(event_amount.size(), timestamp), Rcpp::Named("event_type") = Rcpp::wrap(event_type_label), Rcpp::Named("asset_id") = Rcpp::wrap(event_asset), Rcpp::Named("currency") = Rcpp::wrap(event_ccy), Rcpp::Named("amount") = Rcpp::wrap(event_amount), Rcpp::Named("settlement_price") = Rcpp::wrap(event_settlement), Rcpp::Named("cash_effect") = event_cash_effect_out);
   std::vector<std::string> fill_id; for (R_xlen_t i = 0; i < static_cast<R_xlen_t>(fill_order_id.size()); ++i) fill_id.push_back("HFILL" + std::to_string(i + 1));
   Rcpp::DataFrame fills = Rcpp::DataFrame::create(Rcpp::Named("fill_id") = Rcpp::wrap(fill_id), Rcpp::Named("event_timestamp") = Rcpp::NumericVector(fill_order_id.size(), timestamp), Rcpp::Named("order_id") = Rcpp::wrap(fill_order_id), Rcpp::Named("atomic_group_id") = Rcpp::wrap(fill_group_id), Rcpp::Named("asset_id") = Rcpp::wrap(fill_asset_id), Rcpp::Named("status") = Rcpp::wrap(fill_status), Rcpp::Named("reason_code") = Rcpp::wrap(fill_reason), Rcpp::Named("committed") = Rcpp::wrap(fill_committed), Rcpp::Named("qty") = Rcpp::wrap(fill_qty), Rcpp::Named("price") = Rcpp::wrap(fill_price), Rcpp::Named("fee") = Rcpp::wrap(fill_fee), Rcpp::Named("realized_pnl") = Rcpp::wrap(fill_realized), Rcpp::Named("resulting_signed_quantity") = Rcpp::wrap(fill_resulting_qty), Rcpp::Named("resulting_currency_cash") = Rcpp::wrap(fill_resulting_cash));
   std::vector<std::string> group_ids, group_status, group_reason;
