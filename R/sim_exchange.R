@@ -101,6 +101,8 @@ sim_exchange_add_bars <- function(exchange, bars) {
 #' @param qty_type Quantity semantics: `contracts` or `target_pos`.
 #' @param limit_price Optional limit price for limit orders.
 #' @param time_in_force Time-in-force label.
+#' @param atomic_group_id Optional atomic execution group. Explicit orders in
+#'   the same group either commit together or are rejected together.
 #' @param client_order_id Optional client order id.
 #' @return The generated order id.
 #' @export
@@ -117,6 +119,7 @@ sim_exchange_place_order <- function(exchange,
                                      qty = NULL,
                                      limit_price = NA_real_,
                                      time_in_force = "gtc",
+                                     atomic_group_id = NULL,
                                      client_order_id = NA_character_) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   asset <- .asset_require_registered(exchange, symbol = symbol, asset_id = asset_id, context = "order asset")
@@ -137,6 +140,10 @@ sim_exchange_place_order <- function(exchange,
   }
   order_id <- paste0("ORD", sprintf("%06d", exchange$next_order_id))
   exchange$next_order_id <- exchange$next_order_id + 1L
+  atomic_group_id <- as.character(atomic_group_id %||% order_id)
+  if (length(atomic_group_id) != 1L || is.na(atomic_group_id) || !nzchar(atomic_group_id)) {
+    stop("`atomic_group_id` must be one non-empty string.", call. = FALSE)
+  }
   if (is.null(qty)) qty <- if (is.null(tgt_pos)) NA_real_ else abs(as.numeric(tgt_pos))
   target <- .order_to_target_pos(side = side, qty = qty, qty_type = qty_type, tgt_pos = tgt_pos)
   row <- data.table::data.table(
@@ -146,9 +153,14 @@ sim_exchange_place_order <- function(exchange,
     symbol = asset$symbol,
     asset_id = asset$asset_id,
     timestamp = timestamp,
-    eligible_after = as.POSIXct(NA),
+    # Direct inventory orders are eligible only after their submission bar.
+    # The append-only live-command adapter can explicitly admit a command at
+    # its declared boundary once it has been processed by the exchange.
+    eligible_after = if (.asset_uses_spot_inventory(exchange, asset$asset_id)) as.POSIXct(timestamp, tz = "UTC") else as.POSIXct(NA),
     settlement_timestamp = as.POSIXct(NA),
     rebalance_id = NA_character_,
+    atomic_group_id = atomic_group_id,
+    target_derived = FALSE,
     target_weight = NA_real_,
     decision_price = NA_real_,
     order_type = order_type,
@@ -262,12 +274,14 @@ sim_exchange_step <- function(exchange, bars) {
   new_bars <- as_market_bars(bars)
   new_bars <- .validate_market_bar_assets(exchange, new_bars)
   if (isTRUE(exchange$config$portfolio_margin %||% FALSE)) {
-    if (any(vapply(new_bars$asset_id, function(id) .asset_uses_spot_inventory(exchange, id), logical(1L)))) {
+    inventory_profiles <- vapply(new_bars$asset_id, function(id) .asset_uses_spot_inventory(exchange, id), logical(1L))
+    if (any(inventory_profiles) && any(!inventory_profiles)) {
       return(.sim_exchange_step_mixed_profiled_portfolio(exchange, new_bars))
     }
     return(.sim_exchange_step_portfolio(exchange, new_bars))
   }
   exchange$market_events <- data.table::rbindlist(list(exchange$market_events, new_bars), fill = TRUE)
+  inventory_events <- .sim_exchange_step_heterogeneous_inventory(exchange, new_bars)
   step_results <- vector("list", nrow(new_bars))
   new_event_list <- list()
 
@@ -287,9 +301,17 @@ sim_exchange_step <- function(exchange, bars) {
         status == "accepted" & agent_id == as.character(agent_id) & asset_id == as.integer(asset$asset_id) &
           (!is.na(rebalance_id) | !is.na(intended_action))
       ]) > 0L
+      # The historical target-weight API retains derivatives-compatible
+      # collateral semantics for a single profile. Fully paid inventory orders
+      # (and mixed-profile target groups) use the heterogeneous adapter.
       if (.asset_uses_spot_inventory(exchange, asset$asset_id) && !has_target_derived_order) {
-        spot_step <- .sim_exchange_step_spot_asset(exchange, bar, agent_id, asset)
-        if (nrow(spot_step$events) > 0L) new_event_list[[length(new_event_list) + 1L]] <- spot_step$events
+        if (nrow(inventory_events)) {
+          asset_events <- inventory_events[
+            asset_id == as.integer(asset$asset_id) & agent_id == as.character(agent_id) &
+              timestamp == bar$timestamp[1L]
+          ]
+          if (nrow(asset_events)) new_event_list[[length(new_event_list) + 1L]] <- asset_events
+        }
         next
       }
       state_key <- .agent_state_key(agent_id, asset$asset_id)
@@ -366,27 +388,21 @@ sim_exchange_step <- function(exchange, bars) {
 
 #' @keywords internal
 .sim_exchange_step_mixed_profiled_portfolio <- function(exchange, new_bars) {
-  # `portfolio_step_rcpp()` cannot execute inventory orders. Keep target-derived
-  # portfolio rebalances on that atomic derivatives compatibility path rather
-  # than silently splitting a rebalance across two execution kernels.
-  relevant <- exchange$agent_orders[
-    status == "accepted" & asset_id %in% as.integer(new_bars$asset_id) &
-      (!is.na(rebalance_id) | !is.na(intended_action))
-  ]
-  if (nrow(relevant)) {
-    stop(
-      "Mixed inventory/margin target rebalances require the heterogeneous order kernel; submit explicit profile orders until that path is available.",
-      call. = FALSE
-    )
-  }
-  previous <- exchange$config$portfolio_margin
-  exchange$config$portfolio_margin <- FALSE
-  exchange$.force_portfolio_risk <- isTRUE(previous)
-  on.exit({
-    exchange$config$portfolio_margin <- previous
-    exchange$.force_portfolio_risk <- NULL
-  }, add = TRUE)
-  sim_exchange_step(exchange, new_bars)
+  # A portfolio boundary containing an inventory asset cannot be split into a
+  # spot step and a derivatives step: target rebalance legs share one durable
+  # atomic group. Route the complete account through the heterogeneous kernel.
+  exchange$market_events <- data.table::rbindlist(list(exchange$market_events, new_bars), fill = TRUE)
+  stepped <- .sim_exchange_step_heterogeneous_portfolio(exchange, new_bars)
+  exchange$new_events <- stepped$events
+  exchange$step_snapshots <- data.table::rbindlist(list(exchange$step_snapshots, stepped$snapshots), fill = TRUE)
+  exchange$step_events <- data.table::rbindlist(list(exchange$step_events, stepped$events), fill = TRUE)
+  exchange$result <- exchange$step_snapshots
+  data.table::setattr(exchange$result, "market_events", exchange$market_events)
+  data.table::setattr(exchange$result, "events", exchange$step_events)
+  data.table::setattr(exchange$result, "orders", sim_orders(exchange$step_events))
+  exchange$last_events <- exchange$step_events
+  exchange$last_bar_count <- nrow(exchange$market_events)
+  exchange$result
 }
 
 #' @keywords internal
@@ -742,11 +758,19 @@ sim_exchange_load <- function(path) {
       data.table::set(exchange$agent_orders, j = "reason_code", value = as.character(exchange$agent_orders$reason_code))
     }
     for (column in intersect(c(
-      "order_id", "client_order_id", "agent_id", "symbol", "rebalance_id",
+      "order_id", "client_order_id", "agent_id", "symbol", "rebalance_id", "atomic_group_id",
       "superseded_by_rebalance_id", "supersedes_rebalance_id", "order_type", "side",
       "intended_action", "intended_dir", "qty_type", "time_in_force", "status", "message"
     ), names(exchange$agent_orders))) {
       data.table::set(exchange$agent_orders, j = column, value = .exchange_restore_character(exchange$agent_orders[[column]]))
+    }
+    if (!"atomic_group_id" %in% names(exchange$agent_orders)) {
+      data.table::set(exchange$agent_orders, j = "atomic_group_id", value = as.character(exchange$agent_orders$order_id))
+    }
+    if (!"target_derived" %in% names(exchange$agent_orders)) {
+      data.table::set(exchange$agent_orders, j = "target_derived", value = !is.na(exchange$agent_orders$rebalance_id))
+    } else {
+      data.table::set(exchange$agent_orders, j = "target_derived", value = as.logical(exchange$agent_orders$target_derived))
     }
     if ("asset_id" %in% names(exchange$agent_orders)) data.table::set(exchange$agent_orders, j = "asset_id", value = as.integer(exchange$agent_orders$asset_id))
     for (column in intersect(c("timestamp", "eligible_after", "settlement_timestamp"), names(exchange$agent_orders))) {
@@ -1338,7 +1362,13 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
     ), timestamp = bar$timestamp[1L]
   )
   settled <- result$cash_balances$settled[match(currency, result$cash_balances$currency)]
-  .profile_set_cash_balance(exchange, agent_id, currency, settled)
+  # The outer legacy state synchronizer applies base-currency cash deltas.
+  # Posting here as well would book the same variation margin twice. Native
+  # settlement currencies have no legacy state cash equivalent, so retain the
+  # direct profile-ledger update for those accounts.
+  if (!identical(currency, base_currency)) {
+    .profile_set_cash_balance(exchange, agent_id, currency, settled)
+  }
   # The legacy TradeState stores base-currency collateral. Native-currency
   # settlement is recorded in the profile ledger; retain that compatibility
   # cash field so future order execution does not double-book the settlement.

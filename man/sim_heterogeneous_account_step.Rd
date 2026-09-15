@@ -33,17 +33,21 @@ sim_heterogeneous_account_step(
 
 \item{fx_rates}{Data frame with \code{currency} and \code{rate_to_base}.}
 
-\item{settlements, corporate_actions, orders}{Reserved durable input tables.}
+\item{settlements, corporate_actions, orders}{Reserved durable input tables.
+Normalized order rows require \code{order_id}, \code{asset_id},
+\code{instrument_profile}, \code{side}, \code{qty}, \code{execution_price},
+and \code{fee_rt}.}
 
 \item{timestamp}{Settlement timestamp.}
 }
 \value{
 Updated account tables, base-currency equity and maintenance margin,
-liquidation status, and typed events.
+liquidation status, typed events, and one typed \code{fills} outcome for each
+normalized supplied order.
 }
 \description{
-This compatibility-safe primitive currently settles futures/perpetual
-variation margin. Inventory, settlement, corporate-action, and order tables
-are accepted as part of the stable account contract but are not yet mutated
-by this futures-only implementation.
+This compatibility-safe primitive marks inventory, settles futures/perpetual
+variation margin, and executes normalized profile-tagged market orders.
+Settlement and corporate-action tables remain reserved inputs while their
+full schedule engines are implemented.
 }

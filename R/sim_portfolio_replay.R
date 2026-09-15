@@ -157,7 +157,7 @@ sim_portfolio_target_submit <- function(exchange,
   allowed_assets <- .portfolio_resolve_allowed_assets(exchange, agent_id, allowed_symbols, allowed_asset_ids)
   if (!is.null(target_weights)) .portfolio_require_complete_universe_boundary(decision_bars, allowed_assets)
   first_asset <- .bar_asset_key(decision_bars[1L])
-  .ensure_agent_account(exchange, agent_id, asset_id = first_asset$asset_id, symbol = first_asset$symbol, agent_type = "arena")
+  .portfolio_ensure_agent_account(exchange, agent_id, first_asset)
   .portfolio_set_agent_universe(exchange, agent_id, allowed_assets$asset_id)
   .portfolio_submit_target(
     exchange, agent_id, decision_bars, target_weights, execution, decision_label,
@@ -215,7 +215,7 @@ sim_portfolio_target_submit_batch <- function(exchange,
     )
     if (!is.null(decision$target_weights)) .portfolio_require_complete_universe_boundary(decision_bars, allowed_assets)
     first_asset <- .bar_asset_key(decision_bars[1L])
-    .ensure_agent_account(exchange, agent_id, asset_id = first_asset$asset_id, symbol = first_asset$symbol, agent_type = "arena")
+    .portfolio_ensure_agent_account(exchange, agent_id, first_asset)
     .portfolio_set_agent_universe(exchange, agent_id, allowed_assets$asset_id)
     prepared[[i]] <- list(agent_id = agent_id, decision = decision, allowed_assets = allowed_assets)
   }
@@ -283,7 +283,7 @@ sim_portfolio_target_submit_batch <- function(exchange,
     )
     if (!is.null(decision$target_weights)) .portfolio_require_complete_universe_boundary(decision_bars, allowed_assets)
     first_asset <- .bar_asset_key(decision_bars[1L])
-    .ensure_agent_account(exchange, agent_id, asset_id = first_asset$asset_id, symbol = first_asset$symbol, agent_type = "arena")
+    .portfolio_ensure_agent_account(exchange, agent_id, first_asset)
     .portfolio_set_agent_universe(exchange, agent_id, allowed_assets$asset_id)
     prepared[[i]] <- list(agent_id = agent_id, decision = decision, allowed_assets = allowed_assets)
   }
@@ -421,6 +421,24 @@ sim_portfolio_target_step <- function(exchange,
       slippage = execution$slippage, spread = execution$spread, message = message
     )), fill = TRUE)
     .sim_profile_add(exchange, "durable_append_bind", append_started)
+    if (isTRUE(.compact)) return(invisible(NULL))
+    return(.portfolio_step_result(exchange, agent_id, rebalance_id, fills = fills, context = context, outcomes = .portfolio_outcome_row(
+      rebalance_id, timestamp, agent_id, "rejected", message
+    )))
+  }
+  mixed_boundary <- isTRUE(exchange$config$portfolio_margin %||% FALSE) &&
+    any(vapply(decision_bars$asset_id, function(id) .asset_uses_spot_inventory(exchange, id), logical(1L))) &&
+    any(!vapply(decision_bars$asset_id, function(id) .asset_uses_spot_inventory(exchange, id), logical(1L)))
+  inventory_target_ids <- exchange$assets[
+    vapply(asset_id, function(id) .asset_uses_spot_inventory(exchange, id), logical(1L)), asset_id
+  ]
+  if (mixed_boundary && any(targets$asset_id %in% inventory_target_ids & targets$target_weight < -1e-12)) {
+    message <- "Fully paid inventory target weights must be non-negative; use a margin-profile asset for short exposure."
+    exchange$portfolio_rebalances <- data.table::rbindlist(list(exchange$portfolio_rebalances, data.table::data.table(
+      rebalance_id = rebalance_id, timestamp = timestamp, agent_id = agent_id,
+      status = "rejected", execution_timing = execution$timing, fee_rt = execution$fee_rt,
+      slippage = execution$slippage, spread = execution$spread, message = message
+    )), fill = TRUE)
     if (isTRUE(.compact)) return(invisible(NULL))
     return(.portfolio_step_result(exchange, agent_id, rebalance_id, fills = fills, context = context, outcomes = .portfolio_outcome_row(
       rebalance_id, timestamp, agent_id, "rejected", message
@@ -646,6 +664,15 @@ sim_portfolio_export <- function(exchange,
 }
 
 #' @keywords internal
+.portfolio_ensure_agent_account <- function(exchange, agent_id, asset) {
+  # Preserve the established single-profile target API, which is
+  # derivatives-compatible even for an ETF symbol. A genuinely mixed boundary
+  # converts inventory legs into `spot_states` in the heterogeneous adapter.
+  .ensure_agent_account(exchange, agent_id, asset$asset_id, asset$symbol, agent_type = "arena")
+  invisible(NULL)
+}
+
+#' @keywords internal
 .portfolio_normalize_targets <- function(exchange, target_weights, max_gross_weight, allowed_assets) {
   if (is.null(names(target_weights)) || any(!nzchar(names(target_weights)))) {
     stop("`target_weights` must be a named numeric vector keyed by registered symbols.", call. = FALSE)
@@ -848,6 +875,8 @@ sim_portfolio_export <- function(exchange,
     eligible_after = timestamp,
     settlement_timestamp = as.POSIXct(NA, tz = "UTC"),
     rebalance_id = rebalance_id,
+    atomic_group_id = rebalance_id,
+    target_derived = TRUE,
     superseded_by_rebalance_id = NA_character_,
     supersedes_rebalance_id = NA_character_,
     target_weight = as.numeric(orders$target_weight),

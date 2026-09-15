@@ -8,6 +8,11 @@ test_that("spot-profile assets use the Rcpp inventory path in incremental exchan
     timestamp = ts, symbol = "SPY", asset_id = 1L,
     open = 100, high = 101, low = 99, close = 100
   ))
+  expect_identical(sim_exchange_orders(exchange)$status, "accepted")
+  sim_exchange_step(exchange, data.frame(
+    timestamp = ts + 86400, symbol = "SPY", asset_id = 1L,
+    open = 100, high = 101, low = 99, close = 100
+  ))
 
   order <- sim_exchange_orders(exchange)
   position <- sim_exchange_positions(exchange)
@@ -21,7 +26,7 @@ test_that("spot-profile assets use the Rcpp inventory path in incremental exchan
 
   sim_exchange_place_order(exchange, "alice", ts + 86400, symbol = "SPY", side = "sell", qty = 2)
   sim_exchange_step(exchange, data.frame(
-    timestamp = ts + 86400, symbol = "SPY", asset_id = 1L,
+    timestamp = ts + 2 * 86400, symbol = "SPY", asset_id = 1L,
     open = 110, high = 111, low = 109, close = 110
   ))
   position <- sim_exchange_positions(exchange)
@@ -40,12 +45,16 @@ test_that("spot exchange state survives save/load and rejects unfunded inventory
     timestamp = ts, symbol = "BTC-USD", asset_id = 5L,
     open = 100, high = 101, low = 99, close = 100
   ))
+  sim_exchange_step(exchange, data.frame(
+    timestamp = ts + 86400, symbol = "BTC-USD", asset_id = 5L,
+    open = 100, high = 101, low = 99, close = 100
+  ))
   expect_identical(sim_exchange_orders(exchange)$status, "rejected")
   expect_equal(sim_exchange_positions(exchange)$ctr_unit, 0)
 
   sim_exchange_place_order(exchange, "alice", ts + 86400, symbol = "BTC-USD", side = "buy", qty = 0.5)
   sim_exchange_step(exchange, data.frame(
-    timestamp = ts + 86400, symbol = "BTC-USD", asset_id = 5L,
+    timestamp = ts + 2 * 86400, symbol = "BTC-USD", asset_id = 5L,
     open = 100, high = 101, low = 99, close = 100
   ))
   path <- tempfile("tradesimr-spot-")
@@ -63,14 +72,13 @@ test_that("an account may hold spot inventory alongside a derivatives margin sta
   expect_no_error(sim_exchange_place_order(exchange, "alice", as.POSIXct("2025-01-01", tz = "UTC"), symbol = "SPY", side = "buy", qty = 1))
 })
 
-test_that("portfolio-margin exchange refuses spot assets until its accounting path is implemented", {
+test_that("portfolio-margin exchange accepts spot assets through the profile-aware route", {
   exchange <- sim_exchange_new(list(cash = 1000, portfolio_margin = TRUE))
   sim_asset_add(exchange, "SPY", asset_id = 1L, instrument_profile = "equity")
-  expect_error(
+  expect_no_error(
     sim_exchange_step(exchange, data.frame(
       timestamp = as.POSIXct("2025-01-01", tz = "UTC"), symbol = "SPY", asset_id = 1L,
       open = 100, high = 101, low = 99, close = 100
-    )),
-    "does not support spot-inventory"
+    ))
   )
 })

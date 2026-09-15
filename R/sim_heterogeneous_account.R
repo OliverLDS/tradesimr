@@ -1,24 +1,57 @@
+#' Empty normalized heterogeneous order-batch schema
+#'
+#' @return A typed empty data.table accepted by
+#'   [sim_heterogeneous_account_step()].
+#' @export
+sim_heterogeneous_order_batch_schema <- function() {
+  data.table::data.table(
+    order_id = character(), asset_id = integer(), instrument_profile = character(),
+    side = character(), qty = numeric(), order_type = character(),
+    limit_price = numeric(), execution_price = numeric(), fee_rt = numeric(),
+    eligible_after = as.POSIXct(character()), atomic_group_id = character(),
+    target_derived = logical(), time_in_force = character()
+  )
+}
+
+#' @keywords internal
+.normalize_heterogeneous_orders <- function(orders, timestamp) {
+  if (nrow(orders) == 0L) return(sim_heterogeneous_order_batch_schema())
+  orders <- data.table::as.data.table(data.table::copy(orders))
+  required <- c("order_id", "asset_id", "instrument_profile", "side", "qty", "order_type", "execution_price", "fee_rt", "eligible_after", "atomic_group_id", "target_derived", "time_in_force")
+  missing <- setdiff(required, names(orders))
+  if (length(missing)) stop("Normalized heterogeneous orders are missing required columns: ", paste(missing, collapse = ", "), call. = FALSE)
+  if (!"limit_price" %in% names(orders)) orders[, limit_price := NA_real_]
+  orders[, eligible_after := as.POSIXct(eligible_after, tz = "UTC")]
+  if (any(!(orders$order_type %in% c("market", "limit")))) stop("Heterogeneous orders require `market` or `limit` order types.", call. = FALSE)
+  if (any(!(orders$side %in% c("buy", "sell", "flat")))) stop("Heterogeneous orders require buy, sell, or flat sides.", call. = FALSE)
+  if (any(!(orders$time_in_force %in% c("gtc", "ioc", "fok", "next_eligible_bar")))) stop("Unsupported heterogeneous `time_in_force`.", call. = FALSE)
+  if (any(!is.finite(orders$qty) | orders$qty < 0)) stop("Heterogeneous order quantities must be non-negative and finite.", call. = FALSE)
+  if (any(orders$order_type == "limit" & (!is.finite(orders$limit_price) | orders$limit_price <= 0))) stop("Limit orders require a positive `limit_price`.", call. = FALSE)
+  if (any(is.na(orders$eligible_after) | orders$eligible_after >= as.POSIXct(timestamp, tz = "UTC"))) stop("Only orders eligible strictly before this market boundary may enter a heterogeneous batch.", call. = FALSE)
+  groups <- as.character(orders$atomic_group_id)
+  if (anyNA(groups) || any(!nzchar(groups))) stop("Every heterogeneous order requires an `atomic_group_id`.", call. = FALSE)
+  if (anyDuplicated(rle(groups)$values) > 0L) {
+    stop("Rows belonging to an atomic group must be contiguous in the normalized batch.", call. = FALSE)
+  }
+  schema_columns <- names(sim_heterogeneous_order_batch_schema())
+  orders[, ..schema_columns]
+}
+
 #' Step a heterogeneous profile-aware account kernel
 #'
-#' This compatibility-safe primitive marks inventory and settles
-#' futures/perpetual variation margin in their native cash currencies before
-#' valuing the account in `base_currency`. Settlement, corporate-action, and
-#' order tables are accepted as part of the stable account contract but are not
-#' yet mutated by this futures-first implementation.
+#' Marks inventory, settles futures/perpetual variation margin, and evaluates
+#' a normalized order batch without mutating the supplied R input tables.
 #'
 #' @param base_currency Account reporting currency.
 #' @param cash_balances Data frame with `currency`, `settled`, and `unsettled`.
-#' @param inventory_positions Reserved inventory-position table.
-#' @param margin_positions Data frame with `asset_id`, `currency`,
-#'   `signed_units`, `settlement_price`, `last_price`, `contract_size`, and
-#'   `maintenance_rate`.
-#' @param bars Profile-tagged bars with `asset_id`, `close`, and optional
-#'   `instrument_profile`.
+#' @param inventory_positions Data frame with inventory units and valuation.
+#' @param margin_positions Data frame with margin positions and settlement prices.
+#' @param bars Profile-tagged market bars.
 #' @param fx_rates Data frame with `currency` and `rate_to_base`.
-#' @param settlements,corporate_actions,orders Reserved durable input tables.
-#' @param timestamp Settlement timestamp.
-#' @return Updated account tables, base-currency equity and maintenance margin,
-#'   liquidation status, and typed events.
+#' @param settlements,corporate_actions Reserved durable input tables.
+#' @param orders A normalized heterogeneous order batch.
+#' @param timestamp Market-boundary timestamp.
+#' @return Updated account state, typed events, fills, and group outcomes.
 #' @export
 sim_heterogeneous_account_step <- function(base_currency,
                                            cash_balances,
@@ -48,8 +81,10 @@ sim_heterogeneous_account_step <- function(base_currency,
   }
   supplied <- list(cash_balances = cash_balances, margin_positions = margin_positions, bars = bars, fx_rates = fx_rates)
   for (name in names(required)) if (!all(required[[name]] %in% names(supplied[[name]]))) stop("`", name, "` is missing required columns.", call. = FALSE)
+  orders <- .normalize_heterogeneous_orders(orders, timestamp)
   out <- heterogeneous_account_step_rcpp(as.character(base_currency), data.frame(cash_balances), data.frame(inventory_positions), data.frame(margin_positions), data.frame(bars), data.frame(fx_rates), data.frame(settlements), data.frame(corporate_actions), data.frame(orders), as.numeric(as.POSIXct(timestamp, tz = "UTC")))
   out$events <- data.table::as.data.table(out$events)
+  out$fills <- data.table::as.data.table(out$fills)
   if (nrow(out$events)) data.table::set(out$events, j = "timestamp", value = as.POSIXct(out$events$timestamp, origin = "1970-01-01", tz = "UTC"))
   out
 }

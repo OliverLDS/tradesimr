@@ -132,6 +132,13 @@ sim_exchange_process_commands <- function(exchange) {
           time_in_force = request$time_in_force,
           client_order_id = request$client_order_id
         )
+        # A command accepted by the live exchange at this boundary is eligible
+        # for that boundary's matching cycle. Direct inventory submissions
+        # remain strictly next-bar eligible.
+        order_index <- match(order_id, exchange$agent_orders$order_id)
+        if (!is.na(order_index) && .asset_uses_spot_inventory(exchange, exchange$agent_orders$asset_id[order_index])) {
+          data.table::set(exchange$agent_orders, i = order_index, j = "eligible_after", value = as.POSIXct(NA, tz = "UTC"))
+        }
         list(status = "accepted", ref_id = order_id, message = "accepted")
       }, error = function(err) {
         list(status = "rejected", ref_id = NA_character_, message = conditionMessage(err))

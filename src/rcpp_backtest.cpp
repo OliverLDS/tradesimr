@@ -997,25 +997,27 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
                                            const Rcpp::DataFrame& corporate_actions,
                                            const Rcpp::DataFrame& orders,
                                            double timestamp) {
-  Rcpp::CharacterVector cash_ccy = cash_balances["currency"];
+  Rcpp::CharacterVector cash_ccy = Rcpp::clone(Rcpp::as<Rcpp::CharacterVector>(cash_balances["currency"]));
   Rcpp::NumericVector cash_settled = Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(cash_balances["settled"]));
   Rcpp::NumericVector cash_unsettled = Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(cash_balances["unsettled"]));
   const bool has_inventory = inventory_positions.containsElementNamed("asset_id");
-  Rcpp::IntegerVector inventory_asset = has_inventory ? Rcpp::as<Rcpp::IntegerVector>(inventory_positions["asset_id"]) : Rcpp::IntegerVector();
-  Rcpp::CharacterVector inventory_ccy = has_inventory ? Rcpp::as<Rcpp::CharacterVector>(inventory_positions["currency"]) : Rcpp::CharacterVector();
-  Rcpp::NumericVector inventory_units = has_inventory ? Rcpp::as<Rcpp::NumericVector>(inventory_positions["units"]) : Rcpp::NumericVector();
-  Rcpp::NumericVector inventory_cost = has_inventory ? Rcpp::as<Rcpp::NumericVector>(inventory_positions["average_cost"]) : Rcpp::NumericVector();
+  Rcpp::IntegerVector inventory_asset = has_inventory ? Rcpp::clone(Rcpp::as<Rcpp::IntegerVector>(inventory_positions["asset_id"])) : Rcpp::IntegerVector();
+  Rcpp::CharacterVector inventory_ccy = has_inventory ? Rcpp::clone(Rcpp::as<Rcpp::CharacterVector>(inventory_positions["currency"])) : Rcpp::CharacterVector();
+  Rcpp::NumericVector inventory_units = has_inventory ? Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(inventory_positions["units"])) : Rcpp::NumericVector();
+  Rcpp::NumericVector inventory_cost = has_inventory ? Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(inventory_positions["average_cost"])) : Rcpp::NumericVector();
   Rcpp::NumericVector inventory_last = has_inventory ? Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(inventory_positions["last_price"])) : Rcpp::NumericVector();
-  Rcpp::NumericVector inventory_size = has_inventory ? Rcpp::as<Rcpp::NumericVector>(inventory_positions["contract_size"]) : Rcpp::NumericVector();
-  Rcpp::IntegerVector margin_asset = margin_positions["asset_id"];
-  Rcpp::CharacterVector margin_ccy = margin_positions["currency"];
-  Rcpp::NumericVector margin_units = margin_positions["signed_units"];
+  Rcpp::NumericVector inventory_size = has_inventory ? Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(inventory_positions["contract_size"])) : Rcpp::NumericVector();
+  Rcpp::IntegerVector margin_asset = Rcpp::clone(Rcpp::as<Rcpp::IntegerVector>(margin_positions["asset_id"]));
+  Rcpp::CharacterVector margin_ccy = Rcpp::clone(Rcpp::as<Rcpp::CharacterVector>(margin_positions["currency"]));
+  Rcpp::NumericVector margin_units = Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(margin_positions["signed_units"]));
   Rcpp::NumericVector margin_settle = Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(margin_positions["settlement_price"]));
   Rcpp::NumericVector margin_last = Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(margin_positions["last_price"]));
-  Rcpp::NumericVector margin_size = margin_positions["contract_size"];
-  Rcpp::NumericVector margin_mmr = margin_positions["maintenance_rate"];
+  Rcpp::NumericVector margin_size = Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(margin_positions["contract_size"]));
+  Rcpp::NumericVector margin_mmr = Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(margin_positions["maintenance_rate"]));
   Rcpp::IntegerVector bar_asset = bars["asset_id"];
   Rcpp::NumericVector bar_close = bars["close"];
+  Rcpp::NumericVector bar_high = bars.containsElementNamed("high") ? bars["high"] : Rcpp::NumericVector(bar_asset.size(), NA_REAL);
+  Rcpp::NumericVector bar_low = bars.containsElementNamed("low") ? bars["low"] : Rcpp::NumericVector(bar_asset.size(), NA_REAL);
   Rcpp::CharacterVector bar_profile = bars.containsElementNamed("instrument_profile") ? bars["instrument_profile"] : Rcpp::CharacterVector(bar_asset.size(), "future");
   Rcpp::CharacterVector fx_ccy = fx_rates["currency"];
   Rcpp::NumericVector fx_to_base = fx_rates["rate_to_base"];
@@ -1034,6 +1036,218 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
   std::vector<int> event_asset;
   std::vector<std::string> event_ccy;
   std::vector<double> event_settlement;
+  std::vector<std::string> fill_order_id;
+  std::vector<int> fill_asset_id;
+  std::vector<std::string> fill_status;
+  std::vector<std::string> fill_reason;
+  std::vector<double> fill_qty;
+  std::vector<double> fill_price;
+  std::vector<double> fill_fee;
+  std::vector<double> fill_realized;
+  std::vector<std::string> fill_group_id;
+  std::vector<int> fill_committed;
+  std::vector<double> fill_resulting_qty;
+  std::vector<double> fill_resulting_cash;
+
+  // Orders are normalized by R before crossing the C++ boundary. The kernel
+  // owns profile-specific cash/inventory mutations and returns a typed outcome
+  // for every supplied order; R owns durable order-id bookkeeping.
+  if (orders.nrows() > 0) {
+    const std::vector<std::string> required_order = {
+      "order_id", "asset_id", "instrument_profile", "side", "qty",
+      "execution_price", "fee_rt", "atomic_group_id", "order_type",
+      "limit_price", "time_in_force"
+    };
+    for (const auto& name : required_order) {
+      if (!orders.containsElementNamed(name.c_str())) Rcpp::stop("Normalized heterogeneous orders are missing required columns.");
+    }
+    Rcpp::CharacterVector order_id = orders["order_id"];
+    Rcpp::IntegerVector order_asset = orders["asset_id"];
+    Rcpp::CharacterVector order_profile = orders["instrument_profile"];
+    Rcpp::CharacterVector order_side = orders["side"];
+    Rcpp::NumericVector order_qty = orders["qty"];
+    Rcpp::NumericVector order_px = orders["execution_price"];
+    Rcpp::NumericVector order_fee_rt = orders["fee_rt"];
+    Rcpp::CharacterVector order_group = orders["atomic_group_id"];
+    Rcpp::CharacterVector order_type = orders["order_type"];
+    Rcpp::NumericVector order_limit = orders["limit_price"];
+    Rcpp::CharacterVector order_tif = orders["time_in_force"];
+    std::string active_group;
+    R_xlen_t group_fill_start = 0;
+    Rcpp::NumericVector group_cash;
+    Rcpp::NumericVector group_inventory_units;
+    Rcpp::NumericVector group_inventory_cost;
+    Rcpp::NumericVector group_inventory_last;
+    Rcpp::NumericVector group_margin_units;
+    Rcpp::NumericVector group_margin_settle;
+    Rcpp::NumericVector group_margin_last;
+    bool group_rejected = false;
+    for (R_xlen_t oi = 0; oi < order_asset.size(); ++oi) {
+      const std::string group = Rcpp::as<std::string>(order_group[oi]);
+      if (oi == 0 || group != active_group) {
+        active_group = group;
+        group_fill_start = fill_order_id.size();
+        group_cash = Rcpp::clone(cash_settled);
+        group_inventory_units = Rcpp::clone(inventory_units);
+        group_inventory_cost = Rcpp::clone(inventory_cost);
+        group_inventory_last = Rcpp::clone(inventory_last);
+        group_margin_units = Rcpp::clone(margin_units);
+        group_margin_settle = Rcpp::clone(margin_settle);
+        group_margin_last = Rcpp::clone(margin_last);
+        group_rejected = false;
+      }
+      const std::string oid = Rcpp::as<std::string>(order_id[oi]);
+      const std::string profile = Rcpp::as<std::string>(order_profile[oi]);
+      const std::string side = Rcpp::as<std::string>(order_side[oi]);
+      const double qty = order_qty[oi];
+      const double px = order_px[oi];
+      const double fee_rate = order_fee_rt[oi];
+      const std::string type = Rcpp::as<std::string>(order_type[oi]);
+      const std::string tif = Rcpp::as<std::string>(order_tif[oi]);
+      std::string status = "rejected";
+      std::string reason = "invalid_order";
+      double fee = 0.0, realized = 0.0, executed_qty = 0.0;
+      if (group_rejected) {
+        fill_order_id.push_back(oid); fill_asset_id.push_back(order_asset[oi]);
+        fill_status.push_back("rejected"); fill_reason.push_back("atomic_group_rejected");
+        fill_qty.push_back(0.0); fill_price.push_back(px); fill_fee.push_back(0.0); fill_realized.push_back(0.0);
+        fill_group_id.push_back(group); fill_committed.push_back(0); fill_resulting_qty.push_back(0.0); fill_resulting_cash.push_back(NA_REAL);
+        continue;
+      }
+      if (type == "limit" && side != "flat") {
+        bool eligible = false;
+        for (R_xlen_t bi = 0; bi < bar_asset.size(); ++bi) {
+          if (bar_asset[bi] != order_asset[oi]) continue;
+          eligible = side == "buy" ? (std::isfinite(bar_low[bi]) && bar_low[bi] <= order_limit[oi]) :
+            (std::isfinite(bar_high[bi]) && bar_high[bi] >= order_limit[oi]);
+          break;
+        }
+        if (!eligible) {
+          if (tif == "fok") {
+            cash_settled = group_cash; inventory_units = group_inventory_units;
+            inventory_cost = group_inventory_cost; inventory_last = group_inventory_last;
+            margin_units = group_margin_units; margin_settle = group_margin_settle; margin_last = group_margin_last;
+            for (R_xlen_t fi = group_fill_start; fi < static_cast<R_xlen_t>(fill_status.size()); ++fi) {
+              fill_status[fi] = "rejected"; fill_reason[fi] = "atomic_group_rejected";
+              fill_qty[fi] = 0.0; fill_fee[fi] = 0.0; fill_realized[fi] = 0.0;
+              fill_committed[fi] = 0; fill_resulting_qty[fi] = 0.0; fill_resulting_cash[fi] = NA_REAL;
+            }
+            group_rejected = true;
+            fill_order_id.push_back(oid); fill_asset_id.push_back(order_asset[oi]);
+            fill_status.push_back("rejected"); fill_reason.push_back("atomic_group_rejected");
+            fill_qty.push_back(0.0); fill_price.push_back(order_limit[oi]); fill_fee.push_back(0.0); fill_realized.push_back(0.0);
+            fill_group_id.push_back(group); fill_committed.push_back(0); fill_resulting_qty.push_back(0.0); fill_resulting_cash.push_back(NA_REAL);
+            continue;
+          }
+          fill_order_id.push_back(oid); fill_asset_id.push_back(order_asset[oi]);
+          fill_status.push_back(tif == "ioc" ? "cancelled" : "pending");
+          fill_reason.push_back("limit_not_eligible"); fill_qty.push_back(0.0);
+          fill_price.push_back(order_limit[oi]); fill_fee.push_back(0.0); fill_realized.push_back(0.0);
+          fill_group_id.push_back(group); fill_committed.push_back(0); fill_resulting_qty.push_back(0.0); fill_resulting_cash.push_back(NA_REAL);
+          continue;
+        }
+      }
+      if (std::isfinite(qty) && qty >= 0.0 && std::isfinite(px) && px > 0.0 && std::isfinite(fee_rate) && fee_rate >= 0.0 &&
+          (side == "buy" || side == "sell" || side == "flat")) {
+        if (profile == "equity" || profile == "etf" || profile == "crypto_spot" || profile == "fx_spot" || profile == "bond") {
+          R_xlen_t pi = static_cast<R_xlen_t>(-1);
+          for (R_xlen_t i = 0; i < inventory_asset.size(); ++i) if (inventory_asset[i] == order_asset[oi]) { pi = i; break; }
+          if (pi == static_cast<R_xlen_t>(-1)) {
+            reason = "missing_inventory_position";
+          } else {
+            const double signed_qty = side == "buy" ? qty : (side == "sell" ? -qty : -inventory_units[pi]);
+            const double units = std::abs(signed_qty);
+            const double notional = units * px * inventory_size[pi];
+            fee = notional * fee_rate;
+            const R_xlen_t ci = cash_index(Rcpp::as<std::string>(inventory_ccy[pi]));
+            if (ci == static_cast<R_xlen_t>(-1)) {
+              reason = "missing_cash_balance";
+            } else if (signed_qty > 0.0 && cash_settled[ci] + 1e-10 < notional + fee) {
+              reason = "insufficient_cash";
+            } else if (signed_qty < 0.0 && inventory_units[pi] + 1e-10 < units) {
+              reason = "insufficient_inventory";
+            } else if (std::abs(signed_qty) < 1e-12) {
+              status = "no_op"; reason = "no_position_change"; fee = 0.0;
+            } else if (signed_qty > 0.0) {
+              const double prior_cost = inventory_units[pi] * (std::isfinite(inventory_cost[pi]) ? inventory_cost[pi] : 0.0);
+              cash_settled[ci] -= notional + fee;
+              inventory_units[pi] += units;
+              inventory_cost[pi] = (prior_cost + units * px) / inventory_units[pi];
+              status = "filled"; reason = "filled"; executed_qty = units;
+            } else {
+              realized = (px - inventory_cost[pi]) * units * inventory_size[pi] - fee;
+              cash_settled[ci] += notional - fee;
+              inventory_units[pi] -= units;
+              if (inventory_units[pi] <= 1e-12) { inventory_units[pi] = 0.0; inventory_cost[pi] = NA_REAL; }
+              status = "filled"; reason = "filled"; executed_qty = units;
+            }
+          }
+        } else if (profile == "future" || profile == "crypto_perp") {
+          R_xlen_t pi = static_cast<R_xlen_t>(-1);
+          for (R_xlen_t i = 0; i < margin_asset.size(); ++i) if (margin_asset[i] == order_asset[oi]) { pi = i; break; }
+          if (pi == static_cast<R_xlen_t>(-1)) {
+            reason = "missing_margin_position";
+          } else {
+            const double signed_qty = side == "buy" ? qty : (side == "sell" ? -qty : -margin_units[pi]);
+            const double units = std::abs(signed_qty);
+            const double notional = units * px * margin_size[pi];
+            fee = notional * fee_rate;
+            const R_xlen_t ci = cash_index(Rcpp::as<std::string>(margin_ccy[pi]));
+            if (ci == static_cast<R_xlen_t>(-1)) {
+              reason = "missing_cash_balance";
+            } else if (cash_settled[ci] + 1e-10 < fee) {
+              reason = "insufficient_cash_for_fee";
+            } else if (std::abs(signed_qty) < 1e-12) {
+              status = "no_op"; reason = "no_position_change"; fee = 0.0;
+            } else {
+              cash_settled[ci] -= fee;
+              margin_units[pi] += signed_qty;
+              margin_last[pi] = px;
+              if (!std::isfinite(margin_settle[pi])) margin_settle[pi] = px;
+              status = "filled"; reason = "filled"; executed_qty = units;
+            }
+          }
+        } else {
+          reason = "unsupported_instrument_profile";
+        }
+      }
+      fill_order_id.push_back(oid); fill_asset_id.push_back(order_asset[oi]);
+      fill_status.push_back(status); fill_reason.push_back(reason); fill_qty.push_back(executed_qty);
+      fill_price.push_back(px); fill_fee.push_back(fee); fill_realized.push_back(realized);
+      fill_group_id.push_back(group); fill_committed.push_back(status == "filled" || status == "no_op" ? 1 : 0);
+      double resulting_qty = 0.0, resulting_cash = NA_REAL;
+      for (R_xlen_t i = 0; i < inventory_asset.size(); ++i) if (inventory_asset[i] == order_asset[oi]) {
+        resulting_qty = inventory_units[i]; const R_xlen_t ci = cash_index(Rcpp::as<std::string>(inventory_ccy[i])); if (ci >= 0) resulting_cash = cash_settled[ci]; break;
+      }
+      for (R_xlen_t i = 0; i < margin_asset.size(); ++i) if (margin_asset[i] == order_asset[oi]) {
+        resulting_qty = margin_units[i]; const R_xlen_t ci = cash_index(Rcpp::as<std::string>(margin_ccy[i])); if (ci >= 0) resulting_cash = cash_settled[ci]; break;
+      }
+      fill_resulting_qty.push_back(resulting_qty); fill_resulting_cash.push_back(resulting_cash);
+      if (status == "rejected") {
+        // No member of an atomic group is factual execution unless every leg
+        // preflights successfully. Restore the group boundary and publish
+        // terminal rollback outcomes for all provisional legs.
+        cash_settled = group_cash;
+        inventory_units = group_inventory_units;
+        inventory_cost = group_inventory_cost;
+        inventory_last = group_inventory_last;
+        margin_units = group_margin_units;
+        margin_settle = group_margin_settle;
+        margin_last = group_margin_last;
+        for (R_xlen_t fi = group_fill_start; fi < static_cast<R_xlen_t>(fill_status.size()); ++fi) {
+          fill_status[fi] = "rejected";
+          fill_reason[fi] = "atomic_group_rejected";
+          fill_qty[fi] = 0.0;
+          fill_fee[fi] = 0.0;
+          fill_realized[fi] = 0.0;
+          fill_committed[fi] = 0;
+          fill_resulting_qty[fi] = 0.0;
+          fill_resulting_cash[fi] = NA_REAL;
+        }
+        group_rejected = true;
+      }
+    }
+  }
   // Mark inventory before valuing the unified account. Inventory execution and
   // corporate actions remain explicit inputs to a later kernel iteration.
   for (R_xlen_t i = 0; i < inventory_asset.size(); ++i) {
@@ -1083,5 +1297,41 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
   Rcpp::DataFrame inventory_out = Rcpp::DataFrame::create(Rcpp::Named("asset_id") = inventory_asset, Rcpp::Named("currency") = inventory_ccy, Rcpp::Named("units") = inventory_units, Rcpp::Named("average_cost") = inventory_cost, Rcpp::Named("last_price") = inventory_last, Rcpp::Named("contract_size") = inventory_size);
   Rcpp::DataFrame margin_out = Rcpp::DataFrame::create(Rcpp::Named("asset_id") = margin_asset, Rcpp::Named("currency") = margin_ccy, Rcpp::Named("signed_units") = margin_units, Rcpp::Named("settlement_price") = margin_settle, Rcpp::Named("last_price") = margin_last, Rcpp::Named("contract_size") = margin_size, Rcpp::Named("maintenance_rate") = margin_mmr);
   Rcpp::DataFrame events = Rcpp::DataFrame::create(Rcpp::Named("timestamp") = Rcpp::NumericVector(event_amount.size(), timestamp), Rcpp::Named("event_type") = Rcpp::CharacterVector(event_amount.size(), "variation_margin"), Rcpp::Named("asset_id") = Rcpp::wrap(event_asset), Rcpp::Named("currency") = Rcpp::wrap(event_ccy), Rcpp::Named("amount") = Rcpp::wrap(event_amount), Rcpp::Named("settlement_price") = Rcpp::wrap(event_settlement));
-  return Rcpp::List::create(Rcpp::Named("cash_balances") = cash_out, Rcpp::Named("inventory_positions") = inventory_out, Rcpp::Named("margin_positions") = margin_out, Rcpp::Named("equity") = equity, Rcpp::Named("maintenance_margin") = maintenance, Rcpp::Named("liquidated") = liquidated, Rcpp::Named("events") = events);
+  std::vector<std::string> fill_id; for (R_xlen_t i = 0; i < static_cast<R_xlen_t>(fill_order_id.size()); ++i) fill_id.push_back("HFILL" + std::to_string(i + 1));
+  Rcpp::DataFrame fills = Rcpp::DataFrame::create(Rcpp::Named("fill_id") = Rcpp::wrap(fill_id), Rcpp::Named("event_timestamp") = Rcpp::NumericVector(fill_order_id.size(), timestamp), Rcpp::Named("order_id") = Rcpp::wrap(fill_order_id), Rcpp::Named("atomic_group_id") = Rcpp::wrap(fill_group_id), Rcpp::Named("asset_id") = Rcpp::wrap(fill_asset_id), Rcpp::Named("status") = Rcpp::wrap(fill_status), Rcpp::Named("reason_code") = Rcpp::wrap(fill_reason), Rcpp::Named("committed") = Rcpp::wrap(fill_committed), Rcpp::Named("qty") = Rcpp::wrap(fill_qty), Rcpp::Named("price") = Rcpp::wrap(fill_price), Rcpp::Named("fee") = Rcpp::wrap(fill_fee), Rcpp::Named("realized_pnl") = Rcpp::wrap(fill_realized), Rcpp::Named("resulting_signed_quantity") = Rcpp::wrap(fill_resulting_qty), Rcpp::Named("resulting_currency_cash") = Rcpp::wrap(fill_resulting_cash));
+  std::vector<std::string> group_ids, group_status, group_reason;
+  std::vector<int> group_committed;
+  for (R_xlen_t i = 0; i < static_cast<R_xlen_t>(fill_group_id.size()); ++i) {
+    if (i > 0 && fill_group_id[i] == fill_group_id[i - 1]) continue;
+    bool committed = true, pending = false;
+    std::string reason = "filled";
+    for (R_xlen_t j = i; j < static_cast<R_xlen_t>(fill_group_id.size()) && fill_group_id[j] == fill_group_id[i]; ++j) {
+      if (fill_status[j] == "pending") { committed = false; pending = true; reason = fill_reason[j]; }
+      if (fill_status[j] == "cancelled" || fill_status[j] == "rejected") { committed = false; pending = false; reason = fill_reason[j]; }
+    }
+    group_ids.push_back(fill_group_id[i]); group_committed.push_back(committed ? 1 : 0);
+    group_status.push_back(committed ? "committed" : (pending ? "pending" : "rejected")); group_reason.push_back(reason);
+  }
+  Rcpp::LogicalVector group_committed_out(group_committed.size());
+  for (R_xlen_t i = 0; i < group_committed_out.size(); ++i) group_committed_out[i] = group_committed[i] == 1;
+  Rcpp::DataFrame groups = Rcpp::DataFrame::create(Rcpp::Named("atomic_group_id") = Rcpp::wrap(group_ids), Rcpp::Named("group_status") = Rcpp::wrap(group_status), Rcpp::Named("group_reason_code") = Rcpp::wrap(group_reason), Rcpp::Named("committed") = group_committed_out, Rcpp::Named("event_timestamp") = Rcpp::NumericVector(group_ids.size(), timestamp), Rcpp::Named("equity") = Rcpp::NumericVector(group_ids.size(), equity), Rcpp::Named("maintenance_margin") = Rcpp::NumericVector(group_ids.size(), maintenance), Rcpp::Named("liquidated") = Rcpp::LogicalVector(group_ids.size(), liquidated));
+  return Rcpp::List::create(Rcpp::Named("cash_balances") = cash_out, Rcpp::Named("inventory_positions") = inventory_out, Rcpp::Named("margin_positions") = margin_out, Rcpp::Named("equity") = equity, Rcpp::Named("maintenance_margin") = maintenance, Rcpp::Named("liquidated") = liquidated, Rcpp::Named("events") = events, Rcpp::Named("fills") = fills, Rcpp::Named("groups") = groups);
+}
+
+// [[Rcpp::export]]
+Rcpp::List heterogeneous_order_preflight_rcpp(const std::string& base_currency,
+                                               const Rcpp::DataFrame& cash_balances,
+                                               const Rcpp::DataFrame& inventory_positions,
+                                               const Rcpp::DataFrame& margin_positions,
+                                               const Rcpp::DataFrame& bars,
+                                               const Rcpp::DataFrame& fx_rates,
+                                               const Rcpp::DataFrame& orders,
+                                               double timestamp) {
+  // The account step clones every mutated vector. This endpoint therefore
+  // returns a proposal and never mutates the caller's R data frames.
+  return heterogeneous_account_step_rcpp(
+    base_currency, cash_balances, inventory_positions, margin_positions,
+    bars, fx_rates, Rcpp::DataFrame::create(), Rcpp::DataFrame::create(),
+    orders, timestamp
+  );
 }

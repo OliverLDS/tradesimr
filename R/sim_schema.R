@@ -107,6 +107,8 @@ sim_schemas <- function() {
       eligible_after = as.POSIXct(character()),
       settlement_timestamp = as.POSIXct(character()),
       rebalance_id = character(),
+      atomic_group_id = character(),
+      target_derived = logical(),
       superseded_by_rebalance_id = character(),
       supersedes_rebalance_id = character(),
       target_weight = numeric(),

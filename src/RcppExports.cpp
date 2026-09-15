@@ -165,6 +165,24 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// heterogeneous_order_preflight_rcpp
+Rcpp::List heterogeneous_order_preflight_rcpp(const std::string& base_currency, const Rcpp::DataFrame& cash_balances, const Rcpp::DataFrame& inventory_positions, const Rcpp::DataFrame& margin_positions, const Rcpp::DataFrame& bars, const Rcpp::DataFrame& fx_rates, const Rcpp::DataFrame& orders, double timestamp);
+RcppExport SEXP _tradesimr_heterogeneous_order_preflight_rcpp(SEXP base_currencySEXP, SEXP cash_balancesSEXP, SEXP inventory_positionsSEXP, SEXP margin_positionsSEXP, SEXP barsSEXP, SEXP fx_ratesSEXP, SEXP ordersSEXP, SEXP timestampSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const std::string& >::type base_currency(base_currencySEXP);
+    Rcpp::traits::input_parameter< const Rcpp::DataFrame& >::type cash_balances(cash_balancesSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::DataFrame& >::type inventory_positions(inventory_positionsSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::DataFrame& >::type margin_positions(margin_positionsSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::DataFrame& >::type bars(barsSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::DataFrame& >::type fx_rates(fx_ratesSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::DataFrame& >::type orders(ordersSEXP);
+    Rcpp::traits::input_parameter< double >::type timestamp(timestampSEXP);
+    rcpp_result_gen = Rcpp::wrap(heterogeneous_order_preflight_rcpp(base_currency, cash_balances, inventory_positions, margin_positions, bars, fx_rates, orders, timestamp));
+    return rcpp_result_gen;
+END_RCPP
+}
 
 static const R_CallMethodDef CallEntries[] = {
     {"_tradesimr_backtest_rcpp", (DL_FUNC) &_tradesimr_backtest_rcpp, 26},
@@ -173,6 +191,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_tradesimr_spot_step_rcpp", (DL_FUNC) &_tradesimr_spot_step_rcpp, 8},
     {"_tradesimr_account_variation_margin_rcpp", (DL_FUNC) &_tradesimr_account_variation_margin_rcpp, 3},
     {"_tradesimr_heterogeneous_account_step_rcpp", (DL_FUNC) &_tradesimr_heterogeneous_account_step_rcpp, 10},
+    {"_tradesimr_heterogeneous_order_preflight_rcpp", (DL_FUNC) &_tradesimr_heterogeneous_order_preflight_rcpp, 8},
     {NULL, NULL, 0}
 };
 

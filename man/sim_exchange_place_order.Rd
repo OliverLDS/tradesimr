@@ -18,6 +18,7 @@ sim_exchange_place_order(
   qty = NULL,
   limit_price = NA_real_,
   time_in_force = "gtc",
+  atomic_group_id = NULL,
   client_order_id = NA_character_
 )
 }
@@ -49,6 +50,9 @@ intent-level calls.}
 \item{limit_price}{Optional limit price for limit orders.}
 
 \item{time_in_force}{Time-in-force label.}
+
+\item{atomic_group_id}{Optional atomic execution group. Explicit orders in
+the same group either commit together or are rejected together.}
 
 \item{client_order_id}{Optional client order id.}
 }

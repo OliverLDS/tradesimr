@@ -25,3 +25,7 @@ heterogeneous_account_step_rcpp <- function(base_currency, cash_balances, invent
     .Call(`_tradesimr_heterogeneous_account_step_rcpp`, base_currency, cash_balances, inventory_positions, margin_positions, bars, fx_rates, settlements, corporate_actions, orders, timestamp)
 }
 
+heterogeneous_order_preflight_rcpp <- function(base_currency, cash_balances, inventory_positions, margin_positions, bars, fx_rates, orders, timestamp) {
+    .Call(`_tradesimr_heterogeneous_order_preflight_rcpp`, base_currency, cash_balances, inventory_positions, margin_positions, bars, fx_rates, orders, timestamp)
+}
+
