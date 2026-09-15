@@ -2,12 +2,12 @@
 % Please edit documentation in R/sim_profile_accounting.R
 \name{sim_exchange_corporate_action}
 \alias{sim_exchange_corporate_action}
-\title{Register a dividend, split, or bond-accrual corporate action}
+\title{Register a durable inventory corporate action}
 \usage{
 sim_exchange_corporate_action(
   exchange,
   symbol,
-  action_type = c("dividend", "split", "bond_accrual"),
+  action_type = c("dividend", "split", "coupon", "bond_accrual", "redemption"),
   amount,
   effective_timestamp,
   currency = NULL
@@ -18,9 +18,11 @@ sim_exchange_corporate_action(
 
 \item{symbol}{Registered symbol.}
 
-\item{action_type}{One of \code{dividend}, \code{split}, or \code{bond_accrual}.}
+\item{action_type}{One of \code{dividend}, \code{split}, \code{coupon}, \code{bond_accrual}, or
+\code{redemption}.}
 
-\item{amount}{Dividend/accrual per inventory unit, or split ratio.}
+\item{amount}{Cash per inventory unit for dividend/coupon/accrual/redemption,
+or split ratio for \code{split}.}
 
 \item{effective_timestamp}{Action timestamp.}
 

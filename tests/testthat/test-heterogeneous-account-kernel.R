@@ -35,6 +35,32 @@ test_that("heterogeneous account kernel settles non-base futures in native curre
   expect_equal(out$events$currency, "EUR")
 })
 
+test_that("heterogeneous account kernel books explicit bond lifecycle actions", {
+  bond <- data.frame(
+    asset_id = 9L, currency = "USD", units = 10, average_cost = 98,
+    last_price = 101, contract_size = 1
+  )
+  actions <- data.frame(
+    action_id = c("CA1", "CA2", "CA3"), asset_id = c(9L, 9L, 9L),
+    action_type = c("coupon", "bond_accrual", "redemption"),
+    amount = c(2, 1, 100), currency = c("USD", "USD", "USD"),
+    effective_timestamp = rep(as.numeric(as.POSIXct("2025-01-01", tz = "UTC")), 3L)
+  )
+  out <- sim_heterogeneous_account_step(
+    "USD", data.frame(currency = "USD", settled = 1000, unsettled = 0), bond,
+    data.frame(asset_id = integer(), currency = character(), signed_units = numeric(),
+      settlement_price = numeric(), last_price = numeric(), contract_size = numeric(), maintenance_rate = numeric()),
+    data.frame(asset_id = 9L, close = 101, instrument_profile = "bond"),
+    data.frame(currency = "USD", rate_to_base = 1), corporate_actions = actions,
+    timestamp = as.POSIXct("2025-01-01", tz = "UTC")
+  )
+  expect_equal(out$cash_balances$settled, 2030)
+  expect_equal(out$inventory_positions$units, 0)
+  expect_true(is.na(out$inventory_positions$average_cost))
+  expect_identical(out$events$event_type, c("bond_coupon", "bond_accrual", "redemption"))
+  expect_equal(out$events$amount, c(20, 10, 1000))
+})
+
 test_that("heterogeneous account kernel executes profile-tagged spot and futures orders", {
   out <- sim_heterogeneous_account_step(
     "USD", data.frame(currency = "USD", settled = 1000, unsettled = 0),

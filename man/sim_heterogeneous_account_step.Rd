@@ -30,7 +30,14 @@ sim_heterogeneous_account_step(
 
 \item{fx_rates}{Data frame with \code{currency} and \code{rate_to_base}.}
 
-\item{settlements, corporate_actions}{Reserved durable input tables.}
+\item{settlements}{Durable engine settings and settlement inputs.}
+
+\item{corporate_actions}{A durable input table. Rows with \code{asset_i},
+\code{asset_j}, and \code{covariance} provide covariance-margin inputs. Explicit
+bond lifecycle rows use \code{asset_id}, \code{action_type} (\code{coupon},
+\code{bond_accrual}, or \code{redemption}), \code{amount}, \code{currency}, and optional
+\code{effective_timestamp}; they mutate settled cash and emit typed events at
+the eligible account boundary.}
 
 \item{orders}{A normalized heterogeneous order batch.}
 

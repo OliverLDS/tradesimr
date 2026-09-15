@@ -113,6 +113,44 @@ test_that("typed account state projects cash, inventory, and margin in base curr
   expect_equal(exported$equity, 1400)
 })
 
+test_that("heterogeneous v2 persists bond coupon events from the C++ account kernel", {
+  exchange <- sim_exchange_new(list(
+    cash = 1000, base_currency = "USD", portfolio_margin = TRUE,
+    execution_engine = "heterogeneous_v2"
+  ))
+  sim_asset_add(exchange, "BOND", asset_id = 9L, instrument_profile = "bond",
+    quote_ccy = "USD", qty_step = 1)
+  day_1 <- as.POSIXct("2025-01-01", tz = "UTC")
+  bar <- data.frame(timestamp = day_1, symbol = "BOND", asset_id = 9L,
+    open = 100, high = 101, low = 99, close = 100)
+  sim_portfolio_market_step(exchange, bar)
+  sim_spot_target_submit(exchange, "alice", bar, c(BOND = 1))
+  sim_portfolio_market_step(exchange, transform(bar, timestamp = timestamp + 86400))
+  sim_exchange_corporate_action(exchange, "BOND", "coupon", 2, day_1 + 2 * 86400)
+  sim_portfolio_market_step(exchange, transform(bar, timestamp = timestamp + 2 * 86400))
+
+  expect_identical(exchange$corporate_actions$status, "applied")
+  expect_equal(exchange$cash_balances[agent_id == "alice" & currency == "USD", settled], 20)
+  expect_true(any(exchange$account_events$event_type == "bond_coupon"))
+  expect_true(any(exchange$profile_cash_ledger$event_type == "bond_coupon"))
+  path <- tempfile("tradesimr-bond-lifecycle-")
+  sim_exchange_save(exchange, path)
+  restored <- sim_exchange_load(path)
+  durable <- function(table) {
+    out <- data.table::copy(table)
+    for (column in names(out)) if (inherits(out[[column]], "POSIXt")) {
+      data.table::set(out, j = column, value = as.numeric(out[[column]]))
+    }
+    out
+  }
+  expect_equal(durable(restored$corporate_actions), durable(exchange$corporate_actions))
+  restored_event <- durable(restored$account_events[event_type == "bond_coupon"])
+  original_event <- durable(exchange$account_events[event_type == "bond_coupon"])
+  expect_equal(restored_event[, .(timestamp, agent_id, event_type, asset_id, symbol, currency, amount)],
+    original_event[, .(timestamp, agent_id, event_type, asset_id, symbol, currency, amount)])
+  expect_true(is.na(restored_event$order_id))
+})
+
 test_that("spot target submission plans atomically and executes only after its decision bar", {
   exchange <- sim_exchange_new(list(cash = 1000))
   sim_asset_add(exchange, "SPY", asset_id = 1L, instrument_profile = "etf", quote_ccy = "USD", qty_step = 1)

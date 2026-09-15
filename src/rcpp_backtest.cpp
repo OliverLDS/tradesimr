@@ -1326,6 +1326,54 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
     }
   }
 
+  // Corporate actions share the durable input table with covariance rows for
+  // backwards compatibility.  Rows with an action_type are independent of
+  // covariance rows and are applied before order admission at this boundary.
+  // The first vertical slice is deliberately explicit: R owns calendars while
+  // C++ owns the accounting mutation and the typed event it produces.
+  if (corporate_actions.containsElementNamed("action_type") &&
+      corporate_actions.containsElementNamed("asset_id") &&
+      corporate_actions.containsElementNamed("amount") &&
+      corporate_actions.containsElementNamed("currency")) {
+    Rcpp::CharacterVector action_type = corporate_actions["action_type"];
+    Rcpp::IntegerVector action_asset = corporate_actions["asset_id"];
+    Rcpp::NumericVector action_amount = corporate_actions["amount"];
+    Rcpp::CharacterVector action_currency = corporate_actions["currency"];
+    Rcpp::NumericVector action_timestamp = corporate_actions.containsElementNamed("effective_timestamp") ?
+      Rcpp::as<Rcpp::NumericVector>(corporate_actions["effective_timestamp"]) :
+      Rcpp::NumericVector(action_asset.size(), timestamp);
+    for (R_xlen_t ai = 0; ai < action_asset.size(); ++ai) {
+      if (!std::isfinite(action_amount[ai]) ||
+          (std::isfinite(action_timestamp[ai]) && action_timestamp[ai] > timestamp)) continue;
+      const std::string type = Rcpp::as<std::string>(action_type[ai]);
+      if (type != "coupon" && type != "bond_accrual" && type != "redemption") continue;
+      R_xlen_t pi = static_cast<R_xlen_t>(-1);
+      for (R_xlen_t i = 0; i < inventory_asset.size(); ++i) {
+        if (inventory_asset[i] == action_asset[ai]) { pi = i; break; }
+      }
+      if (pi == static_cast<R_xlen_t>(-1)) continue;
+      const std::string ccy = Rcpp::as<std::string>(action_currency[ai]);
+      const R_xlen_t ci = cash_index(ccy);
+      if (ci == static_cast<R_xlen_t>(-1)) {
+        Rcpp::stop("Every corporate-action currency requires a cash balance row.");
+      }
+      const double units = inventory_units[pi];
+      const double amount = units * action_amount[ai] * inventory_size[pi];
+      cash_settled[ci] += amount;
+      if (type == "redemption") {
+        inventory_units[pi] = 0.0;
+        inventory_cost[pi] = NA_REAL;
+      }
+      if (std::abs(amount) > 1e-12 || (type == "redemption" && std::abs(units) > 1e-12)) {
+        event_amount.push_back(amount);
+        event_asset.push_back(action_asset[ai]);
+        event_ccy.push_back(ccy);
+        event_settlement.push_back(std::isfinite(inventory_last[pi]) ? inventory_last[pi] : NA_REAL);
+        event_type_label.push_back(type == "coupon" ? "bond_coupon" : type);
+      }
+    }
+  }
+
   // Orders are normalized by R before crossing the C++ boundary. The kernel
   // owns profile-specific cash/inventory mutations and returns a typed outcome
   // for every supplied order; R owns durable order-id bookkeeping.

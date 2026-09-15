@@ -63,7 +63,13 @@ sim_heterogeneous_order_batch_schema <- function() {
 #' @param margin_positions Data frame with margin positions and settlement prices.
 #' @param bars Profile-tagged market bars.
 #' @param fx_rates Data frame with `currency` and `rate_to_base`.
-#' @param settlements,corporate_actions Reserved durable input tables.
+#' @param settlements Durable engine settings and settlement inputs.
+#' @param corporate_actions A durable input table. Rows with `asset_i`,
+#'   `asset_j`, and `covariance` provide covariance-margin inputs. Explicit
+#'   bond lifecycle rows use `asset_id`, `action_type` (`coupon`,
+#'   `bond_accrual`, or `redemption`), `amount`, `currency`, and optional
+#'   `effective_timestamp`; they mutate settled cash and emit typed events at
+#'   the eligible account boundary.
 #' @param orders A normalized heterogeneous order batch.
 #' @param timestamp Market-boundary timestamp.
 #' @return Updated account state, typed events, fills, and group outcomes.

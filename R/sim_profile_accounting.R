@@ -234,21 +234,23 @@ sim_exchange_account_state <- function(exchange, agent_id = NULL) {
   )
 }
 
-#' Register a dividend, split, or bond-accrual corporate action
+#' Register a durable inventory corporate action
 #'
 #' Actions are applied at the first exchange step at or after their effective
 #' timestamp and retained in a durable audit table.
 #'
 #' @param exchange A `tradesimr_exchange`.
 #' @param symbol Registered symbol.
-#' @param action_type One of `dividend`, `split`, or `bond_accrual`.
-#' @param amount Dividend/accrual per inventory unit, or split ratio.
+#' @param action_type One of `dividend`, `split`, `coupon`, `bond_accrual`, or
+#'   `redemption`.
+#' @param amount Cash per inventory unit for dividend/coupon/accrual/redemption,
+#'   or split ratio for `split`.
 #' @param effective_timestamp Action timestamp.
 #' @param currency Action currency. Defaults to the asset quote currency.
 #' @return Invisibly returns the action id.
 #' @export
 sim_exchange_corporate_action <- function(exchange, symbol,
-                                          action_type = c("dividend", "split", "bond_accrual"),
+                                          action_type = c("dividend", "split", "coupon", "bond_accrual", "redemption"),
                                           amount, effective_timestamp,
                                           currency = NULL) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
@@ -478,9 +480,11 @@ sim_spot_target_submit <- function(exchange, agent_id, bars, target_weights, fee
   invisible(id)
 }
 
-.profile_apply_corporate_actions <- function(exchange, timestamp, asset_id) {
+.profile_apply_corporate_actions <- function(exchange, timestamp, asset_id,
+                                             action_types = NULL) {
   requested_asset_id <- as.integer(asset_id)
   actions <- exchange$corporate_actions[status == "pending" & asset_id == requested_asset_id & effective_timestamp <= timestamp]
+  if (!is.null(action_types)) actions <- actions[action_type %in% as.character(action_types)]
   if (!nrow(actions)) return(invisible(NULL))
   for (i in seq_len(nrow(actions))) {
     action <- actions[i]
@@ -491,7 +495,7 @@ sim_spot_target_submit <- function(exchange, agent_id, bars, target_weights, fee
       state$cash <- .profile_cash_balance(exchange, parsed$agent_id, action$currency)
       updated <- sim_spot_step(state, close = state$last_price %||% 1,
         contract_size = 1,
-        dividend_per_unit = if (action$action_type %in% c("dividend", "bond_accrual")) action$amount else 0,
+        dividend_per_unit = if (action$action_type %in% c("dividend", "coupon", "bond_accrual")) action$amount else 0,
         split_ratio = if (action$action_type == "split") action$amount else 1)
       updated$currency <- state$currency
       updated$unsettled_cash <- state$unsettled_cash %||% 0

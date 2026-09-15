@@ -32,6 +32,11 @@ current git history; `v0.9.0` follows `v0.7.0`.
   projection covering base-currency account totals, currency cash balances,
   inventory positions, margin positions, and typed account events. Live
   dashboard exports now include these durable tables.
+- The heterogeneous C++ account kernel now books explicit bond `coupon`,
+  `bond_accrual`, and `redemption` actions into settled currency cash and
+  emits typed lifecycle events. The v2 exchange adapter persists these events
+  to account and cash ledgers, marks their durable action records applied only
+  after the market boundary, and preserves them through save/load.
 
 ### Validation
 

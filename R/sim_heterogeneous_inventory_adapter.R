@@ -580,6 +580,7 @@
   if (!.exchange_uses_heterogeneous_v2(exchange)) return(invisible(NULL))
   agent_id <- as.character(agent_id)
   timestamp <- .profile_utc_timestamp(timestamp)
+  event_timestamp <- timestamp
   replace_rows <- function(table_name, rows, key_columns) {
     if (!nrow(rows)) return(invisible(NULL))
     current <- exchange[[table_name]]
@@ -622,7 +623,7 @@
   if (nrow(events)) {
     rows <- events[, .(
       account_event_id = paste0("AE", sprintf("%06d", exchange$next_account_event_id + seq_len(.N) - 1L)),
-      timestamp = as.POSIXct(timestamp, tz = "UTC"), agent_id = agent_id,
+      timestamp = event_timestamp, agent_id = agent_id,
       event_type = as.character(event_type), asset_id = as.integer(asset_id),
       symbol = vapply(asset_id, function(id) exchange$asset_symbols[[as.character(id)]] %||% paste0("asset-", id), character(1L)),
       currency = as.character(currency), amount = as.numeric(amount),
@@ -687,14 +688,17 @@
     .profile_record_cash(exchange, timestamp, agent_id, row$currency, row$amount,
       if (length(balance)) balance[1L] else .profile_cash_balance(exchange, agent_id, row$currency),
       event_type, row$asset_id, asset$symbol[1L],
-      message = if (identical(event_type, "funding")) {
-        "Funding settled through heterogeneous execution."
-      } else {
-        "Futures variation margin settled through heterogeneous execution."
-      })
+      message = switch(event_type,
+        funding = "Funding settled through heterogeneous execution.",
+        variation_margin = "Futures variation margin settled through heterogeneous execution.",
+        bond_coupon = "Bond coupon booked through heterogeneous execution.",
+        bond_accrual = "Bond accrual booked through heterogeneous execution.",
+        redemption = "Bond redemption booked through heterogeneous execution.",
+        "Typed account event booked through heterogeneous execution."
+      ))
     data.table::data.table(
       timestamp = timestamp, event_id = first_event_id + i - 1L,
-      event_type = if (identical(event_type, "funding")) 5L else 4L,
+      event_type = if (identical(event_type, "funding")) 5L else if (identical(event_type, "variation_margin")) 4L else 6L,
       event_type_label = event_type, action_id = 0L, status_label = "filled",
       action_label = event_type, dir_label = "flat", ctr_qty = 0,
       price = as.numeric(row$settlement_price), cash = .profile_cash_balance(exchange, agent_id, row$currency),
@@ -706,6 +710,33 @@
   data.table::rbindlist(rows, fill = TRUE)
 }
 
+#' @keywords internal
+.heterogeneous_portfolio_bond_actions <- function(exchange, bars, timestamp) {
+  actions <- exchange$corporate_actions[
+    status == "pending" & action_type %in% c("coupon", "bond_accrual", "redemption") &
+      asset_id %in% as.integer(bars$asset_id) & effective_timestamp <= timestamp
+  ]
+  if (!nrow(actions)) return(actions)
+  actions[, .(
+    action_id, asset_id = as.integer(asset_id), action_type = as.character(action_type),
+    amount = as.numeric(amount), currency = as.character(currency),
+    effective_timestamp = as.numeric(effective_timestamp)
+  )]
+}
+
+#' @keywords internal
+.heterogeneous_portfolio_mark_bond_actions_applied <- function(exchange, actions) {
+  if (!nrow(actions)) return(invisible(NULL))
+  for (action_id in actions$action_id) {
+    index <- match(action_id, exchange$corporate_actions$action_id)
+    if (is.na(index)) next
+    data.table::set(exchange$corporate_actions, i = index, j = "status", value = "applied")
+    data.table::set(exchange$corporate_actions, i = index, j = "message",
+      value = "Applied through the heterogeneous account kernel.")
+  }
+  invisible(NULL)
+}
+
 .sim_exchange_step_heterogeneous_portfolio <- function(exchange, bars) {
   bars <- data.table::as.data.table(bars)
   events <- list()
@@ -715,7 +746,14 @@
     boundary_timestamp <- as.POSIXct(timestamp_value, origin = "1970-01-01", tz = "UTC")
     boundary_bars <- bars[timestamp == boundary_timestamp]
     .profile_settle_due(exchange, boundary_timestamp)
-    for (i in seq_len(nrow(boundary_bars))) .profile_apply_corporate_actions(exchange, boundary_timestamp, boundary_bars$asset_id[i])
+    # Dividends and splits retain the legacy inventory mutation until their
+    # own typed C++ schedule exists. Bond cash lifecycle rows are passed to
+    # the heterogeneous kernel below, once per account.
+    for (i in seq_len(nrow(boundary_bars))) {
+      .profile_apply_corporate_actions(exchange, boundary_timestamp, boundary_bars$asset_id[i],
+        action_types = c("dividend", "split"))
+    }
+    bond_actions <- .heterogeneous_portfolio_bond_actions(exchange, boundary_bars, boundary_timestamp)
     for (agent_id in .heterogeneous_portfolio_agents(exchange, boundary_bars)) {
       input <- .heterogeneous_portfolio_account_input(exchange, agent_id, boundary_bars)
       accepted <- .heterogeneous_portfolio_orders(exchange, agent_id, boundary_bars)
@@ -737,11 +775,14 @@
         portfolio_margin_sigma = as.numeric(exchange$config$portfolio_margin_sigma %||% 3),
         portfolio_margin_floor = as.numeric(exchange$config$portfolio_margin_floor %||% exchange$config$mmr %||% 0.02)
       )
+      kernel_actions <- data.table::rbindlist(list(
+        covariance[, .(asset_i, asset_j, covariance)], bond_actions
+      ), fill = TRUE)
       proposed <- heterogeneous_account_step_rcpp(
         .profile_base_currency(exchange), input$cash_balances, input$inventory_positions, input$margin_positions,
         data.frame(merge(boundary_bars[, .(asset_id, open, high, low, close)],
           exchange$assets[, .(asset_id, instrument_profile)], by = "asset_id", all.x = TRUE, sort = FALSE)),
-        input$fx_rates, settings, data.frame(covariance[, .(asset_i, asset_j, covariance)]), data.frame(normalized),
+        input$fx_rates, settings, data.frame(kernel_actions), data.frame(normalized),
         as.numeric(boundary_timestamp)
       )
       proposed$timestamp <- as.numeric(boundary_timestamp)
@@ -764,6 +805,7 @@
       .enforce_cross_margin(exchange, agent_id, boundary_timestamp)
       snapshots[[length(snapshots) + 1L]] <- .agent_position_snapshots(exchange, agent_id, boundary_timestamp)
     }
+    .heterogeneous_portfolio_mark_bond_actions_applied(exchange, bond_actions)
   }
   list(events = data.table::rbindlist(events, fill = TRUE), snapshots = data.table::rbindlist(snapshots, fill = TRUE))
 }

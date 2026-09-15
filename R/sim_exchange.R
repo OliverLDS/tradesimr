@@ -912,6 +912,14 @@ sim_exchange_load <- function(path) {
   if (file.exists(file.path(path, "account_events.csv"))) {
     exchange$account_events <- data.table::fread(file.path(path, "account_events.csv"))
     data.table::set(exchange$account_events, j = "timestamp", value = as.POSIXct(exchange$account_events$timestamp, tz = "UTC"))
+    # `fwrite()` serializes nullable character IDs as empty CSV fields.
+    # Restore their schema-level NA semantics rather than exposing empty IDs
+    # after a durable exchange round trip.
+    for (column in intersect(c("order_id", "fill_id", "atomic_group_id"), names(exchange$account_events))) {
+      values <- as.character(exchange$account_events[[column]])
+      values[!nzchar(values)] <- NA_character_
+      data.table::set(exchange$account_events, j = column, value = values)
+    }
     exchange$next_account_event_id <- nrow(exchange$account_events) + 1L
   }
   if (file.exists(file.path(path, "settlement_ledger.csv"))) {
