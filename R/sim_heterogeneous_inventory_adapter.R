@@ -572,6 +572,81 @@
   invisible(NULL)
 }
 
+#' @keywords internal
+.heterogeneous_v2_record_state <- function(exchange, agent_id, proposed, timestamp) {
+  if (!.exchange_uses_heterogeneous_v2(exchange)) return(invisible(NULL))
+  agent_id <- as.character(agent_id)
+  timestamp <- as.POSIXct(timestamp, tz = "UTC")
+  replace_rows <- function(table_name, rows, key_columns) {
+    if (!nrow(rows)) return(invisible(NULL))
+    current <- exchange[[table_name]]
+    key <- do.call(paste, c(current[, ..key_columns], sep = "\r"))
+    replacement_key <- do.call(paste, c(rows[, ..key_columns], sep = "\r"))
+    exchange[[table_name]] <- data.table::rbindlist(list(current[!key %in% replacement_key], rows), fill = TRUE)
+    invisible(NULL)
+  }
+  cash <- data.table::as.data.table(proposed$cash_balances)
+  if (nrow(cash)) {
+    cash[, `:=`(agent_id = agent_id, timestamp = timestamp)]
+    data.table::setcolorder(cash, names(sim_schemas()$cash_balances))
+    replace_rows("cash_balances", cash, c("agent_id", "currency"))
+  }
+  inventory <- data.table::as.data.table(proposed$inventory_positions)
+  if (nrow(inventory)) {
+    inventory[, `:=`(
+      agent_id = agent_id,
+      symbol = vapply(asset_id, function(id) exchange$asset_symbols[[as.character(id)]] %||% paste0("asset-", id), character(1L)),
+      timestamp = timestamp
+    )]
+    data.table::setcolorder(inventory, names(sim_schemas()$inventory_positions))
+    replace_rows("inventory_positions", inventory, c("agent_id", "asset_id"))
+  }
+  margin <- data.table::as.data.table(proposed$margin_positions)
+  if (nrow(margin)) {
+    margin[, `:=`(
+      agent_id = agent_id,
+      symbol = vapply(asset_id, function(id) exchange$asset_symbols[[as.character(id)]] %||% paste0("asset-", id), character(1L)),
+      timestamp = timestamp
+    )]
+    data.table::setcolorder(margin, names(sim_schemas()$margin_positions))
+    replace_rows("typed_margin_positions", margin, c("agent_id", "asset_id"))
+  }
+  events <- data.table::as.data.table(proposed$events)
+  if (nrow(events)) {
+    rows <- events[, .(
+      account_event_id = paste0("AE", sprintf("%06d", exchange$next_account_event_id + seq_len(.N) - 1L)),
+      timestamp = as.POSIXct(timestamp, tz = "UTC"), agent_id = agent_id,
+      event_type = as.character(event_type), asset_id = as.integer(asset_id),
+      symbol = vapply(asset_id, function(id) exchange$asset_symbols[[as.character(id)]] %||% paste0("asset-", id), character(1L)),
+      currency = as.character(currency), amount = as.numeric(amount),
+      order_id = NA_character_, fill_id = NA_character_, atomic_group_id = NA_character_,
+      message = "Typed heterogeneous account event."
+    )]
+    exchange$next_account_event_id <- exchange$next_account_event_id + nrow(rows)
+    exchange$account_events <- data.table::rbindlist(list(exchange$account_events, rows), fill = TRUE)
+  }
+  fills <- data.table::as.data.table(proposed$fills)
+  fills <- fills[status == "filled"]
+  if (nrow(fills)) {
+    position_currency <- c(
+      stats::setNames(as.character(margin$currency), as.character(margin$asset_id)),
+      stats::setNames(as.character(inventory$currency), as.character(inventory$asset_id))
+    )
+    rows <- fills[, .(
+      account_event_id = paste0("AE", sprintf("%06d", exchange$next_account_event_id + seq_len(.N) - 1L)),
+      timestamp = as.POSIXct(timestamp, tz = "UTC"), agent_id = agent_id,
+      event_type = "trade_fill", asset_id = as.integer(asset_id),
+      symbol = vapply(asset_id, function(id) exchange$asset_symbols[[as.character(id)]] %||% paste0("asset-", id), character(1L)),
+      currency = unname(position_currency[as.character(asset_id)]),
+      amount = -as.numeric(fee), order_id = as.character(order_id), fill_id = as.character(fill_id),
+      atomic_group_id = as.character(atomic_group_id), message = "Typed heterogeneous trade fill."
+    )]
+    exchange$next_account_event_id <- exchange$next_account_event_id + nrow(rows)
+    exchange$account_events <- data.table::rbindlist(list(exchange$account_events, rows), fill = TRUE)
+  }
+  invisible(NULL)
+}
+
 .heterogeneous_portfolio_apply_outcomes <- function(exchange, orders, proposed, timestamp) {
   events <- list()
   fills <- data.table::as.data.table(proposed$fills)
@@ -669,6 +744,7 @@
       proposed$fills <- data.table::as.data.table(proposed$fills)
       proposed$events <- data.table::as.data.table(proposed$events)
       .heterogeneous_portfolio_commit_state(exchange, agent_id, proposed)
+      .heterogeneous_v2_record_state(exchange, agent_id, proposed, boundary_timestamp)
       outcome_events <- .heterogeneous_portfolio_apply_outcomes(exchange, accepted, proposed, boundary_timestamp)
       variation_events <- .heterogeneous_portfolio_variation_events(exchange, agent_id, proposed, boundary_timestamp)
       if (nrow(variation_events)) {

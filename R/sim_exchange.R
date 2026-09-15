@@ -1,6 +1,9 @@
 #' Create an in-memory simulated exchange state
 #'
-#' @param config Named list of simulation parameters passed to `sim_backtest()`.
+#' @param config Named simulation parameters. Set `execution_engine` to
+#'   `"heterogeneous_v2"` to route portfolio boundaries through the typed
+#'   multi-profile C++ account kernel; `"legacy_v1"` remains the default
+#'   compatibility route during downstream migration.
 #' @return A mutable environment containing market, intent, order, and result
 #'   tables.
 #' @export
@@ -8,6 +11,11 @@ sim_exchange_new <- function(config = list()) {
   state <- new.env(parent = emptyenv())
   state$config <- config
   state$config$schema_version <- TRADESIMR_SCHEMA_VERSION
+  state$config$account_schema_version <- TRADESIMR_ACCOUNT_SCHEMA_VERSION
+  state$config$execution_engine <- as.character(state$config$execution_engine %||% "legacy_v1")
+  if (!state$config$execution_engine %in% c("legacy_v1", "heterogeneous_v2")) {
+    stop("`execution_engine` must be `legacy_v1` or `heterogeneous_v2`.", call. = FALSE)
+  }
   state$market_events <- sim_schemas()$market_events[0]
   state$intents <- sim_schemas()$intents[0]
   state$agent_orders <- sim_schemas()$agent_orders[0]
@@ -25,6 +33,10 @@ sim_exchange_new <- function(config = list()) {
   state$assets <- sim_schemas()$assets[0]
   state$fx_rates <- sim_schemas()$fx_rates[0]
   state$profile_cash_ledger <- sim_schemas()$profile_cash_ledger[0]
+  state$cash_balances <- sim_schemas()$cash_balances[0]
+  state$inventory_positions <- sim_schemas()$inventory_positions[0]
+  state$typed_margin_positions <- sim_schemas()$margin_positions[0]
+  state$account_events <- sim_schemas()$account_events[0]
   state$settlement_ledger <- sim_schemas()$settlement_ledger[0]
   state$corporate_actions <- sim_schemas()$corporate_actions[0]
   state$agent_states <- list()
@@ -68,6 +80,7 @@ sim_exchange_new <- function(config = list()) {
   state$next_ledger_id <- 1L
   state$next_settlement_id <- 1L
   state$next_corporate_action_id <- 1L
+  state$next_account_event_id <- 1L
   state$feed <- sim_feed_config()
   class(state) <- c("tradesimr_exchange", "environment")
   state
@@ -281,6 +294,12 @@ sim_exchange_step <- function(exchange, bars) {
   new_bars <- as_market_bars(bars)
   new_bars <- .validate_market_bar_assets(exchange, new_bars)
   if (isTRUE(exchange$config$portfolio_margin %||% FALSE)) {
+    # Heterogeneous v2 owns the complete account boundary, including a
+    # derivatives-only boundary. Legacy v1 remains available while external
+    # consumers migrate their accounting expectations deliberately.
+    if (.exchange_uses_heterogeneous_v2(exchange)) {
+      return(.sim_exchange_step_mixed_profiled_portfolio(exchange, new_bars))
+    }
     inventory_profiles <- vapply(new_bars$asset_id, function(id) .asset_uses_spot_inventory(exchange, id), logical(1L))
     if (any(inventory_profiles) && any(!inventory_profiles)) {
       return(.sim_exchange_step_mixed_profiled_portfolio(exchange, new_bars))
@@ -391,6 +410,11 @@ sim_exchange_step <- function(exchange, bars) {
   exchange$last_events <- exchange$step_events
   exchange$last_bar_count <- nrow(exchange$market_events)
   exchange$result
+}
+
+#' @keywords internal
+.exchange_uses_heterogeneous_v2 <- function(exchange) {
+  identical(as.character(exchange$config$execution_engine %||% "legacy_v1"), "heterogeneous_v2")
 }
 
 #' @keywords internal
@@ -694,6 +718,10 @@ sim_exchange_save <- function(exchange, path, format = c("csv", "fst")) {
     assets = exchange$assets,
     fx_rates = exchange$fx_rates,
     profile_cash_ledger = exchange$profile_cash_ledger,
+    cash_balances = exchange$cash_balances,
+    inventory_positions = exchange$inventory_positions,
+    typed_margin_positions = exchange$typed_margin_positions,
+    account_events = exchange$account_events,
     settlement_ledger = exchange$settlement_ledger,
     corporate_actions = exchange$corporate_actions,
     currency_cash_state = sim_exchange_cash_balances(exchange),
@@ -863,6 +891,23 @@ sim_exchange_load <- function(path) {
   if (file.exists(file.path(path, "profile_cash_ledger.csv"))) {
     exchange$profile_cash_ledger <- data.table::fread(file.path(path, "profile_cash_ledger.csv"))
     data.table::set(exchange$profile_cash_ledger, j = "timestamp", value = as.POSIXct(exchange$profile_cash_ledger$timestamp, tz = "UTC"))
+  }
+  if (file.exists(file.path(path, "cash_balances.csv"))) {
+    exchange$cash_balances <- data.table::fread(file.path(path, "cash_balances.csv"))
+    data.table::set(exchange$cash_balances, j = "timestamp", value = as.POSIXct(exchange$cash_balances$timestamp, tz = "UTC"))
+  }
+  if (file.exists(file.path(path, "inventory_positions.csv"))) {
+    exchange$inventory_positions <- data.table::fread(file.path(path, "inventory_positions.csv"))
+    data.table::set(exchange$inventory_positions, j = "timestamp", value = as.POSIXct(exchange$inventory_positions$timestamp, tz = "UTC"))
+  }
+  if (file.exists(file.path(path, "typed_margin_positions.csv"))) {
+    exchange$typed_margin_positions <- data.table::fread(file.path(path, "typed_margin_positions.csv"))
+    data.table::set(exchange$typed_margin_positions, j = "timestamp", value = as.POSIXct(exchange$typed_margin_positions$timestamp, tz = "UTC"))
+  }
+  if (file.exists(file.path(path, "account_events.csv"))) {
+    exchange$account_events <- data.table::fread(file.path(path, "account_events.csv"))
+    data.table::set(exchange$account_events, j = "timestamp", value = as.POSIXct(exchange$account_events$timestamp, tz = "UTC"))
+    exchange$next_account_event_id <- nrow(exchange$account_events) + 1L
   }
   if (file.exists(file.path(path, "settlement_ledger.csv"))) {
     exchange$settlement_ledger <- data.table::fread(file.path(path, "settlement_ledger.csv"))

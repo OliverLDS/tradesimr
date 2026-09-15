@@ -92,3 +92,33 @@ test_that("complete native derivative boundaries do not need a duplicate R margi
   )
   expect_equal(after, before)
 })
+
+test_that("heterogeneous v2 routes derivative-only target replay through typed state", {
+  exchange <- sim_exchange_new(list(
+    cash = 10000, portfolio_margin = TRUE, execution_engine = "heterogeneous_v2", lev = 1
+  ))
+  sim_asset_add(exchange, "ES", asset_id = 1L, instrument_profile = "future")
+  execution <- sim_portfolio_execution(lev = 1)
+  first <- data.frame(
+    timestamp = as.POSIXct("2026-10-01", tz = "UTC"), symbol = "ES", asset_id = 1L,
+    open = 100, high = 101, low = 99, close = 100
+  )
+  sim_portfolio_market_step(exchange, first, execution)
+  sim_portfolio_target_submit(exchange, "agent", first, c(ES = .5), execution,
+    allowed_symbols = "ES")
+  sim_portfolio_market_step(exchange, transform(first, timestamp = timestamp + 86400), execution)
+
+  expect_equal(exchange$margin_positions$signed_units, 50)
+  expect_equal(exchange$typed_margin_positions$signed_units, 50)
+  expect_equal(exchange$cash_balances$settled, 10000)
+  expect_equal(sim_exchange_orders(exchange)$status, "filled")
+  expect_equal(nrow(exchange$portfolio_fills), 1L)
+  expect_equal(sim_exchange_positions(exchange)$ctr_unit, 50)
+
+  path <- tempfile("tradesimr-v2-state-")
+  sim_exchange_save(exchange, path)
+  restored <- sim_exchange_load(path)
+  expect_equal(restored$config$execution_engine, "heterogeneous_v2")
+  expect_equal(restored$typed_margin_positions, exchange$typed_margin_positions)
+  expect_equal(restored$cash_balances, exchange$cash_balances)
+})

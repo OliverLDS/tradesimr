@@ -3,6 +3,11 @@
 #' @export
 TRADESIMR_SCHEMA_VERSION <- "0.16.0"
 
+#' Heterogeneous account schema version
+#'
+#' @export
+TRADESIMR_ACCOUNT_SCHEMA_VERSION <- "2.0.0"
+
 #' Simulation table schemas
 #'
 #' @return A named list of empty data.tables representing durable simulation
@@ -10,6 +15,28 @@ TRADESIMR_SCHEMA_VERSION <- "0.16.0"
 #' @export
 sim_schemas <- function() {
   list(
+    cash_balances = data.table::data.table(
+      agent_id = character(), currency = character(), settled = numeric(),
+      unsettled = numeric(), timestamp = as.POSIXct(character())
+    ),
+    inventory_positions = data.table::data.table(
+      agent_id = character(), asset_id = integer(), symbol = character(),
+      currency = character(), units = numeric(), average_cost = numeric(),
+      last_price = numeric(), contract_size = numeric(), timestamp = as.POSIXct(character())
+    ),
+    margin_positions = data.table::data.table(
+      agent_id = character(), asset_id = integer(), symbol = character(),
+      currency = character(), signed_units = numeric(), settlement_price = numeric(),
+      last_price = numeric(), contract_size = numeric(), maintenance_rate = numeric(),
+      timestamp = as.POSIXct(character())
+    ),
+    account_events = data.table::data.table(
+      account_event_id = character(), timestamp = as.POSIXct(character()),
+      agent_id = character(), event_type = character(), asset_id = integer(),
+      symbol = character(), currency = character(), amount = numeric(),
+      order_id = character(), fill_id = character(), atomic_group_id = character(),
+      message = character()
+    ),
     assets = data.table::data.table(
       asset_id = integer(),
       symbol = character(),
