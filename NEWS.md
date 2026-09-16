@@ -42,6 +42,9 @@ current git history; `v0.9.0` follows `v0.7.0`.
   non-cash accrual events, settles due coupons, and redeems inventory at
   maturity; schedule cursors persist through exchange save/load and dashboard
   exports.
+- The live state service and dashboard now expose the typed account projection
+  directly: base-currency account totals, settled/unsettled cash by currency,
+  inventory and margin positions, lifecycle events, and bond schedule cursors.
 
 ### Validation
 

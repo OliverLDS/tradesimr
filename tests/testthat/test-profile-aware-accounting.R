@@ -108,7 +108,7 @@ test_that("typed account state projects cash, inventory, and margin in base curr
 
   path <- tempfile("tradesimr-typed-dashboard-")
   paths <- sim_state_dashboard_export(exchange, path)
-  expect_true(all(c("typed_account", "cash_balances", "inventory_positions", "margin_positions", "account_events") %in% names(paths)))
+  expect_true(all(c("typed_account", "cash_balances", "inventory_positions", "margin_positions", "account_events", "bond_schedules") %in% names(paths)))
   exported <- data.table::fread(paths[["typed_account"]])
   expect_equal(exported$equity, 1400)
 })

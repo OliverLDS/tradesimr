@@ -1243,6 +1243,7 @@ test_that("live service state returns account history for equity curves", {
   expect_equal(vapply(state$account, `[[`, character(1), "agent_id"), rep("agent-history", 3))
   expect_equal(length(state$account[[1]]$agent_id), 1)
   expect_equal(length(state$account[[1]]$equity), 1)
+  expect_true(all(c("typed_account", "cash_balances", "inventory_positions", "margin_positions", "account_events", "bond_schedules") %in% names(state)))
 })
 
 test_that("strategy-backed agents submit explicit multi-asset order intents", {

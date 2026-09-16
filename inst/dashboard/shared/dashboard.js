@@ -17,7 +17,13 @@ const REQUIRED_TABLES = [
   "agent_rankings",
   "positions",
   "market_model",
-  "cross_asset_risk"
+  "cross_asset_risk",
+  "typed_account",
+  "cash_balances",
+  "inventory_positions",
+  "margin_positions",
+  "account_events",
+  "bond_schedules"
 ];
 
 const state = {
@@ -196,6 +202,12 @@ function render() {
   renderTimeline();
   renderMarketModelSummary();
   renderTable("cross-asset-risk-table", state.tables.cross_asset_risk, ["timestamp", "agent_id", "symbol", "asset_id", "quantity", "direction", "notional", "abs_notional", "allocation", "unrealized_pnl", "equity", "leverage", "concentration_hhi", "portfolio_vol", "stress_loss"], 80);
+  renderTable("typed-account-table", state.tables.typed_account, ["timestamp", "agent_id", "base_currency", "cash_settled", "cash_unsettled", "inventory_value", "margin_unrealized_pnl", "maintenance_margin", "equity", "liquidated"], 80);
+  renderTable("cash-balances-table", state.tables.cash_balances, ["timestamp", "agent_id", "currency", "settled", "unsettled", "settled_base", "unsettled_base", "total_base"], 80);
+  renderTable("inventory-positions-table", state.tables.inventory_positions, ["timestamp", "agent_id", "symbol", "asset_id", "currency", "units", "average_cost", "last_price", "market_value_base", "unrealized_pnl_base"], 80);
+  renderTable("margin-positions-table", state.tables.margin_positions, ["timestamp", "agent_id", "symbol", "asset_id", "currency", "signed_units", "settlement_price", "last_price", "notional_base", "maintenance_margin_base"], 80);
+  renderTable("account-events-table", state.tables.account_events, ["timestamp", "agent_id", "event_type", "symbol", "asset_id", "currency", "amount", "order_id", "fill_id", "message"], 80);
+  renderTable("bond-schedules-table", state.tables.bond_schedules, ["symbol", "asset_id", "currency", "coupon_rate", "coupon_frequency", "face_value", "last_accrual_timestamp", "next_coupon_timestamp", "maturity_timestamp", "status"], 80);
   renderTable("orders-table", state.tables.orders, ["timestamp", "order_id", "agent_id", "symbol", "asset_id", "side", "qty_type", "qty", "order_type", "status", "action_label", "dir_label", "ctr_qty", "price", "fee", "realized_pnl", "status_label"]);
   renderTable("orders-fills-table", combinedOrderFillRows(), ["timestamp", "source", "order_id", "agent_id", "symbol", "asset_id", "side", "qty_type", "qty", "order_type", "status", "action_label", "dir_label", "ctr_qty", "price", "fee", "realized_pnl"], 80);
   renderTable("commands-table", state.tables.agent_commands, ["timestamp", "command_id", "agent_id", "command_type", "status", "ref_id", "message"]);
@@ -761,6 +773,12 @@ function applyServiceState(data) {
   state.tables.positions = data.positions || [];
   state.tables.account_latest = data.account_latest || [];
   state.tables.cross_asset_risk = data.cross_asset_risk || state.tables.cross_asset_risk || [];
+  state.tables.typed_account = data.typed_account || state.tables.typed_account || [];
+  state.tables.cash_balances = data.cash_balances || state.tables.cash_balances || [];
+  state.tables.inventory_positions = data.inventory_positions || state.tables.inventory_positions || [];
+  state.tables.margin_positions = data.margin_positions || state.tables.margin_positions || [];
+  state.tables.account_events = data.account_events || state.tables.account_events || [];
+  state.tables.bond_schedules = data.bond_schedules || state.tables.bond_schedules || [];
   if (data.feed?.market_model) state.tables.market_model = [data.feed.market_model];
   state.tables.agent_decisions = data.agent_decisions || [];
   state.tables.agent_rankings = data.agent_rankings || [];

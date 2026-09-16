@@ -244,11 +244,18 @@ sim_live_service_run <- function(exchange = sim_exchange_new(), host = "127.0.0.
   } else {
     .aggregate_account_snapshots(sim_account(exchange$result))
   }
+  typed_account <- sim_exchange_account_state(exchange)
   list(
     account = .service_records(account_history),
     account_latest = .service_records(sim_exchange_account(exchange)),
     positions = .service_records(sim_exchange_positions(exchange)),
     assets = .service_records(sim_assets(exchange)),
+    typed_account = .service_records(typed_account$account),
+    cash_balances = .service_records(typed_account$cash_balances),
+    inventory_positions = .service_records(typed_account$inventory_positions),
+    margin_positions = .service_records(typed_account$margin_positions),
+    account_events = .service_records(typed_account$events),
+    bond_schedules = .service_records(exchange$bond_schedules),
     market_events = .service_records(exchange$market_events),
     agent_orders = .service_records(exchange$agent_orders),
     agent_commands = .service_records(exchange$agent_commands),
