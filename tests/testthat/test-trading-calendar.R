@@ -44,3 +44,39 @@ test_that("valuation-only bars never execute accepted orders", {
   sim_exchange_step(exchange, open_bar)
   expect_equal(sim_exchange_orders(exchange)$status, "filled")
 })
+
+test_that("calendar modes control executable portfolio boundaries", {
+  early_nyse <- as.POSIXct("2026-01-05 13:00:00", tz = "UTC") # 08:00 ET
+  bar <- data.frame(
+    timestamp = early_nyse, symbol = "SPY", asset_id = 1L,
+    open = 100, high = 100, low = 100, close = 100
+  )
+  calendarized <- sim_exchange_new(list(calendar_mode = "calendarize"))
+  sim_asset_add(calendarized, "SPY", asset_id = 1L, asset_class = "equity")
+  sim_exchange_place_order(calendarized, "alice", early_nyse - 60, symbol = "SPY", side = "buy", qty = 1)
+  result <- sim_portfolio_market_step(calendarized, bar)
+  expect_equal(result$outcomes$status, "valuation_only")
+  expect_equal(nrow(calendarized$portfolio_market_boundaries), 0L)
+  expect_equal(sim_exchange_orders(calendarized)$status, "accepted")
+  expect_error(
+    sim_portfolio_target_submit(calendarized, "alice", result$bars, c(SPY = 1)),
+    "fresh, completed, tradable"
+  )
+
+  strict <- sim_exchange_new(list(calendar_mode = "strict"))
+  sim_asset_add(strict, "SPY", asset_id = 1L, asset_class = "equity")
+  expect_error(sim_exchange_step(strict, bar), "outside its registered calendar session")
+})
+
+test_that("calendar modes validate cadence against the prior accepted bar", {
+  exchange <- sim_exchange_new(list(calendar_mode = "strict"))
+  sim_asset_add(exchange, "BTC-USD", asset_id = 1L, asset_class = "crypto_spot", bar_cadence_seconds = 300)
+  first <- data.frame(
+    timestamp = as.POSIXct("2026-01-05 00:00:00", tz = "UTC"), symbol = "BTC-USD", asset_id = 1L,
+    open = 100, high = 100, low = 100, close = 100
+  )
+  sim_exchange_step(exchange, first)
+  misaligned <- first
+  misaligned$timestamp <- misaligned$timestamp + 7 * 60
+  expect_error(sim_exchange_step(exchange, misaligned), "bar cadence")
+})

@@ -11,7 +11,9 @@ sim_exchange_new(config = list())
 \code{"heterogeneous_v2"} to route portfolio boundaries through the typed
 multi-profile C++ account kernel; it is the default. \code{"legacy_v1"} is a
 deprecated compatibility route for downstream consumers that still
-require the legacy snapshot/event projection.}
+require the legacy snapshot/event projection. \code{calendar_mode} is \code{"raw"}
+(default), \code{"calendarize"} (closed or cadence-misaligned bars become
+valuation-only), or \code{"strict"} (such bars are rejected).}
 }
 \value{
 A mutable environment containing market, intent, order, and result

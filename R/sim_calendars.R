@@ -63,15 +63,15 @@ sim_exchange_calendarize_bars <- function(exchange, bars, strict = FALSE) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   out <- .validate_market_bar_assets(exchange, as_market_bars(bars))
   specs <- exchange$assets[match(out$asset_id, exchange$assets$asset_id)]
-  open <- vapply(seq_len(nrow(out)), function(i) {
+  session_open <- vapply(seq_len(nrow(out)), function(i) {
     sim_calendar_is_open(out$timestamp[i], specs$calendar_id[i])
   }, logical(1L))
-  invalid <- out$is_tradable %in% TRUE & !open
+  invalid <- (out$is_tradable %in% TRUE) & !session_open
   if (isTRUE(strict) && any(invalid)) {
     stop("Tradable bar falls outside its registered calendar session: ",
       paste(out$symbol[invalid], collapse = ", "), call. = FALSE)
   }
-  out[, is_tradable := is_tradable %in% TRUE & open]
+  out[, is_tradable := (is_tradable %in% TRUE) & ..session_open]
   out
 }
 
@@ -101,4 +101,32 @@ sim_exchange_validate_cadence <- function(exchange, bars, strict = FALSE) {
   }
   if (isTRUE(strict) && any(!out$cadence_ok)) stop("Market bars violate registered bar cadence.", call. = FALSE)
   out
+}
+
+#' @keywords internal
+.sim_exchange_prepare_market_bars <- function(exchange, bars) {
+  out <- .validate_market_bar_assets(exchange, as_market_bars(bars))
+  mode <- as.character(exchange$config$calendar_mode %||% "raw")
+  if (identical(mode, "raw")) return(out)
+  # Cadence is defined against the preceding accepted bar as well as the
+  # supplied batch. Keep the historical rows only for validation; callers
+  # receive precisely their original new-bar batch.
+  prior <- exchange$market_events[asset_id %in% out$asset_id]
+  combined <- data.table::rbindlist(list(prior, out), fill = TRUE)
+  checked <- sim_exchange_validate_cadence(exchange, combined, strict = FALSE)
+  checked <- checked[(nrow(prior) + 1L):nrow(checked)]
+  supplied_tradable <- out$is_tradable %in% TRUE
+  if (identical(mode, "strict") && any(supplied_tradable & !checked$calendar_open)) {
+    stop("Tradable bar falls outside its registered calendar session.", call. = FALSE)
+  }
+  if (identical(mode, "strict") && any(!checked$cadence_ok)) {
+    stop("Market bars violate registered bar cadence.", call. = FALSE)
+  }
+  if (identical(mode, "calendarize")) {
+    # A timestamp that cannot align to the asset's configured cadence is a
+    # valuation observation only. It cannot create fills or decisions.
+    checked[checked$cadence_ok %in% FALSE, is_tradable := FALSE]
+  }
+  checked[, c("calendar_open", "cadence_ok") := NULL]
+  checked
 }

@@ -4,7 +4,9 @@
 #'   `"heterogeneous_v2"` to route portfolio boundaries through the typed
 #'   multi-profile C++ account kernel; it is the default. `"legacy_v1"` is a
 #'   deprecated compatibility route for downstream consumers that still
-#'   require the legacy snapshot/event projection.
+#'   require the legacy snapshot/event projection. `calendar_mode` is `"raw"`
+#'   (default), `"calendarize"` (closed or cadence-misaligned bars become
+#'   valuation-only), or `"strict"` (such bars are rejected).
 #' @return A mutable environment containing market, intent, order, and result
 #'   tables.
 #' @export
@@ -14,6 +16,10 @@ sim_exchange_new <- function(config = list()) {
   state$config$schema_version <- TRADESIMR_SCHEMA_VERSION
   state$config$account_schema_version <- TRADESIMR_ACCOUNT_SCHEMA_VERSION
   state$config$execution_engine <- as.character(state$config$execution_engine %||% "heterogeneous_v2")
+  state$config$calendar_mode <- match.arg(
+    as.character(state$config$calendar_mode %||% "raw"),
+    c("raw", "calendarize", "strict")
+  )
   if (!state$config$execution_engine %in% c("legacy_v1", "heterogeneous_v2")) {
     stop("`execution_engine` must be `legacy_v1` or `heterogeneous_v2`.", call. = FALSE)
   }
@@ -99,8 +105,7 @@ sim_exchange_new <- function(config = list()) {
 #' @export
 sim_exchange_add_bars <- function(exchange, bars) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
-  new_bars <- as_market_bars(bars)
-  new_bars <- .validate_market_bar_assets(exchange, new_bars)
+  new_bars <- .sim_exchange_prepare_market_bars(exchange, bars)
   exchange$market_events <- data.table::rbindlist(list(exchange$market_events, new_bars), fill = TRUE)
   invisible(exchange)
 }
@@ -296,15 +301,14 @@ sim_exchange_run <- function(exchange) {
 #' @export
 sim_exchange_step <- function(exchange, bars) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
-  new_bars <- as_market_bars(bars)
-  new_bars <- .validate_market_bar_assets(exchange, new_bars)
+  new_bars <- .sim_exchange_prepare_market_bars(exchange, bars)
   # A bar can carry a fresh valuation without representing an executable
   # observation. Session closures, incomplete bars, and carried marks update
   # prices only; they must not trigger an order, funding, margin, or strategy
   # transition. Callers can derive `is_tradable` with
   # `sim_exchange_calendarize_bars()`.
-  valuation_only <- new_bars[!(is_completed %in% TRUE & is_tradable %in% TRUE)]
-  executable <- new_bars[is_completed %in% TRUE & is_tradable %in% TRUE]
+  valuation_only <- new_bars[!((is_completed %in% TRUE) & (is_tradable %in% TRUE))]
+  executable <- new_bars[(is_completed %in% TRUE) & (is_tradable %in% TRUE)]
   if (nrow(valuation_only)) .sim_exchange_step_valuation_only(exchange, valuation_only)
   if (!nrow(executable)) return(exchange$result)
   new_bars <- executable

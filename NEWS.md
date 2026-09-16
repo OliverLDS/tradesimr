@@ -13,6 +13,11 @@ current git history; `v0.9.0` follows `v0.7.0`.
   tradability from the asset calendar and `sim_exchange_validate_cadence()`
   verifies timestamp alignment without treating holiday/session gaps as missing
   data.
+- `sim_exchange_new(calendar_mode = ...)` now applies these rules at exchange
+  admission: `"raw"` preserves legacy feed behavior, `"calendarize"` turns
+  closed-session or cadence-misaligned observations into valuation-only bars,
+  and `"strict"` rejects them. Portfolio market-boundary records are written
+  only for fresh, completed, tradable bars.
 - Bars marked incomplete or non-tradable are now valuation-only in
   `sim_exchange_step()`: they update durable market marks and snapshots but
   cannot execute orders or trigger funding, variation margin, liquidation, or

@@ -55,16 +55,17 @@ sim_portfolio_market_step <- function(exchange,
                                       execution = sim_portfolio_execution()) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   execution <- .portfolio_validate_execution(execution)
-  boundary_bars <- .portfolio_validate_decision_bars(exchange, bars)
+  boundary_bars <- .portfolio_validate_decision_bars(exchange, .sim_exchange_prepare_market_bars(exchange, bars))
   .portfolio_require_one_timestamp(boundary_bars)
   .portfolio_require_new_bars(exchange, boundary_bars)
   .portfolio_apply_execution_config(exchange, execution)
 
   sim_exchange_step(exchange, boundary_bars)
   bookkeeping_started <- .sim_profile_start(exchange)
-  exchange$portfolio_market_boundaries <- data.table::rbindlist(list(
+  executable_bars <- .portfolio_fresh_decision_bars(boundary_bars)
+  if (nrow(executable_bars)) exchange$portfolio_market_boundaries <- data.table::rbindlist(list(
     exchange$portfolio_market_boundaries,
-    boundary_bars[, .(timestamp, symbol, asset_id)]
+    executable_bars[, .(timestamp, symbol, asset_id)]
   ), fill = TRUE)
   fills <- .portfolio_fills_for_events(exchange, exchange$new_events)
   result <- list(
@@ -78,8 +79,12 @@ sim_portfolio_market_step <- function(exchange,
       timestamp = boundary_bars$timestamp[1L],
       symbol = boundary_bars$symbol,
       asset_id = boundary_bars$asset_id,
-      status = "market_stepped",
-      message = "Completed market bars accepted; only earlier eligible orders were executed."
+      status = ifelse(boundary_bars$is_completed & boundary_bars$is_tradable, "market_stepped", "valuation_only"),
+      message = ifelse(
+        boundary_bars$is_completed & boundary_bars$is_tradable,
+        "Completed tradable market bars accepted; only earlier eligible orders were executed.",
+        "Bar retained for valuation only; it cannot create a decision boundary or execute orders."
+      )
     )
   )
   .sim_profile_add(exchange, "boundary_snapshot_bookkeeping", bookkeeping_started)
@@ -92,14 +97,15 @@ sim_portfolio_market_step <- function(exchange,
                                            execution = sim_portfolio_execution()) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   execution <- .portfolio_validate_execution(execution)
-  boundary_bars <- .portfolio_validate_decision_bars(exchange, bars)
+  boundary_bars <- .portfolio_validate_decision_bars(exchange, .sim_exchange_prepare_market_bars(exchange, bars))
   .portfolio_require_one_timestamp(boundary_bars)
   .portfolio_require_new_bars(exchange, boundary_bars)
   .portfolio_apply_execution_config(exchange, execution)
   sim_exchange_step(exchange, boundary_bars)
-  exchange$portfolio_market_boundaries <- data.table::rbindlist(list(
+  executable_bars <- .portfolio_fresh_decision_bars(boundary_bars)
+  if (nrow(executable_bars)) exchange$portfolio_market_boundaries <- data.table::rbindlist(list(
     exchange$portfolio_market_boundaries,
-    boundary_bars[, .(timestamp, symbol, asset_id)]
+    executable_bars[, .(timestamp, symbol, asset_id)]
   ), fill = TRUE)
   invisible(exchange)
 }
@@ -155,7 +161,6 @@ sim_portfolio_target_submit <- function(exchange,
   execution <- .portfolio_validate_execution(execution)
   decision_bars <- .portfolio_validate_decision_bars(exchange, bars)
   .portfolio_require_one_timestamp(decision_bars)
-  .portfolio_require_accepted_boundary(exchange, decision_bars)
   .portfolio_apply_execution_config(exchange, execution)
   allowed_assets <- .portfolio_resolve_allowed_assets(exchange, agent_id, allowed_symbols, allowed_asset_ids)
   # Preserve the public rejected-outcome contract for a target outside the
@@ -164,6 +169,7 @@ sim_portfolio_target_submit <- function(exchange,
   if (!is.null(target_weights) && .portfolio_targets_within_allowed(target_weights, allowed_assets)) .portfolio_require_decision_policy(
     exchange, decision_bars, target_weights, allowed_assets, decision_policy
   )
+  .portfolio_require_accepted_boundary(exchange, decision_bars)
   first_asset <- .bar_asset_key(decision_bars[1L])
   .portfolio_ensure_agent_account(exchange, agent_id, first_asset)
   .portfolio_set_agent_universe(exchange, agent_id, allowed_assets$asset_id)
@@ -726,7 +732,7 @@ sim_portfolio_export <- function(exchange,
 
 #' @keywords internal
 .portfolio_fresh_decision_bars <- function(bars) {
-  bars[is_completed %in% TRUE & is_tradable %in% TRUE]
+  bars[(is_completed %in% TRUE) & (is_tradable %in% TRUE)]
 }
 
 #' @keywords internal
