@@ -139,6 +139,8 @@ sim_exchange_calendar_exception <- function(exchange, session_date,
 #'
 #' @param timestamp POSIXct timestamps.
 #' @param calendar_id Built-in calendar identifier.
+#' @param exceptions Optional calendar-exception rows from
+#'   [sim_exchange_calendar_exception()].
 #' @return A logical vector.
 #' @export
 sim_calendar_is_open <- function(timestamp, calendar_id = "ALWAYS_OPEN", exceptions = NULL) {

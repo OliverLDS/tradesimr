@@ -2114,6 +2114,18 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
     parsed <- .parse_agent_state_key(key)
     if (!identical(parsed$agent_id, agent_id)) return(NULL)
     if (!.portfolio_agent_asset_allowed(exchange, parsed$agent_id, parsed$asset_id)) return(NULL)
+    # A target-derived portfolio leg can deliberately use margin semantics
+    # for an otherwise inventory-profile asset.  Its zero-unit compatibility
+    # inventory row must not overwrite the typed margin snapshot when callers
+    # aggregate positions by agent and asset.
+    typed_margin <- exchange$typed_margin_positions %||% data.table::data.table()
+    legacy_margin <- exchange$margin_positions %||% data.table::data.table()
+    uses_margin <- nrow(typed_margin[
+      agent_id == parsed$agent_id & asset_id == parsed$asset_id
+    ]) > 0L || nrow(legacy_margin[
+      agent_id == parsed$agent_id & asset_id == parsed$asset_id
+    ]) > 0L
+    if (uses_margin) return(NULL)
     symbol <- exchange$asset_symbols[[as.character(parsed$asset_id)]] %||% parsed$symbol
     state <- exchange$spot_states[[key]]
     state$cash <- .shared_cash(exchange, agent_id)

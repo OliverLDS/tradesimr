@@ -302,10 +302,11 @@
   "Inventory order could not be executed."
 }
 
-.heterogeneous_inventory_event <- function(exchange, order, fill, timestamp) {
+.heterogeneous_inventory_event <- function(exchange, order, fill, timestamp,
+                                           force_margin = FALSE) {
   asset <- exchange$assets[asset_id == as.integer(order$asset_id[1L])]
   key <- .agent_state_key(order$agent_id[1L], order$asset_id[1L])
-  is_inventory <- .asset_uses_spot_inventory(exchange, order$asset_id[1L])
+  is_inventory <- !isTRUE(force_margin) && .asset_uses_spot_inventory(exchange, order$asset_id[1L])
   state <- if (is_inventory) exchange$spot_states[[key]] else exchange$agent_states[[key]]
   signed_quantity <- if (is_inventory) as.numeric(state$units %||% 0) else {
     as.numeric(state$pos_dir %||% 0) * as.numeric(state$ctr_unit %||% 0)
@@ -332,11 +333,12 @@
   )
 }
 
-.heterogeneous_inventory_apply_fill <- function(exchange, order, fill, timestamp) {
+.heterogeneous_inventory_apply_fill <- function(exchange, order, fill, timestamp,
+                                                force_margin = FALSE) {
   order_id <- as.character(order$order_id[1L])
   spec <- exchange$assets[asset_id == as.integer(order$asset_id[1L])]
   key <- .agent_state_key(order$agent_id[1L], order$asset_id[1L])
-  is_inventory <- .asset_uses_spot_inventory(exchange, order$asset_id[1L])
+  is_inventory <- !isTRUE(force_margin) && .asset_uses_spot_inventory(exchange, order$asset_id[1L])
   state <- if (is_inventory) exchange$spot_states[[key]] else exchange$agent_states[[key]]
   currency <- .profile_currency(exchange, if (is_inventory) state$currency %||% spec$quote_ccy[1L] else spec$quote_ccy[1L])
   if (!is_inventory) {
@@ -345,8 +347,15 @@
     .profile_record_cash(exchange, timestamp, order$agent_id[1L], currency, -as.numeric(fill$fee[1L]),
       .profile_cash_balance(exchange, order$agent_id[1L], currency), "margin_trade_fee", order$asset_id[1L],
       order$symbol[1L], order_id, message = "Margin order filled through heterogeneous execution.")
-    event <- .heterogeneous_inventory_event(exchange, order, fill, timestamp)
-    .spot_mark_order_terminal(exchange, order_id, "filled", "filled", "Margin order filled.", timestamp,
+    event <- .heterogeneous_inventory_event(exchange, order, fill, timestamp,
+      force_margin = force_margin)
+    reason_code <- as.character(fill$reason_code[1L] %||% "filled")
+    message <- if (identical(reason_code, "margin_clipped")) {
+      "Target-derived order was clipped to available portfolio-margin capacity."
+    } else {
+      "Margin order filled through heterogeneous execution."
+    }
+    .spot_mark_order_terminal(exchange, order_id, "filled", reason_code, message, timestamp,
       price = fill$price[1L], fee = fill$fee[1L], realized_pnl = fill$realized_pnl[1L])
     .append_portfolio_fill(exchange, order, event)
     return(event)
@@ -370,7 +379,8 @@
   .profile_record_cash(exchange, timestamp, order$agent_id[1L], currency, cash_amount,
     .profile_cash_balance(exchange, order$agent_id[1L], currency), "spot_trade", order$asset_id[1L],
     order$symbol[1L], order_id, message = "Inventory order filled through heterogeneous execution.")
-  event <- .heterogeneous_inventory_event(exchange, order, fill, timestamp)
+  event <- .heterogeneous_inventory_event(exchange, order, fill, timestamp,
+    force_margin = force_margin)
   .spot_mark_order_terminal(exchange, order_id, "filled", "filled", "Inventory order filled.", timestamp,
     price = fill$price[1L], fee = fill$fee[1L], realized_pnl = fill$realized_pnl[1L])
   .append_portfolio_fill(exchange, order, event)
@@ -452,10 +462,11 @@
 }
 
 .heterogeneous_portfolio_orders <- function(exchange, agent_id, bars) {
+  requested_agent_id <- as.character(agent_id)
   boundary <- as.POSIXct(bars$timestamp[1L], tz = "UTC")
   bar_assets <- unique(as.integer(bars$asset_id))
   orders <- exchange$agent_orders[
-    status == "accepted" & qty_type == "contracts" & agent_id == as.character(agent_id) &
+    status == "accepted" & qty_type == "contracts" & agent_id == requested_agent_id &
       asset_id %in% bar_assets & (
         (!is.na(eligible_after) & eligible_after < boundary) |
           (is.na(eligible_after) & !target_derived & timestamp <= boundary)
@@ -471,7 +482,9 @@
   orders[atomic_group_id %in% group_ids[complete]]
 }
 
-.heterogeneous_portfolio_account_input <- function(exchange, agent_id, bars) {
+.heterogeneous_portfolio_account_input <- function(exchange, agent_id, bars,
+                                                    margin_asset_ids = integer()) {
+  requested_agent_id <- as.character(agent_id)
   for (i in seq_len(nrow(bars))) {
     asset <- .bar_asset_key(bars[i])
     if (.asset_uses_spot_inventory(exchange, asset$asset_id)) {
@@ -513,9 +526,22 @@
   }
   # `margin_positions` is the authoritative derivatives input.  The legacy
   # `agent_states` list is only a compatibility projection for older callers.
-  derivative_bars <- bars[!vapply(as.integer(asset_id), function(asset_id) {
-    .asset_uses_spot_inventory(exchange, asset_id)
-  }, logical(1L))]
+  # A target-weight portfolio decision may use the margin account for an
+  # otherwise inventory-profile instrument.  This preserves the historical
+  # portfolio API's ability to express short ETF/equity targets under an
+  # explicit portfolio-margin configuration.  Explicit inventory orders do
+  # not opt into this route.
+  existing_margin_ids <- unique(c(
+    as.integer((exchange$typed_margin_positions %||% data.table::data.table())[agent_id == requested_agent_id, asset_id]),
+    as.integer((exchange$margin_positions %||% data.table::data.table())[agent_id == requested_agent_id, asset_id])
+  ))
+  margin_asset_ids <- unique(c(
+    as.integer(margin_asset_ids), existing_margin_ids,
+    as.integer(bars$asset_id[!vapply(as.integer(bars$asset_id), function(asset_id) {
+      .asset_uses_spot_inventory(exchange, asset_id)
+    }, logical(1L))])
+  ))
+  derivative_bars <- bars[asset_id %in% margin_asset_ids]
   margin <- if (nrow(derivative_bars)) {
     .heterogeneous_derivative_account_input(exchange, agent_id, derivative_bars)
   } else {
@@ -547,7 +573,8 @@
   )
 }
 
-.heterogeneous_portfolio_normalize_orders <- function(exchange, orders, bars) {
+.heterogeneous_portfolio_normalize_orders <- function(exchange, orders, bars,
+                                                       margin_asset_ids = integer()) {
   if (!nrow(orders)) return(sim_heterogeneous_order_batch_schema())
   bars <- data.table::as.data.table(bars)
   specs <- exchange$assets[, .(asset_id, instrument_profile, contract_size, qty_step, quote_ccy)]
@@ -562,6 +589,10 @@
     target_derived = !is.na(rebalance_id),
     atomic_group_id = as.character(atomic_group_id %||% order_id)
   )]
+  # The registered instrument profile remains the source of calendar and
+  # metadata rules.  This execution-only profile identifies target-derived
+  # portfolio-margin legs to the typed C++ margin-position branch.
+  out[target_derived & asset_id %in% as.integer(margin_asset_ids), instrument_profile := "future"]
   out[, `:=`(
     action_code = .encode_step_action(data.table::fifelse(
       is.na(intended_action) | !nzchar(intended_action), "open", intended_action
@@ -705,7 +736,8 @@
   invisible(NULL)
 }
 
-.heterogeneous_portfolio_apply_outcomes <- function(exchange, orders, proposed, timestamp) {
+.heterogeneous_portfolio_apply_outcomes <- function(exchange, orders, proposed, timestamp,
+                                                     margin_asset_ids = integer()) {
   events <- list()
   fills <- data.table::as.data.table(proposed$fills)
   for (i in seq_len(nrow(fills))) {
@@ -713,10 +745,20 @@
     order <- orders[order_id == fill$order_id]
     if (nrow(order) != 1L || identical(as.character(fill$status), "pending")) next
     if (identical(as.character(fill$status), "filled")) {
-      events[[length(events) + 1L]] <- .heterogeneous_inventory_apply_fill(exchange, order, fill, timestamp)
+      events[[length(events) + 1L]] <- .heterogeneous_inventory_apply_fill(
+        exchange, order, fill, timestamp,
+        force_margin = as.integer(order$asset_id[1L]) %in% as.integer(margin_asset_ids)
+      )
     } else {
+      reason_code <- as.character(fill$reason_code[1L])
+      # A one-leg explicit contract order has no prior provisional leg to
+      # roll back. Preserve its public contract-order rejection semantics
+      # rather than exposing the kernel's internal group implementation.
+      if (!isTRUE(order$target_derived[1L]) && identical(reason_code, "atomic_group_rejected")) {
+        reason_code <- "execution_rejected"
+      }
       .spot_mark_order_terminal(exchange, order$order_id[1L], as.character(fill$status),
-        as.character(fill$reason_code), .heterogeneous_inventory_message(as.character(fill$status), as.character(fill$reason_code)),
+        reason_code, .heterogeneous_inventory_message(as.character(fill$status), reason_code),
         timestamp, price = fill$price[1L], fee = fill$fee[1L], realized_pnl = fill$realized_pnl[1L])
     }
   }
@@ -811,9 +853,18 @@
     bond_actions <- .heterogeneous_portfolio_bond_actions(exchange, boundary_bars, boundary_timestamp)
     bond_schedules <- .bond_schedule_kernel_rows(exchange, boundary_bars, boundary_timestamp)
     for (agent_id in .heterogeneous_portfolio_agents(exchange, boundary_bars)) {
-      input <- .heterogeneous_portfolio_account_input(exchange, agent_id, boundary_bars)
       accepted <- .heterogeneous_portfolio_orders(exchange, agent_id, boundary_bars)
-      normalized <- .heterogeneous_portfolio_normalize_orders(exchange, accepted, boundary_bars)
+      target_margin_ids <- accepted[
+        target_derived %in% TRUE & !is.na(rebalance_id) &
+          asset_id %in% boundary_bars$asset_id,
+        unique(as.integer(asset_id))
+      ]
+      input <- .heterogeneous_portfolio_account_input(
+        exchange, agent_id, boundary_bars, margin_asset_ids = target_margin_ids
+      )
+      normalized <- .heterogeneous_portfolio_normalize_orders(
+        exchange, accepted, boundary_bars, margin_asset_ids = target_margin_ids
+      )
       asset_ids <- as.integer(boundary_bars$asset_id)
       cov <- .cross_asset_covariance(exchange, asset_ids)
       covariance <- data.table::as.data.table(as.data.frame(as.table(cov)))
@@ -849,7 +900,10 @@
       proposed$events <- data.table::as.data.table(proposed$events)
       .heterogeneous_portfolio_commit_state(exchange, agent_id, proposed)
       .heterogeneous_v2_record_state(exchange, agent_id, proposed, boundary_timestamp)
-      outcome_events <- .heterogeneous_portfolio_apply_outcomes(exchange, accepted, proposed, boundary_timestamp)
+      outcome_events <- .heterogeneous_portfolio_apply_outcomes(
+        exchange, accepted, proposed, boundary_timestamp,
+        margin_asset_ids = target_margin_ids
+      )
       variation_events <- .heterogeneous_portfolio_variation_events(exchange, agent_id, proposed, boundary_timestamp)
       if (nrow(variation_events)) {
         data.table::set(variation_events, j = "event_id", value = max(c(

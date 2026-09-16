@@ -132,6 +132,13 @@ sim_portfolio_execution_quality <- function(exchange, agent_id = NULL, summary =
     # the authoritative executable target for quality assessment.
     expected_signed_quantity <- .portfolio_quality_apply_fills(current_signed_quantity, fills)
   }
+  # A clipped target is an executed C++ quantity, even if a legacy zero-unit
+  # compatibility snapshot shares its settlement timestamp.  Replaying its
+  # durable fill action is safer than reporting that factual short/long fill
+  # as a flat realized position.
+  if (margin_clipped && any_filled && abs(realized_signed_quantity) <= qty_step / 2) {
+    realized_signed_quantity <- .portfolio_quality_apply_fills(current_signed_quantity, fills)
+  }
   settlement_price <- settlement_position$last_px
   if (!is.finite(settlement_price) && any_filled) settlement_price <- as.numeric(fills$price[nrow(fills)])
   if (!is.finite(settlement_price)) settlement_price <- decision_price
@@ -246,7 +253,18 @@ sim_portfolio_execution_quality <- function(exchange, agent_id = NULL, summary =
   positions <- list()
   accounts <- list()
   if (nrow(snapshots)) {
-    data.table::setorderv(snapshots, c("agent_id", "asset_id", "timestamp"))
+    # Compatibility inventory rows can coexist with a typed margin row for a
+    # target-derived margin leg on an equity/ETF symbol.  At one boundary the
+    # non-zero exposure is the authoritative position; do not let a zero-unit
+    # inventory projection overwrite it in execution-quality history.
+    snapshots[, .position_priority := abs(as.numeric(ctr_unit %||% 0))]
+    data.table::setorderv(
+      snapshots,
+      c("agent_id", "asset_id", "timestamp", ".position_priority"),
+      order = c(1L, 1L, 1L, -1L)
+    )
+    snapshots <- snapshots[, .SD[1L], by = .(agent_id, asset_id, timestamp)]
+    snapshots[, .position_priority := NULL]
     for (index in split(seq_len(nrow(snapshots)), .portfolio_quality_key(snapshots$agent_id, snapshots$asset_id))) {
       rows <- snapshots[index]
       positions[[.portfolio_quality_key(rows$agent_id[1L], rows$asset_id[1L])]] <- data.table::data.table(

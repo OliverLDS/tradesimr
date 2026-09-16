@@ -10,6 +10,9 @@ sim_calendar_is_open(timestamp, calendar_id = "ALWAYS_OPEN", exceptions = NULL)
 \item{timestamp}{POSIXct timestamps.}
 
 \item{calendar_id}{Built-in calendar identifier.}
+
+\item{exceptions}{Optional calendar-exception rows from
+\code{\link[=sim_exchange_calendar_exception]{sim_exchange_calendar_exception()}}.}
 }
 \value{
 A logical vector.
