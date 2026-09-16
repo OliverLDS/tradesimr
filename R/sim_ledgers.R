@@ -124,6 +124,13 @@ sim_cross_asset_risk <- function(exchange, stress_sigma = 2) {
       stress_loss = numeric()
     ))
   }
+  # A standalone `sim_backtest()` result has no exchange account identity.
+  # It is not an exchange-risk projection, even though it has position-shaped
+  # columns.  Preserve the historical empty result for that compatibility API.
+  if (!all(c("agent_id", "asset_id", "symbol") %in% names(positions)) ||
+      all(is.na(positions$agent_id) | !nzchar(as.character(positions$agent_id)))) {
+    return(sim_cross_asset_risk_empty())
+  }
   positions <- data.table::copy(positions)
   assets <- sim_assets(exchange)
   if (!"asset_id" %in% names(positions)) positions[, asset_id := NA_integer_]
@@ -132,8 +139,9 @@ sim_cross_asset_risk <- function(exchange, stress_sigma = 2) {
   } else {
     positions[, asset_class := NA_character_]
   }
-  positions <- positions[abs(as.numeric(ctr_unit)) > 0 | abs(as.numeric(notional)) > 0]
-  if (nrow(positions) == 0L) return(sim_cross_asset_risk_empty())
+  # Keep current zero-exposure snapshots.  They let a dashboard show a
+  # registered account's risk state at a boundary before its next-eligible
+  # order fills, without inventing an exposure for an account with no snapshot.
   account <- sim_exchange_account(exchange)
   latest_account <- if (nrow(account) > 0L && "agent_id" %in% names(account)) {
     account[, .SD[.N], by = agent_id]

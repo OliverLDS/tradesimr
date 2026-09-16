@@ -217,7 +217,7 @@ sim_exchange_calendarize_bars <- function(exchange, bars, strict = FALSE) {
     stop("Tradable bar falls outside its registered calendar session: ",
       paste(out$symbol[invalid], collapse = ", "), call. = FALSE)
   }
-  out[, is_tradable := (is_tradable %in% TRUE) & ..session_open]
+  out[, is_tradable := (is_tradable %in% TRUE) & session_open]
   out
 }
 

@@ -253,25 +253,40 @@ sim_portfolio_execution_quality <- function(exchange, agent_id = NULL, summary =
   positions <- list()
   accounts <- list()
   if (nrow(snapshots)) {
+    # Account-only exchange snapshots intentionally have no asset position.
+    # They participate in account equity history, but not in per-asset quality
+    # lookups or compatibility-position prioritization.
+    position_snapshots <- if ("asset_id" %in% names(snapshots)) {
+      snapshots[!is.na(asset_id)]
+    } else {
+      snapshots[0]
+    }
     # Compatibility inventory rows can coexist with a typed margin row for a
     # target-derived margin leg on an equity/ETF symbol.  At one boundary the
     # non-zero exposure is the authoritative position; do not let a zero-unit
     # inventory projection overwrite it in execution-quality history.
-    snapshots[, .position_priority := abs(as.numeric(ctr_unit %||% 0))]
-    data.table::setorderv(
-      snapshots,
-      c("agent_id", "asset_id", "timestamp", ".position_priority"),
-      order = c(1L, 1L, 1L, -1L)
-    )
-    snapshots <- snapshots[, .SD[1L], by = .(agent_id, asset_id, timestamp)]
-    snapshots[, .position_priority := NULL]
-    for (index in split(seq_len(nrow(snapshots)), .portfolio_quality_key(snapshots$agent_id, snapshots$asset_id))) {
-      rows <- snapshots[index]
-      positions[[.portfolio_quality_key(rows$agent_id[1L], rows$asset_id[1L])]] <- data.table::data.table(
-        timestamp = as.numeric(rows$timestamp),
-        signed_quantity = as.numeric(rows$pos_dir) * as.numeric(rows$ctr_unit),
-        last_px = as.numeric(rows$last_px)
+    if (nrow(position_snapshots)) {
+      for (column in c("ctr_unit", "pos_dir", "last_px")) {
+        if (!column %in% names(position_snapshots)) {
+          data.table::set(position_snapshots, j = column, value = 0)
+        }
+      }
+      position_snapshots[, .position_priority := abs(as.numeric(ctr_unit))]
+      data.table::setorderv(
+        position_snapshots,
+        c("agent_id", "asset_id", "timestamp", ".position_priority"),
+        order = c(1L, 1L, 1L, -1L)
       )
+      position_snapshots <- position_snapshots[, .SD[1L], by = .(agent_id, asset_id, timestamp)]
+      position_snapshots[, .position_priority := NULL]
+      for (index in split(seq_len(nrow(position_snapshots)), .portfolio_quality_key(position_snapshots$agent_id, position_snapshots$asset_id))) {
+        rows <- position_snapshots[index]
+        positions[[.portfolio_quality_key(rows$agent_id[1L], rows$asset_id[1L])]] <- data.table::data.table(
+          timestamp = as.numeric(rows$timestamp),
+          signed_quantity = as.numeric(rows$pos_dir) * as.numeric(rows$ctr_unit),
+          last_px = as.numeric(rows$last_px)
+        )
+      }
     }
     account_rows <- .aggregate_account_snapshots(sim_account(snapshots), latest = FALSE)
     data.table::setorderv(account_rows, c("agent_id", "timestamp"))

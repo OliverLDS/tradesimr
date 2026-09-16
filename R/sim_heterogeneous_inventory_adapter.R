@@ -53,7 +53,10 @@
     portfolio_margin_floor = as.numeric(exchange$config$portfolio_margin_floor %||% exchange$config$mmr %||% 0.02),
     old_timestamp = old_timestamp, slippage = as.numeric(exchange$config$slippage %||% 0),
     spread = as.numeric(exchange$config$spread %||% 0), rec = TRUE,
-    settle_variation_margin = TRUE
+    # Generic legacy assets use derivative position accounting for backwards
+    # compatibility, but they are not exchange-traded futures.  Restrict daily
+    # cash variation settlement to the explicit futures profile.
+    settle_variation_margin = all(as.character(specs$instrument_profile) == "future")
   )
   heterogeneous_account_step_rcpp(
     .profile_base_currency(exchange),
@@ -145,11 +148,29 @@
     asset_index <- match(as.integer(row$asset_id), exchange$assets$asset_id)
     if (is.na(asset_index)) stop("Missing registered asset specification for derivative state commit.", call. = FALSE)
     .ensure_agent_account(exchange, agent_id, row$asset_id, exchange$assets$symbol[asset_index])
-    exchange$agent_states[[.agent_state_key(agent_id, row$asset_id)]] <- sim_state(
+    compatibility_state <- sim_state(
       cash = .shared_cash(exchange, agent_id), pos_dir = sign(row$signed_units), ctr_unit = abs(row$signed_units),
       avg_price = row$settlement_price, last_px = row$last_price, asset = row$asset_id,
       old_timestamp = as.numeric(timestamp)
     )
+    # Generic margin products retain floating P&L between fills. Futures have
+    # their reference price reset by authoritative variation settlement, so the
+    # same calculation correctly becomes zero after settlement.
+    signed_units <- as.numeric(row$signed_units %||% 0)
+    contract_size <- as.numeric(row$contract_size %||% 1)
+    last_price <- as.numeric(row$last_price %||% 0)
+    settlement_price <- as.numeric(row$settlement_price %||% NA_real_)
+    if (!is.finite(last_price)) last_price <- 0
+    if (!is.finite(settlement_price)) settlement_price <- last_price
+    compatibility_state$unrealized_pnl <- signed_units *
+      (last_price - settlement_price) *
+      contract_size
+    compatibility_state$notional <- signed_units * last_price * contract_size
+    compatibility_state$abs_notional <- abs(compatibility_state$notional)
+    compatibility_state$maintenance_margin <- abs(compatibility_state$notional) *
+      as.numeric(row$maintenance_rate %||% exchange$config$mmr %||% 0.02)
+    compatibility_state$equity <- as.numeric(compatibility_state$cash) + compatibility_state$unrealized_pnl
+    exchange$agent_states[[.agent_state_key(agent_id, row$asset_id)]] <- compatibility_state
   }
   exchange$agent_accounts[[as.character(agent_id)]]$liquidated <- isTRUE(proposed$liquidated)
   if (.exchange_uses_heterogeneous_v2(exchange)) {
@@ -665,8 +686,8 @@
   replace_rows <- function(table_name, rows, key_columns) {
     if (!nrow(rows)) return(invisible(NULL))
     current <- exchange[[table_name]]
-    key <- do.call(paste, c(current[, ..key_columns], sep = "\r"))
-    replacement_key <- do.call(paste, c(rows[, ..key_columns], sep = "\r"))
+    key <- do.call(paste, c(current[, key_columns, with = FALSE], sep = "\r"))
+    replacement_key <- do.call(paste, c(rows[, key_columns, with = FALSE], sep = "\r"))
     exchange[[table_name]] <- data.table::rbindlist(list(current[!key %in% replacement_key], rows), fill = TRUE)
     if ("timestamp" %in% names(exchange[[table_name]])) {
       data.table::set(exchange[[table_name]], j = "timestamp",
@@ -853,10 +874,18 @@
     bond_actions <- .heterogeneous_portfolio_bond_actions(exchange, boundary_bars, boundary_timestamp)
     bond_schedules <- .bond_schedule_kernel_rows(exchange, boundary_bars, boundary_timestamp)
     for (agent_id in .heterogeneous_portfolio_agents(exchange, boundary_bars)) {
+      requested_agent_id <- as.character(agent_id)
       accepted <- .heterogeneous_portfolio_orders(exchange, agent_id, boundary_bars)
+      existing_margin_ids <- unique(c(
+        as.integer((exchange$typed_margin_positions %||% data.table::data.table())[agent_id == requested_agent_id, asset_id]),
+        as.integer((exchange$margin_positions %||% data.table::data.table())[agent_id == requested_agent_id, asset_id])
+      ))
       target_margin_ids <- accepted[
         target_derived %in% TRUE & !is.na(rebalance_id) &
-          asset_id %in% boundary_bars$asset_id,
+          asset_id %in% boundary_bars$asset_id &
+          (asset_id %in% existing_margin_ids |
+            intended_dir == "short" |
+            !vapply(asset_id, function(id) .asset_uses_spot_inventory(exchange, id), logical(1L))),
         unique(as.integer(asset_id))
       ]
       input <- .heterogeneous_portfolio_account_input(

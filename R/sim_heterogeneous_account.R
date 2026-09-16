@@ -49,7 +49,7 @@ sim_heterogeneous_order_batch_schema <- function() {
     stop("Rows belonging to an atomic group must be contiguous in the normalized batch.", call. = FALSE)
   }
   schema_columns <- names(sim_heterogeneous_order_batch_schema())
-  orders[, ..schema_columns]
+  orders[, schema_columns, with = FALSE]
 }
 
 #' Step a heterogeneous profile-aware account kernel

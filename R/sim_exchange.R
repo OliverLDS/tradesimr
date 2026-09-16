@@ -603,8 +603,25 @@ sim_exchange_step <- function(exchange, bars) {
         has_order <- state_key %in% boundary_index$accepted_order_keys
         has_state || has_order
       }, logical(1L))
+      idle_batch <- agent_batch[!state_or_order]
       agent_batch <- agent_batch[state_or_order]
-      if (nrow(agent_batch) == 0L) next
+      if (nrow(agent_batch) == 0L) {
+        # An explicitly registered agent is an account even before its first
+        # order. Materialize an account-only row rather than inventing a
+        # zero-position state for an arbitrary asset. This preserves service
+        # equity history without polluting portfolio position projections.
+        idle_snapshot <- .shared_accounts_snapshot(
+          exchange, idle_batch$timestamp[1L]
+        )[agent_id == requested_agent_id]
+        # Use an empty string rather than a nullable symbol in this CSV-facing
+        # account-only projection, preserving import/export round trips.
+        idle_snapshot[, `:=`(
+          symbol = "", accounting_model = "account_only", pos_dir = 0L,
+          ctr_unit = 0, avg_price = 0, last_px = 0
+        )]
+        step_results[[length(step_results) + 1L]] <- idle_snapshot
+        next
+      }
       orders_all <- list()
       for (i in seq_len(nrow(agent_batch))) {
         asset <- .bar_asset_key(agent_batch[i])
@@ -704,6 +721,11 @@ sim_exchange_step <- function(exchange, bars) {
   data.table::setattr(exchange$result, "orders", sim_orders(exchange$step_events))
   exchange$last_events <- exchange$step_events
   exchange$last_bar_count <- nrow(exchange$market_events)
+  # `step_state` remains a legacy single-account projection.  Keep it derived
+  # from the typed v2 state for callers using the historical one-asset API.
+  if (length(exchange$agent_states %||% list()) == 1L) {
+    exchange$step_state <- exchange$agent_states[[1L]]
+  }
   .sim_profile_add(exchange, "durable_append_bind", append_started)
   .sim_profile_add(exchange, "order_fill_event_ledger_writes", append_started)
   exchange$result
@@ -781,6 +803,12 @@ sim_exchange_positions <- function(exchange) {
   }
   positions <- sim_positions(exchange$result)
   if (nrow(positions) == 0L) return(positions)
+  # Account-only snapshots represent an active but not-yet-invested account;
+  # they are intentionally not position rows.
+  if ("asset_id" %in% names(positions)) {
+    positions <- positions[!is.na(asset_id)]
+    if (nrow(positions) == 0L) return(positions)
+  }
   if (all(c("agent_id", "asset_id") %in% names(positions))) {
     keep <- mapply(
       function(agent_id, asset_id) .portfolio_agent_asset_allowed(exchange, agent_id, asset_id),
@@ -902,6 +930,24 @@ sim_exchange_load <- function(path) {
     }
     exchange$step_events <- exchange$last_events
     exchange$step_snapshots <- if (!is.null(imported$simulation)) imported$simulation else data.table::data.table()
+    if (nrow(exchange$step_snapshots) && "asset_id" %in% names(exchange$step_snapshots)) {
+      account_only <- is.na(exchange$step_snapshots$asset_id)
+      if (any(account_only)) {
+        # `fread()` converts an all-empty CSV field to NA. Restore the durable
+        # account-only snapshot projection emitted by the v2 exchange route.
+        if ("symbol" %in% names(exchange$step_snapshots)) {
+          data.table::set(exchange$step_snapshots, i = which(account_only), j = "symbol", value = "")
+        }
+        if ("accounting_model" %in% names(exchange$step_snapshots)) {
+          data.table::set(exchange$step_snapshots, i = which(account_only), j = "accounting_model", value = "account_only")
+        }
+        for (column in c("pos_dir", "ctr_unit", "avg_price", "last_px")) {
+          if (column %in% names(exchange$step_snapshots)) {
+            data.table::set(exchange$step_snapshots, i = which(account_only), j = column, value = 0)
+          }
+        }
+      }
+    }
     if (!is.null(imported$simulation) && nrow(imported$simulation) > 0L) {
       last <- imported$simulation[nrow(imported$simulation)]
       exchange$step_state <- sim_state(
@@ -1139,6 +1185,9 @@ sim_exchange_load <- function(path) {
     if (nrow(exchange$step_snapshots) > 0L && "agent_id" %in% names(exchange$step_snapshots)) {
       by_cols <- intersect(c("agent_id", "asset_id"), names(exchange$step_snapshots))
       latest <- exchange$step_snapshots[order(timestamp), .SD[.N], by = by_cols]
+      # Account-only history rows have no asset identity and are intentionally
+      # excluded from reconstructing compatibility position state.
+      if ("asset_id" %in% names(latest)) latest <- latest[!is.na(asset_id)]
       for (i in seq_len(nrow(latest))) {
         asset_id <- as.integer(latest$asset_id[i] %||% 0L)
         symbol <- as.character(latest$symbol[i] %||% paste0("asset-", asset_id))
