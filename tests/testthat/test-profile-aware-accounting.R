@@ -189,6 +189,39 @@ test_that("bond schedules survive load and settle coupon then redemption through
   expect_true(any(resumed$account_events$event_type == "redemption"))
 })
 
+test_that("v2 bond schedule replay preserves sparse-boundary accrual through load", {
+  exchange <- sim_exchange_new(list(cash = 1000, base_currency = "USD", portfolio_margin = TRUE,
+    execution_engine = "heterogeneous_v2"))
+  sim_asset_add(exchange, "NOTE", asset_id = 11L, instrument_profile = "bond", quote_ccy = "USD")
+  issue <- as.POSIXct("2025-01-01", tz = "UTC")
+  maturity <- issue + 365 * 86400
+  sim_bond_schedule_add(exchange, "NOTE", coupon_rate = .1, coupon_frequency = 2,
+    issue_timestamp = issue, maturity_timestamp = maturity, face_value = 100)
+  bar <- data.frame(timestamp = issue, symbol = "NOTE", asset_id = 11L,
+    open = 100, high = 101, low = 99, close = 100)
+  sim_portfolio_market_step(exchange, bar)
+  sim_spot_target_submit(exchange, "alice", bar, c(NOTE = 1))
+  sim_portfolio_market_step(exchange, transform(bar, timestamp = timestamp + 86400))
+
+  sparse_boundary <- issue + 365 * 86400 * 3 / 4
+  sim_portfolio_market_step(exchange, transform(bar, timestamp = sparse_boundary))
+  # The fixed schedule pays the contractual first coupon; the remaining
+  # quarter-period is carried as accrued interest after that coupon boundary.
+  accrued <- 25
+  expect_equal(exchange$cash_balances[agent_id == "alice" & currency == "USD", settled], 50)
+  expect_equal(exchange$inventory_positions[agent_id == "alice" & asset_id == 11L, accrued_interest], accrued)
+  expect_equal(sim_exchange_account_state(exchange, "alice")$account$equity, 1050 + accrued)
+
+  path <- tempfile("tradesimr-sparse-bond-")
+  sim_exchange_save(exchange, path)
+  resumed <- sim_exchange_load(path)
+  expect_equal(resumed$inventory_positions[agent_id == "alice" & asset_id == 11L, accrued_interest], accrued)
+  sim_portfolio_market_step(resumed, transform(bar, timestamp = maturity))
+  expect_equal(resumed$cash_balances[agent_id == "alice" & currency == "USD", settled], 1100)
+  expect_equal(resumed$inventory_positions[agent_id == "alice" & asset_id == 11L, units], 0)
+  expect_identical(resumed$bond_schedules$status, "matured")
+})
+
 test_that("spot target submission plans atomically and executes only after its decision bar", {
   exchange <- sim_exchange_new(list(cash = 1000))
   sim_asset_add(exchange, "SPY", asset_id = 1L, instrument_profile = "etf", quote_ccy = "USD", qty_step = 1)
