@@ -1224,6 +1224,7 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
   Rcpp::NumericVector inventory_cost = has_inventory ? Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(inventory_positions["average_cost"])) : Rcpp::NumericVector();
   Rcpp::NumericVector inventory_last = has_inventory ? Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(inventory_positions["last_price"])) : Rcpp::NumericVector();
   Rcpp::NumericVector inventory_size = has_inventory ? Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(inventory_positions["contract_size"])) : Rcpp::NumericVector();
+  Rcpp::NumericVector inventory_accrued = has_inventory && inventory_positions.containsElementNamed("accrued_interest") ? Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(inventory_positions["accrued_interest"])) : Rcpp::NumericVector(inventory_asset.size(), 0.0);
   Rcpp::IntegerVector margin_asset = Rcpp::clone(Rcpp::as<Rcpp::IntegerVector>(margin_positions["asset_id"]));
   Rcpp::CharacterVector margin_ccy = Rcpp::clone(Rcpp::as<Rcpp::CharacterVector>(margin_positions["currency"]));
   Rcpp::NumericVector margin_units = Rcpp::clone(Rcpp::as<Rcpp::NumericVector>(margin_positions["signed_units"]));
@@ -1266,7 +1267,7 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
   auto unified_equity = [&]() {
     double value = 0.0;
     for (R_xlen_t i = 0; i < cash_ccy.size(); ++i) value += (cash_settled[i] + cash_unsettled[i]) * rate_for(Rcpp::as<std::string>(cash_ccy[i]));
-    for (R_xlen_t i = 0; i < inventory_asset.size(); ++i) value += inventory_units[i] * inventory_last[i] * inventory_size[i] * rate_for(Rcpp::as<std::string>(inventory_ccy[i]));
+    for (R_xlen_t i = 0; i < inventory_asset.size(); ++i) value += (inventory_units[i] * inventory_last[i] * inventory_size[i] + inventory_accrued[i]) * rate_for(Rcpp::as<std::string>(inventory_ccy[i]));
     for (R_xlen_t i = 0; i < margin_asset.size(); ++i) {
       const double settle = std::isfinite(margin_settle[i]) ? margin_settle[i] : margin_last[i];
       value += margin_units[i] * (margin_last[i] - settle) * margin_size[i] * rate_for(Rcpp::as<std::string>(margin_ccy[i]));
@@ -1359,11 +1360,17 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
         Rcpp::stop("Every corporate-action currency requires a cash balance row.");
       }
       const double units = inventory_units[pi];
-      const double amount = units * action_amount[ai] * inventory_size[pi];
-      cash_settled[ci] += amount;
-      if (type == "redemption") {
-        inventory_units[pi] = 0.0;
-        inventory_cost[pi] = NA_REAL;
+      double amount = units * action_amount[ai] * inventory_size[pi];
+      if (type == "bond_accrual") {
+        inventory_accrued[pi] += amount;
+      } else {
+        if (type == "redemption") amount += inventory_accrued[pi];
+        cash_settled[ci] += amount;
+        if (type == "redemption") {
+          inventory_units[pi] = 0.0;
+          inventory_cost[pi] = NA_REAL;
+          inventory_accrued[pi] = 0.0;
+        }
       }
       if (std::abs(amount) > 1e-12 || (type == "redemption" && std::abs(units) > 1e-12)) {
         event_amount.push_back(amount);
@@ -1371,7 +1378,7 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
         event_ccy.push_back(ccy);
         event_settlement.push_back(std::isfinite(inventory_last[pi]) ? inventory_last[pi] : NA_REAL);
         event_type_label.push_back(type == "coupon" ? "bond_coupon" : type);
-        event_cash_effect.push_back(1);
+        event_cash_effect.push_back(type == "bond_accrual" ? 0 : 1);
       }
     }
   }
@@ -1412,6 +1419,7 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
         const double accrued = inventory_units[pi] * inventory_size[pi] * face_value[si] * coupon_rate[si] *
           ((cutoff - last_accrual[si]) / (86400.0 * denominator));
         if (std::abs(accrued) > 1e-12) {
+          inventory_accrued[pi] += accrued;
           event_amount.push_back(accrued); event_asset.push_back(schedule_asset[si]); event_ccy.push_back(ccy);
           event_settlement.push_back(std::isfinite(inventory_last[pi]) ? inventory_last[pi] : NA_REAL);
           event_type_label.push_back("bond_accrual"); event_cash_effect.push_back(0);
@@ -1422,15 +1430,16 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
       while (std::isfinite(due) && due <= cutoff + 1e-8) {
         const double coupon = inventory_units[pi] * inventory_size[pi] * face_value[si] * coupon_rate[si] / coupon_frequency[si];
         cash_settled[ci] += coupon;
+        inventory_accrued[pi] = 0.0;
         event_amount.push_back(coupon); event_asset.push_back(schedule_asset[si]); event_ccy.push_back(ccy);
         event_settlement.push_back(std::isfinite(inventory_last[pi]) ? inventory_last[pi] : NA_REAL);
         event_type_label.push_back("bond_coupon"); event_cash_effect.push_back(1);
         due += period;
       }
       if (std::isfinite(maturity[si]) && timestamp >= maturity[si] && std::abs(inventory_units[pi]) > 1e-12) {
-        const double redemption = inventory_units[pi] * inventory_size[pi] * face_value[si];
+        const double redemption = inventory_units[pi] * inventory_size[pi] * face_value[si] + inventory_accrued[pi];
         cash_settled[ci] += redemption;
-        inventory_units[pi] = 0.0; inventory_cost[pi] = NA_REAL;
+        inventory_units[pi] = 0.0; inventory_cost[pi] = NA_REAL; inventory_accrued[pi] = 0.0;
         event_amount.push_back(redemption); event_asset.push_back(schedule_asset[si]); event_ccy.push_back(ccy);
         event_settlement.push_back(std::isfinite(inventory_last[pi]) ? inventory_last[pi] : NA_REAL);
         event_type_label.push_back("redemption"); event_cash_effect.push_back(1);
@@ -1471,6 +1480,7 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
     Rcpp::NumericVector group_inventory_units;
     Rcpp::NumericVector group_inventory_cost;
     Rcpp::NumericVector group_inventory_last;
+    Rcpp::NumericVector group_inventory_accrued;
     Rcpp::NumericVector group_margin_units;
     Rcpp::NumericVector group_margin_settle;
     Rcpp::NumericVector group_margin_last;
@@ -1484,6 +1494,7 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
         group_inventory_units = Rcpp::clone(inventory_units);
         group_inventory_cost = Rcpp::clone(inventory_cost);
         group_inventory_last = Rcpp::clone(inventory_last);
+        group_inventory_accrued = Rcpp::clone(inventory_accrued);
         group_margin_units = Rcpp::clone(margin_units);
         group_margin_settle = Rcpp::clone(margin_settle);
         group_margin_last = Rcpp::clone(margin_last);
@@ -1556,6 +1567,7 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
           if (tif == "fok") {
             cash_settled = group_cash; inventory_units = group_inventory_units;
             inventory_cost = group_inventory_cost; inventory_last = group_inventory_last;
+            inventory_accrued = group_inventory_accrued;
             margin_units = group_margin_units; margin_settle = group_margin_settle; margin_last = group_margin_last;
             for (R_xlen_t fi = group_fill_start; fi < static_cast<R_xlen_t>(fill_status.size()); ++fi) {
               fill_status[fi] = "rejected"; fill_reason[fi] = "atomic_group_rejected";
@@ -1608,7 +1620,7 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
               realized = (px - inventory_cost[pi]) * units * inventory_size[pi] - fee;
               cash_settled[ci] += notional - fee;
               inventory_units[pi] -= units;
-              if (inventory_units[pi] <= 1e-12) { inventory_units[pi] = 0.0; inventory_cost[pi] = NA_REAL; }
+              if (inventory_units[pi] <= 1e-12) { inventory_units[pi] = 0.0; inventory_cost[pi] = NA_REAL; inventory_accrued[pi] = 0.0; }
               status = "filled"; reason = "filled"; executed_qty = units;
             }
           }
@@ -1706,6 +1718,7 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
         inventory_units = group_inventory_units;
         inventory_cost = group_inventory_cost;
         inventory_last = group_inventory_last;
+        inventory_accrued = group_inventory_accrued;
         margin_units = group_margin_units;
         margin_settle = group_margin_settle;
         margin_last = group_margin_last;
@@ -1780,6 +1793,7 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
     position.asset_id = inventory_asset[i]; position.currency = Rcpp::as<std::string>(inventory_ccy[i]);
     position.units = inventory_units[i]; position.average_cost = inventory_cost[i];
     position.last_price = inventory_last[i]; position.contract_size = inventory_size[i];
+    position.accrued_interest = inventory_accrued[i];
     equity += inventory_value(position) * rate_for(position.currency);
   }
   for (R_xlen_t i = 0; i < margin_asset.size(); ++i) {
@@ -1787,7 +1801,7 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
   }
   const bool liquidated = !std::isfinite(equity) || equity < maintenance;
   Rcpp::DataFrame cash_out = Rcpp::DataFrame::create(Rcpp::Named("currency") = cash_ccy, Rcpp::Named("settled") = cash_settled, Rcpp::Named("unsettled") = cash_unsettled);
-  Rcpp::DataFrame inventory_out = Rcpp::DataFrame::create(Rcpp::Named("asset_id") = inventory_asset, Rcpp::Named("currency") = inventory_ccy, Rcpp::Named("units") = inventory_units, Rcpp::Named("average_cost") = inventory_cost, Rcpp::Named("last_price") = inventory_last, Rcpp::Named("contract_size") = inventory_size);
+  Rcpp::DataFrame inventory_out = Rcpp::DataFrame::create(Rcpp::Named("asset_id") = inventory_asset, Rcpp::Named("currency") = inventory_ccy, Rcpp::Named("units") = inventory_units, Rcpp::Named("average_cost") = inventory_cost, Rcpp::Named("last_price") = inventory_last, Rcpp::Named("contract_size") = inventory_size, Rcpp::Named("accrued_interest") = inventory_accrued);
   Rcpp::DataFrame margin_out = Rcpp::DataFrame::create(Rcpp::Named("asset_id") = margin_asset, Rcpp::Named("currency") = margin_ccy, Rcpp::Named("signed_units") = margin_units, Rcpp::Named("settlement_price") = margin_settle, Rcpp::Named("last_price") = margin_last, Rcpp::Named("contract_size") = margin_size, Rcpp::Named("maintenance_rate") = margin_mmr);
   Rcpp::LogicalVector event_cash_effect_out(event_cash_effect.size());
   for (R_xlen_t i = 0; i < event_cash_effect_out.size(); ++i) event_cash_effect_out[i] = event_cash_effect[i] == 1;

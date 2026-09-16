@@ -21,6 +21,7 @@ struct InventoryPosition {
   double average_cost = std::numeric_limits<double>::quiet_NaN();
   double last_price = std::numeric_limits<double>::quiet_NaN();
   double contract_size = 1.0;
+  double accrued_interest = 0.0;
 };
 
 struct MarginPosition {
@@ -34,7 +35,7 @@ struct MarginPosition {
 };
 
 inline double inventory_value(const InventoryPosition& p) {
-  return p.units * p.last_price * p.contract_size;
+  return p.units * p.last_price * p.contract_size + p.accrued_interest;
 }
 
 inline double margin_notional(const MarginPosition& p) {

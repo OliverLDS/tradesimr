@@ -197,13 +197,14 @@
       units = as.numeric(state$units %||% 0),
       average_cost = as.numeric(state$avg_cost %||% NA_real_),
       last_price = as.numeric(state$last_price %||% NA_real_),
-      contract_size = as.numeric(spec$contract_size[1L] %||% 1)
+      contract_size = as.numeric(spec$contract_size[1L] %||% 1),
+      accrued_interest = as.numeric(state$accrued_interest %||% 0)
     )
   })
   inventory <- data.table::rbindlist(states, fill = TRUE)
   if (!nrow(inventory)) inventory <- data.table::data.table(
     asset_id = integer(), currency = character(), units = numeric(),
-    average_cost = numeric(), last_price = numeric(), contract_size = numeric()
+    average_cost = numeric(), last_price = numeric(), contract_size = numeric(), accrued_interest = numeric()
   )
   balances <- sim_exchange_cash_balances(exchange, agent_id)
   currencies <- unique(c(.profile_base_currency(exchange), balances$currency, inventory$currency))
@@ -265,6 +266,7 @@
     state$units <- as.numeric(row$units)
     state$avg_cost <- as.numeric(row$average_cost)
     state$last_price <- as.numeric(row$last_price)
+    state$accrued_interest <- as.numeric(row$accrued_interest %||% 0)
     state$currency <- .profile_currency(exchange, row$currency)
     exchange$spot_states[[key]] <- state
   }
@@ -461,13 +463,28 @@
     data.table::data.table(
       asset_id = parsed$asset_id, currency = .profile_currency(exchange, state$currency %||% spec$quote_ccy[1L]),
       units = as.numeric(state$units %||% 0), average_cost = as.numeric(state$avg_cost %||% NA_real_),
-      last_price = as.numeric(state$last_price %||% NA_real_), contract_size = as.numeric(spec$contract_size[1L])
+      last_price = as.numeric(state$last_price %||% NA_real_), contract_size = as.numeric(spec$contract_size[1L]),
+      accrued_interest = as.numeric(state$accrued_interest %||% 0)
     )
   }), fill = TRUE)
   if (!ncol(inventory)) inventory <- data.table::data.table(
     asset_id = integer(), currency = character(), units = numeric(), average_cost = numeric(),
-    last_price = numeric(), contract_size = numeric()
+    last_price = numeric(), contract_size = numeric(), accrued_interest = numeric()
   )
+  # The typed table is the durable source after save/load. Keep any zero-value
+  # compatibility rows, but replace active assets with their typed balances.
+  if (.exchange_uses_heterogeneous_v2(exchange) && nrow(exchange$inventory_positions %||% data.table::data.table())) {
+    typed_inventory <- data.table::copy(exchange$inventory_positions[
+      agent_id == as.character(agent_id) & asset_id %in% as.integer(bars$asset_id),
+      .(asset_id, currency, units, average_cost, last_price, contract_size, accrued_interest)
+    ])
+    if (nrow(typed_inventory)) {
+      if (!"accrued_interest" %in% names(typed_inventory)) typed_inventory[, accrued_interest := 0]
+      inventory <- data.table::rbindlist(list(
+        inventory[!asset_id %in% typed_inventory$asset_id], typed_inventory
+      ), fill = TRUE)
+    }
+  }
   # `margin_positions` is the authoritative derivatives input.  The legacy
   # `agent_states` list is only a compatibility projection for older callers.
   derivative_bars <- bars[!vapply(as.integer(asset_id), function(asset_id) {

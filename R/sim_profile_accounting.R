@@ -152,8 +152,9 @@ sim_exchange_account_state <- function(exchange, agent_id = NULL) {
     cash[, `:=`(settled_base = numeric(), unsettled_base = numeric(), total_base = numeric())]
   }
   if (nrow(inventory)) {
+    if (!"accrued_interest" %in% names(inventory)) inventory[, accrued_interest := 0]
     inventory[, `:=`(
-      market_value = units * last_price * contract_size,
+      market_value = units * last_price * contract_size + accrued_interest,
       unrealized_pnl = (last_price - average_cost) * units * contract_size
     )]
     inventory[, `:=`(
@@ -161,7 +162,7 @@ sim_exchange_account_state <- function(exchange, agent_id = NULL) {
       unrealized_pnl_base = vapply(seq_len(.N), function(i) .profile_to_base(exchange, unrealized_pnl[i], currency[i]), numeric(1L))
     )]
   } else {
-    inventory[, `:=`(market_value = numeric(), unrealized_pnl = numeric(),
+    inventory[, `:=`(accrued_interest = numeric(), market_value = numeric(), unrealized_pnl = numeric(),
       market_value_base = numeric(), unrealized_pnl_base = numeric())]
   }
   if (nrow(margin)) {

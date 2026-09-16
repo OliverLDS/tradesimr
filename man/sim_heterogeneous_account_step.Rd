@@ -39,8 +39,9 @@ bond lifecycle rows use \code{asset_id}, \code{action_type} (\code{coupon},
 \code{effective_timestamp}; they mutate settled cash and emit typed events at
 the eligible account boundary. Calendar rows use \code{schedule_type = "bond"}
 with coupon, accrual-cursor, and maturity fields from
-\code{\link[=sim_bond_schedule_add]{sim_bond_schedule_add()}}. C++ emits non-cash accrual events, settles due
-coupons, and redeems inventory at maturity.}
+\code{\link[=sim_bond_schedule_add]{sim_bond_schedule_add()}}. C++ carries accrued interest on the typed
+inventory position, emits non-cash accrual events, settles due coupons,
+and redeems inventory at maturity.}
 
 \item{orders}{A normalized heterogeneous order batch.}
 

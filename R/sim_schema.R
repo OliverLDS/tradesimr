@@ -22,7 +22,8 @@ sim_schemas <- function() {
     inventory_positions = data.table::data.table(
       agent_id = character(), asset_id = integer(), symbol = character(),
       currency = character(), units = numeric(), average_cost = numeric(),
-      last_price = numeric(), contract_size = numeric(), timestamp = as.POSIXct(character())
+      last_price = numeric(), contract_size = numeric(), accrued_interest = numeric(),
+      timestamp = as.POSIXct(character())
     ),
     margin_positions = data.table::data.table(
       agent_id = character(), asset_id = integer(), symbol = character(),

@@ -45,6 +45,9 @@ current git history; `v0.9.0` follows `v0.7.0`.
 - The live state service and dashboard now expose the typed account projection
   directly: base-currency account totals, settled/unsettled cash by currency,
   inventory and margin positions, lifecycle events, and bond schedule cursors.
+- Bond schedule accrual is now an authoritative typed inventory receivable:
+  it contributes to base-currency account equity before coupon payment, is
+  reset when a coupon settles, and is included in maturity redemption.
 
 ### Validation
 

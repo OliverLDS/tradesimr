@@ -58,7 +58,8 @@ test_that("heterogeneous account kernel books explicit bond lifecycle actions", 
   expect_equal(out$inventory_positions$units, 0)
   expect_true(is.na(out$inventory_positions$average_cost))
   expect_identical(out$events$event_type, c("bond_coupon", "bond_accrual", "redemption"))
-  expect_equal(out$events$amount, c(20, 10, 1000))
+  expect_equal(out$events$amount, c(20, 10, 1010))
+  expect_equal(out$events$cash_effect, c(TRUE, FALSE, TRUE))
 })
 
 test_that("heterogeneous account kernel evaluates a fixed ACT bond schedule", {
@@ -82,6 +83,30 @@ test_that("heterogeneous account kernel evaluates a fixed ACT bond schedule", {
   expect_identical(out$events$event_type, c("bond_accrual", "bond_coupon"))
   expect_identical(out$events$cash_effect, c(FALSE, TRUE))
   expect_equal(out$events$amount, c(50, 50))
+})
+
+test_that("bond accrual is a durable inventory receivable before coupon settlement", {
+  issue <- as.POSIXct("2025-01-01", tz = "UTC")
+  accrual_boundary <- issue + 90 * 86400
+  out <- sim_heterogeneous_account_step(
+    "USD", data.frame(currency = "USD", settled = 1000, unsettled = 0),
+    data.frame(asset_id = 12L, currency = "USD", units = 10, average_cost = 100,
+      last_price = 100, contract_size = 1),
+    data.frame(asset_id = integer(), currency = character(), signed_units = numeric(),
+      settlement_price = numeric(), last_price = numeric(), contract_size = numeric(), maintenance_rate = numeric()),
+    data.frame(asset_id = 12L, close = 100, instrument_profile = "bond"),
+    data.frame(currency = "USD", rate_to_base = 1),
+    corporate_actions = data.frame(asset_id = 12L, schedule_type = "bond", currency = "USD",
+      coupon_rate = .1, coupon_frequency = 2, face_value = 100, accrual_day_count = 365,
+      last_accrual_timestamp = as.numeric(issue), next_coupon_timestamp = as.numeric(issue + 365 * 86400 / 2),
+      maturity_timestamp = as.numeric(issue + 365 * 86400)),
+    timestamp = accrual_boundary
+  )
+  accrued <- 1000 * .1 * 90 / 365
+  expect_equal(out$cash_balances$settled, 1000)
+  expect_equal(out$inventory_positions$accrued_interest, accrued)
+  expect_equal(out$equity, 2000 + accrued)
+  expect_identical(out$events$cash_effect, FALSE)
 })
 
 test_that("heterogeneous account kernel executes profile-tagged spot and futures orders", {

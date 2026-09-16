@@ -164,16 +164,25 @@ test_that("bond schedules survive load and settle coupon then redemption through
   sim_portfolio_market_step(exchange, bar)
   sim_spot_target_submit(exchange, "alice", bar, c(NOTE = 1))
   sim_portfolio_market_step(exchange, transform(bar, timestamp = timestamp + 86400))
-  coupon_boundary <- issue + 365 * 86400 / 2
-  sim_portfolio_market_step(exchange, transform(bar, timestamp = coupon_boundary))
-  expect_equal(exchange$cash_balances[agent_id == "alice" & currency == "USD", settled], 50)
-  expect_true(any(exchange$account_events$event_type == "bond_accrual"))
-  expect_true(any(exchange$profile_cash_ledger$event_type == "bond_coupon"))
+  accrual_boundary <- issue + 90 * 86400
+  sim_portfolio_market_step(exchange, transform(bar, timestamp = accrual_boundary))
+  # The bond was acquired on the next eligible bar, so it accrues from that
+  # execution boundary rather than from the issue bar.
+  accrued <- 1000 * .1 * 89 / 365
+  expect_equal(exchange$inventory_positions[agent_id == "alice" & asset_id == 10L, accrued_interest], accrued)
+  expect_equal(sim_exchange_account_state(exchange, "alice")$account$equity, 1000 + accrued)
   path <- tempfile("tradesimr-bond-schedule-")
   sim_exchange_save(exchange, path)
   resumed <- sim_exchange_load(path)
+  expect_equal(resumed$inventory_positions[agent_id == "alice" & asset_id == 10L, accrued_interest], accrued)
+  coupon_boundary <- issue + 365 * 86400 / 2
+  sim_portfolio_market_step(resumed, transform(bar, timestamp = coupon_boundary))
+  expect_equal(resumed$cash_balances[agent_id == "alice" & currency == "USD", settled], 50)
+  expect_equal(resumed$inventory_positions[agent_id == "alice" & asset_id == 10L, accrued_interest], 0)
+  expect_true(any(resumed$account_events$event_type == "bond_accrual"))
+  expect_true(any(resumed$profile_cash_ledger$event_type == "bond_coupon"))
   expect_equal(as.numeric(resumed$bond_schedules$next_coupon_timestamp),
-    as.numeric(exchange$bond_schedules$next_coupon_timestamp))
+    as.numeric(coupon_boundary + 365 * 86400 / 2))
   sim_portfolio_market_step(resumed, transform(bar, timestamp = maturity))
   expect_identical(resumed$bond_schedules$status, "matured")
   expect_equal(resumed$inventory_positions[agent_id == "alice" & asset_id == 10L, units], 0)
