@@ -311,6 +311,14 @@
     state$currency <- .profile_currency(exchange, row$currency)
     exchange$spot_states[[key]] <- state
   }
+  # Keep the typed v2 ledger authoritative even for an inventory-only boundary.
+  # Fill and account events are persisted by the normal adapter outcome path;
+  # avoid recording those event rows twice while projecting only state here.
+  typed_state <- proposed
+  typed_state$account_events <- sim_schemas()$account_events[0]
+  typed_state$events <- sim_schemas()$account_events[0]
+  typed_state$fills <- sim_schemas()$portfolio_fills[0]
+  .heterogeneous_v2_record_state(exchange, agent_id, typed_state, bars$timestamp[1L] %||% Sys.time())
   invisible(NULL)
 }
 

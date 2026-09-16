@@ -242,16 +242,17 @@ sim_exchange_account_state <- function(exchange, agent_id = NULL) {
 #'
 #' @param exchange A `tradesimr_exchange`.
 #' @param symbol Registered symbol.
-#' @param action_type One of `dividend`, `split`, `coupon`, `bond_accrual`, or
-#'   `redemption`.
+#' @param action_type One of `dividend`, `split`, `coupon`, `bond_accrual`,
+#'   `redemption`, or `delisting`.
 #' @param amount Cash per inventory unit for dividend/coupon/accrual/redemption,
-#'   or split ratio for `split`.
+#'   split ratio for `split`, or the per-unit cash settlement price for
+#'   `delisting`.
 #' @param effective_timestamp Action timestamp.
 #' @param currency Action currency. Defaults to the asset quote currency.
 #' @return Invisibly returns the action id.
 #' @export
 sim_exchange_corporate_action <- function(exchange, symbol,
-                                          action_type = c("dividend", "split", "coupon", "bond_accrual", "redemption"),
+                                          action_type = c("dividend", "split", "coupon", "bond_accrual", "redemption", "delisting"),
                                           amount, effective_timestamp,
                                           currency = NULL) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
@@ -493,6 +494,41 @@ sim_spot_target_submit <- function(exchange, agent_id, bars, target_weights, fee
     for (key in keys) {
       parsed <- .parse_agent_state_key(key)
       state <- exchange$spot_states[[key]]
+      if (identical(action$action_type, "delisting")) {
+        units <- as.numeric(state$units %||% 0)
+        contract_size <- exchange$assets[asset_id == action$asset_id, contract_size][1L] %||% 1
+        proceeds <- units * as.numeric(action$amount) * as.numeric(contract_size)
+        balance <- .profile_cash_balance(exchange, parsed$agent_id, action$currency) + proceeds
+        .profile_set_cash_balance(exchange, parsed$agent_id, action$currency, balance)
+        .profile_record_cash(exchange, timestamp, parsed$agent_id, action$currency, proceeds,
+          balance, "delisting", action$asset_id, action$symbol,
+          message = "Delisted inventory settled at the registered cash price.")
+        state$units <- 0
+        state$avg_cost <- NA_real_
+        state$last_price <- as.numeric(action$amount)
+        state$accrued_interest <- 0
+        exchange$spot_states[[key]] <- state
+        position_idx <- which(exchange$inventory_positions$agent_id == parsed$agent_id &
+          exchange$inventory_positions$asset_id == action$asset_id)
+        if (length(position_idx)) {
+          data.table::set(exchange$inventory_positions, i = position_idx, j = "units", value = 0)
+          data.table::set(exchange$inventory_positions, i = position_idx, j = "average_cost", value = NA_real_)
+          data.table::set(exchange$inventory_positions, i = position_idx, j = "last_price", value = as.numeric(action$amount))
+          data.table::set(exchange$inventory_positions, i = position_idx, j = "accrued_interest", value = 0)
+          data.table::set(exchange$inventory_positions, i = position_idx, j = "timestamp", value = as.POSIXct(timestamp, tz = "UTC"))
+        }
+        event <- data.table::data.table(
+          account_event_id = paste0("AE", sprintf("%06d", exchange$next_account_event_id)),
+          timestamp = as.POSIXct(timestamp, tz = "UTC"), agent_id = parsed$agent_id,
+          event_type = "delisting", asset_id = as.integer(action$asset_id), symbol = action$symbol,
+          currency = action$currency, amount = proceeds, order_id = NA_character_,
+          fill_id = NA_character_, atomic_group_id = NA_character_,
+          message = "Delisted inventory settled at the registered cash price."
+        )
+        exchange$next_account_event_id <- exchange$next_account_event_id + 1L
+        exchange$account_events <- data.table::rbindlist(list(exchange$account_events, event), fill = TRUE)
+        next
+      }
       state$cash <- .profile_cash_balance(exchange, parsed$agent_id, action$currency)
       updated <- sim_spot_step(state, close = state$last_price %||% 1,
         contract_size = 1,
@@ -505,6 +541,17 @@ sim_spot_target_submit <- function(exchange, agent_id, bars, target_weights, fee
       if (updated$dividend_cash != 0) .profile_record_cash(exchange, timestamp, parsed$agent_id, action$currency,
         updated$dividend_cash, updated$cash, action$action_type, action$asset_id, action$symbol,
         message = "Corporate action cash booked.")
+    }
+    if (identical(action$action_type, "delisting")) {
+      order_ids <- exchange$agent_orders[
+        status == "accepted" & asset_id == action$asset_id, order_id
+      ]
+      for (order_id in order_ids) {
+        .spot_mark_order_terminal(exchange, order_id, "cancelled", "asset_delisted",
+          "Order cancelled because the asset was delisted.", timestamp)
+      }
+      asset_idx <- which(exchange$assets$asset_id == action$asset_id)
+      if (length(asset_idx)) data.table::set(exchange$assets, i = asset_idx, j = "status", value = "delisted")
     }
     idx <- match(action$action_id, exchange$corporate_actions$action_id)
     data.table::set(exchange$corporate_actions, i = idx, j = "status", value = "applied")

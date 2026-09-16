@@ -154,6 +154,9 @@ sim_exchange_place_order <- function(exchange,
                                      client_order_id = NA_character_) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   asset <- .asset_require_registered(exchange, symbol = symbol, asset_id = asset_id, context = "order asset")
+  if (identical(exchange$assets[asset_id == asset$asset_id, status][1L], "delisted")) {
+    stop("The requested order asset is delisted and cannot accept new orders.", call. = FALSE)
+  }
   if (.asset_uses_spot_inventory(exchange, asset$asset_id)) {
     .ensure_spot_account(exchange, agent_id, asset_id = asset$asset_id, symbol = asset$symbol, agent_type = "human")
   } else {

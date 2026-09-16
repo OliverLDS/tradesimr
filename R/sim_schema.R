@@ -1,7 +1,7 @@
 #' tradesimr durable schema version
 #'
 #' @export
-TRADESIMR_SCHEMA_VERSION <- "0.16.0"
+TRADESIMR_SCHEMA_VERSION <- "0.17.0"
 
 #' Heterogeneous account schema version
 #'

@@ -39,6 +39,36 @@ test_that("spot sales settle on the profile settlement calendar and corporate ac
   expect_identical(exchange$corporate_actions$status, "applied")
 })
 
+test_that("delisting settles inventory, cancels pending orders, and survives save/load", {
+  exchange <- sim_exchange_new(list(cash = 1000, execution_engine = "heterogeneous_v2"))
+  sim_asset_add(exchange, "OLD", asset_id = 71L, instrument_profile = "equity", quote_ccy = "USD")
+  day_1 <- as.POSIXct("2025-01-01", tz = "UTC")
+  bar <- data.frame(timestamp = day_1, symbol = "OLD", asset_id = 71L,
+    open = 100, high = 101, low = 99, close = 100)
+  sim_exchange_place_order(exchange, "alice", day_1, symbol = "OLD", side = "buy", qty = 2)
+  sim_exchange_step(exchange, bar)
+  sim_exchange_step(exchange, transform(bar, timestamp = timestamp + 86400))
+  pending <- sim_exchange_place_order(exchange, "alice", day_1 + 86400, symbol = "OLD", side = "buy", qty = 1)
+  sim_exchange_corporate_action(exchange, "OLD", "delisting", 120, day_1 + 2 * 86400)
+  sim_exchange_step(exchange, transform(bar, timestamp = timestamp + 2 * 86400))
+
+  expect_identical(sim_assets(exchange)[symbol == "OLD", status], "delisted")
+  expect_equal(exchange$spot_states[[tradesimr:::.agent_state_key("alice", 71L)]]$units, 0)
+  expect_equal(sim_exchange_cash_balances(exchange, "alice")$amount, 1040)
+  expect_identical(exchange$agent_orders[order_id == pending, status], "cancelled")
+  expect_identical(exchange$agent_orders[order_id == pending, reason_code], "asset_delisted")
+  expect_true(any(exchange$account_events$event_type == "delisting"))
+  expect_error(sim_exchange_place_order(exchange, "alice", day_1 + 3 * 86400,
+    symbol = "OLD", side = "buy", qty = 1), "delisted")
+
+  path <- tempfile("tradesimr-delisting-")
+  sim_exchange_save(exchange, path)
+  restored <- sim_exchange_load(path)
+  expect_identical(sim_assets(restored)[symbol == "OLD", status], "delisted")
+  expect_equal(restored$inventory_positions[agent_id == "alice" & asset_id == 71L, units], 0)
+  expect_equal(restored$account_events[event_type == "delisting", amount], 240)
+})
+
 test_that("typed cash balances retain settled and unsettled cash through settlement and load", {
   exchange <- sim_exchange_new(list(cash = 1000, base_currency = "USD"))
   sim_asset_add(exchange, "SAP", asset_id = 1L, instrument_profile = "equity",
