@@ -48,6 +48,9 @@ current git history; `v0.9.0` follows `v0.7.0`.
 - Bond schedule accrual is now an authoritative typed inventory receivable:
   it contributes to base-currency account equity before coupon payment, is
   reset when a coupon settles, and is included in maturity redemption.
+- Sparse bond replay boundaries now settle every crossed coupon in order and
+  retain the subsequent partial-period accrued interest, matching an
+  equivalent replay with intermediate market boundaries.
 
 ### Validation
 

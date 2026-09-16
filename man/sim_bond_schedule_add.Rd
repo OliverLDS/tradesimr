@@ -43,6 +43,8 @@ Invisibly returns the registered schedule row.
 The schedule uses a fixed ACT/day-count convention and equal coupon periods.
 At each eligible heterogeneous account boundary, C++ emits non-cash accrual
 events, books due coupons into settled cash, and redeems remaining inventory
-at maturity. The cursor fields are durable exchange state, so resumed replay
-continues from the same coupon boundary.
+at maturity. A sparse replay boundary crossing multiple coupon dates is
+processed coupon-by-coupon before any remaining partial-period accrual. The
+cursor fields are durable exchange state, so resumed replay continues from
+the same coupon boundary.
 }

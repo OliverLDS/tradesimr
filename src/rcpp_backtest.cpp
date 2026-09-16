@@ -1415,19 +1415,22 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
       if (ci == static_cast<R_xlen_t>(-1)) Rcpp::stop("Every bond-schedule currency requires a cash balance row.");
       const double cutoff = std::isfinite(maturity[si]) ? std::min(timestamp, maturity[si]) : timestamp;
       const double denominator = std::isfinite(day_count[si]) && day_count[si] > 0.0 ? day_count[si] : 365.0;
-      if (std::isfinite(last_accrual[si]) && cutoff > last_accrual[si]) {
+      const auto accrue_to = [&](const double boundary) {
+        if (!std::isfinite(last_accrual[si]) || boundary <= last_accrual[si]) return;
         const double accrued = inventory_units[pi] * inventory_size[pi] * face_value[si] * coupon_rate[si] *
-          ((cutoff - last_accrual[si]) / (86400.0 * denominator));
+          ((boundary - last_accrual[si]) / (86400.0 * denominator));
         if (std::abs(accrued) > 1e-12) {
           inventory_accrued[pi] += accrued;
           event_amount.push_back(accrued); event_asset.push_back(schedule_asset[si]); event_ccy.push_back(ccy);
           event_settlement.push_back(std::isfinite(inventory_last[pi]) ? inventory_last[pi] : NA_REAL);
           event_type_label.push_back("bond_accrual"); event_cash_effect.push_back(0);
         }
-      }
+        last_accrual[si] = boundary;
+      };
       const double period = 365.0 * 86400.0 / coupon_frequency[si];
       double due = next_coupon[si];
       while (std::isfinite(due) && due <= cutoff + 1e-8) {
+        accrue_to(due);
         const double coupon = inventory_units[pi] * inventory_size[pi] * face_value[si] * coupon_rate[si] / coupon_frequency[si];
         cash_settled[ci] += coupon;
         inventory_accrued[pi] = 0.0;
@@ -1436,6 +1439,7 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
         event_type_label.push_back("bond_coupon"); event_cash_effect.push_back(1);
         due += period;
       }
+      accrue_to(cutoff);
       if (std::isfinite(maturity[si]) && timestamp >= maturity[si] && std::abs(inventory_units[pi]) > 1e-12) {
         const double redemption = inventory_units[pi] * inventory_size[pi] * face_value[si] + inventory_accrued[pi];
         cash_settled[ci] += redemption;
