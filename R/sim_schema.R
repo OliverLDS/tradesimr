@@ -38,6 +38,10 @@ sim_schemas <- function() {
       order_id = character(), fill_id = character(), atomic_group_id = character(),
       message = character()
     ),
+    carry_accruals = data.table::data.table(
+      agent_id = character(), asset_id = integer(), currency = character(),
+      carry_type = character(), last_timestamp = as.POSIXct(character())
+    ),
     assets = data.table::data.table(
       asset_id = integer(),
       symbol = character(),

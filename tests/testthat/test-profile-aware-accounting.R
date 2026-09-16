@@ -109,6 +109,35 @@ test_that("futures expiry cash-settles and rolls durable typed margin state", {
   expect_equal(restored$typed_margin_positions[agent_id == "alice" & asset_id == 82L, signed_units], 2)
 })
 
+test_that("cash interest and short inventory borrow accrue once through save/load", {
+  exchange <- sim_exchange_new(list(cash = 0, base_currency = "USD", execution_engine = "heterogeneous_v2"))
+  sim_asset_add(exchange, "HARD", asset_id = 91L, instrument_profile = "equity", quote_ccy = "USD")
+  start <- as.POSIXct("2025-01-01", tz = "UTC")
+  sim_exchange_cash_adjust(exchange, "alice", 1000, "USD", start)
+  exchange$inventory_positions <- data.table::data.table(
+    agent_id = "alice", asset_id = 91L, symbol = "HARD", currency = "USD",
+    units = -1, average_cost = 100, last_price = 100, contract_size = 1,
+    accrued_interest = 0, timestamp = start
+  )
+  sim_exchange_set_carry_rates(exchange, borrow_rates = c(HARD = .365),
+    cash_interest_rates = c(USD = .0365))
+  sim_exchange_accrue_carry(exchange, start)
+  sim_exchange_accrue_carry(exchange, start + 10 * 86400)
+
+  # USD 1,000 earns 1 over ten days, then the 100-dollar short borrow costs 1.
+  expect_equal(sim_exchange_cash_balances(exchange, "alice")$amount, 1000)
+  expect_true(all(c("cash_interest", "borrow_fee") %in% exchange$account_events$event_type))
+  expect_equal(nrow(exchange$carry_accruals), 2L)
+  path <- tempfile("tradesimr-carry-")
+  sim_exchange_save(exchange, path)
+  restored <- sim_exchange_load(path)
+  sim_exchange_accrue_carry(restored, start + 10 * 86400)
+  expect_equal(sim_exchange_cash_balances(restored, "alice")$amount, 1000)
+  sim_exchange_accrue_carry(restored, start + 20 * 86400)
+  expect_equal(sim_exchange_cash_balances(restored, "alice")$amount, 1000)
+  expect_equal(nrow(restored$carry_accruals), 2L)
+})
+
 test_that("typed cash balances retain settled and unsettled cash through settlement and load", {
   exchange <- sim_exchange_new(list(cash = 1000, base_currency = "USD"))
   sim_asset_add(exchange, "SAP", asset_id = 1L, instrument_profile = "equity",

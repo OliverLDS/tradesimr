@@ -77,6 +77,48 @@ sim_exchange_convert_cash <- function(exchange, agent_id, amount, from_ccy, to_c
   invisible(received)
 }
 
+#' Configure borrow and cash interest rates
+#'
+#' Rates are annualized simple rates keyed by registered symbol for borrow and
+#' by currency for settled-cash interest. Positive cash earns the configured
+#' rate; negative cash is charged it. Short inventory is charged its symbol's
+#' borrow rate from the inventory quote-currency balance.
+#'
+#' @param exchange A `tradesimr_exchange`.
+#' @param borrow_rates Named numeric annualized rates keyed by symbol.
+#' @param cash_interest_rates Named numeric annualized rates keyed by currency.
+#' @return Invisibly returns the configured rates.
+#' @export
+sim_exchange_set_carry_rates <- function(exchange, borrow_rates = numeric(),
+                                         cash_interest_rates = numeric()) {
+  stopifnot(inherits(exchange, "tradesimr_exchange"))
+  validate_rates <- function(rates, name) {
+    if (length(rates) && (is.null(names(rates)) || any(!nzchar(names(rates))) || any(!is.finite(rates)))) {
+      stop("`", name, "` must be a named finite numeric vector.", call. = FALSE)
+    }
+    stats::setNames(as.numeric(rates), toupper(as.character(names(rates))))
+  }
+  exchange$config$borrow_rates <- validate_rates(borrow_rates, "borrow_rates")
+  exchange$config$cash_interest_rates <- validate_rates(cash_interest_rates, "cash_interest_rates")
+  invisible(list(borrow_rates = exchange$config$borrow_rates,
+    cash_interest_rates = exchange$config$cash_interest_rates))
+}
+
+#' Accrue profile-aware borrow and cash interest
+#'
+#' The function is idempotent at a timestamp and is called automatically before
+#' every executable exchange boundary. Call it explicitly to establish an
+#' initial accrual cursor or to accrue a durable account without new bars.
+#'
+#' @param exchange A `tradesimr_exchange`.
+#' @param timestamp Accrual boundary.
+#' @return A data.table of booked carry events.
+#' @export
+sim_exchange_accrue_carry <- function(exchange, timestamp) {
+  stopifnot(inherits(exchange, "tradesimr_exchange"))
+  .profile_accrue_carry(exchange, timestamp)
+}
+
 #' Get profile-aware cash balances
 #'
 #' @param exchange A `tradesimr_exchange`.
@@ -481,6 +523,90 @@ sim_spot_target_submit <- function(exchange, agent_id, bars, target_weights, fee
     entry_id = id, timestamp = as.POSIXct(timestamp, tz = "UTC"), agent_id = as.character(agent_id), currency = .profile_currency(exchange, currency), amount = as.numeric(amount), balance_after = as.numeric(balance), event_type = event_type, asset_id = as.integer(asset_id), symbol = as.character(symbol), order_id = as.character(order_id), settlement_id = as.character(settlement_id), message = as.character(message)
   )), fill = TRUE)
   invisible(id)
+}
+
+#' @keywords internal
+.profile_carry_cursor <- function(exchange, agent_id, asset_id, currency, carry_type, timestamp) {
+  asset_filter <- if (is.na(asset_id)) is.na(exchange$carry_accruals$asset_id) else exchange$carry_accruals$asset_id == as.integer(asset_id)
+  cursor <- exchange$carry_accruals[
+    agent_id == as.character(agent_id) & asset_filter & currency == as.character(currency) &
+      carry_type == as.character(carry_type)
+  ]
+  if (!nrow(cursor)) {
+    row <- data.table::data.table(agent_id = as.character(agent_id), asset_id = as.integer(asset_id),
+      currency = as.character(currency), carry_type = as.character(carry_type),
+      last_timestamp = as.POSIXct(timestamp, tz = "UTC"))
+    exchange$carry_accruals <- data.table::rbindlist(list(exchange$carry_accruals, row), fill = TRUE)
+    return(as.POSIXct(NA, tz = "UTC"))
+  }
+  cursor$last_timestamp[1L]
+}
+
+#' @keywords internal
+.profile_set_carry_cursor <- function(exchange, agent_id, asset_id, currency, carry_type, timestamp) {
+  asset_filter <- if (is.na(asset_id)) is.na(exchange$carry_accruals$asset_id) else exchange$carry_accruals$asset_id == as.integer(asset_id)
+  index <- which(exchange$carry_accruals$agent_id == as.character(agent_id) &
+    asset_filter &
+    exchange$carry_accruals$currency == as.character(currency) &
+    exchange$carry_accruals$carry_type == as.character(carry_type))
+  if (length(index)) data.table::set(exchange$carry_accruals, i = index[1L], j = "last_timestamp",
+    value = as.POSIXct(timestamp, tz = "UTC"))
+  invisible(NULL)
+}
+
+#' @keywords internal
+.profile_record_account_event <- function(exchange, timestamp, agent_id, event_type, asset_id,
+                                          symbol, currency, amount, message) {
+  event <- data.table::data.table(
+    account_event_id = paste0("AE", sprintf("%06d", exchange$next_account_event_id)),
+    timestamp = as.POSIXct(timestamp, tz = "UTC"), agent_id = as.character(agent_id),
+    event_type = as.character(event_type), asset_id = as.integer(asset_id), symbol = as.character(symbol),
+    currency = as.character(currency), amount = as.numeric(amount), order_id = NA_character_,
+    fill_id = NA_character_, atomic_group_id = NA_character_, message = as.character(message)
+  )
+  exchange$next_account_event_id <- exchange$next_account_event_id + 1L
+  exchange$account_events <- data.table::rbindlist(list(exchange$account_events, event), fill = TRUE)
+  invisible(event)
+}
+
+#' @keywords internal
+.profile_accrue_carry <- function(exchange, timestamp) {
+  timestamp <- .profile_utc_timestamp(timestamp)
+  events <- list()
+  cash_rates <- exchange$config$cash_interest_rates %||% numeric()
+  borrow_rates <- exchange$config$borrow_rates %||% numeric()
+  accrue <- function(agent_id, asset_id, symbol, currency, carry_type, annual_rate, base_amount) {
+    if (!is.finite(annual_rate) || annual_rate == 0 || !is.finite(base_amount) || base_amount == 0) return()
+    previous <- .profile_carry_cursor(exchange, agent_id, asset_id, currency, carry_type, timestamp)
+    if (!is.na(previous)) {
+      days <- as.numeric(difftime(timestamp, previous, units = "days"))
+      if (days > 0) {
+        amount <- base_amount * annual_rate * days / 365
+        balance <- .profile_cash_balance(exchange, agent_id, currency) + amount
+        .profile_set_cash_balance(exchange, agent_id, currency, balance)
+        .profile_record_cash(exchange, timestamp, agent_id, currency, amount, balance, carry_type,
+          asset_id, symbol, message = if (carry_type == "borrow_fee") "Short inventory borrow accrued." else "Settled cash interest accrued.")
+        events[[length(events) + 1L]] <<- .profile_record_account_event(exchange, timestamp, agent_id,
+          carry_type, asset_id, symbol, currency, amount,
+          if (carry_type == "borrow_fee") "Short inventory borrow accrued." else "Settled cash interest accrued.")
+      }
+    }
+    .profile_set_carry_cursor(exchange, agent_id, asset_id, currency, carry_type, timestamp)
+  }
+  cash <- exchange$cash_balances
+  for (i in seq_len(nrow(cash))) {
+    currency_key <- toupper(cash$currency[i])
+    rate <- if (currency_key %in% names(cash_rates)) cash_rates[[currency_key]] else 0
+    accrue(cash$agent_id[i], NA_integer_, NA_character_, cash$currency[i], "cash_interest", rate, cash$settled[i])
+  }
+  inventory <- exchange$inventory_positions[units < -1e-12]
+  for (i in seq_len(nrow(inventory))) {
+    symbol_key <- toupper(inventory$symbol[i])
+    rate <- if (symbol_key %in% names(borrow_rates)) borrow_rates[[symbol_key]] else 0
+    notional <- -abs(inventory$units[i] * inventory$last_price[i] * inventory$contract_size[i])
+    accrue(inventory$agent_id[i], inventory$asset_id[i], inventory$symbol[i], inventory$currency[i], "borrow_fee", rate, notional)
+  }
+  data.table::rbindlist(events, fill = TRUE)
 }
 .profile_agent_equity <- function(exchange, agent_id) {
   balances <- sim_exchange_cash_balances(exchange, agent_id)

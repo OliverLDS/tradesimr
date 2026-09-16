@@ -47,6 +47,7 @@ sim_exchange_new <- function(config = list()) {
   state$inventory_positions <- sim_schemas()$inventory_positions[0]
   state$typed_margin_positions <- sim_schemas()$margin_positions[0]
   state$account_events <- sim_schemas()$account_events[0]
+  state$carry_accruals <- sim_schemas()$carry_accruals[0]
   state$settlement_ledger <- sim_schemas()$settlement_ledger[0]
   state$corporate_actions <- sim_schemas()$corporate_actions[0]
   state$bond_schedules <- sim_schemas()$bond_schedules[0]
@@ -326,6 +327,7 @@ sim_exchange_step <- function(exchange, bars) {
     for (lifecycle_asset_id in lifecycle_assets) {
       .profile_apply_future_lifecycle(exchange, lifecycle_timestamp, lifecycle_asset_id)
     }
+    .profile_accrue_carry(exchange, lifecycle_timestamp)
   }
   # v2 futures/perpetual accounts always use the typed derivative boundary,
   # even when the caller has not enabled cross-asset portfolio margin. This
@@ -876,6 +878,7 @@ sim_exchange_save <- function(exchange, path, format = c("csv", "fst")) {
     inventory_positions = exchange$inventory_positions,
     typed_margin_positions = exchange$typed_margin_positions,
     account_events = exchange$account_events,
+    carry_accruals = exchange$carry_accruals,
     settlement_ledger = exchange$settlement_ledger,
     corporate_actions = exchange$corporate_actions,
     bond_schedules = exchange$bond_schedules,
@@ -1099,6 +1102,11 @@ sim_exchange_load <- function(path) {
       data.table::set(exchange$account_events, j = column, value = values)
     }
     exchange$next_account_event_id <- nrow(exchange$account_events) + 1L
+  }
+  if (file.exists(file.path(path, "carry_accruals.csv"))) {
+    exchange$carry_accruals <- data.table::fread(file.path(path, "carry_accruals.csv"))
+    data.table::set(exchange$carry_accruals, j = "last_timestamp",
+      value = as.POSIXct(exchange$carry_accruals$last_timestamp, tz = "UTC"))
   }
   if (file.exists(file.path(path, "settlement_ledger.csv"))) {
     exchange$settlement_ledger <- data.table::fread(file.path(path, "settlement_ledger.csv"))
