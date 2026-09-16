@@ -644,8 +644,13 @@ sim_spot_target_submit <- function(exchange, agent_id, bars, target_weights, fee
                                        asset_id, symbol, order_id, lag_days, message) {
   id <- paste0("SET", sprintf("%06d", exchange$next_settlement_id))
   exchange$next_settlement_id <- exchange$next_settlement_id + 1L
+  requested_asset_id <- as.integer(asset_id)
+  asset <- exchange$assets[asset_id == requested_asset_id]
+  calendar_id <- if (nrow(asset)) asset$calendar_id[1L] else "ALWAYS_OPEN"
+  due_timestamp <- sim_calendar_settlement_timestamp(calendar_id, timestamp, lag_days,
+    exceptions = .sim_calendar_exceptions_for_asset(exchange, asset_id))
   row <- data.table::data.table(settlement_id = id, trade_timestamp = timestamp,
-    due_timestamp = timestamp + as.numeric(lag_days) * 86400,
+    due_timestamp = due_timestamp,
     settled_timestamp = as.POSIXct(NA, tz = "UTC"), agent_id = as.character(agent_id),
     currency = .profile_currency(exchange, currency), amount = as.numeric(amount),
     asset_id = as.integer(asset_id), symbol = as.character(symbol), order_id = as.character(order_id),

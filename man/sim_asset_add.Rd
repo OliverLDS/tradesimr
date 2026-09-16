@@ -8,7 +8,7 @@ sim_asset_add(
   exchange,
   symbol,
   asset_id = NULL,
-  status = c("active", "paused", "removed"),
+  status = c("active", "paused", "delisted", "expired", "removed"),
   asset_class = "other",
   instrument_profile = NULL,
   contract_size = 1,
@@ -32,7 +32,8 @@ sim_asset_add(
 \item{asset_id}{Optional integer asset id. Defaults to a stable id derived
 from \code{symbol}.}
 
-\item{status}{Asset status: \code{active}, \code{paused}, or \code{removed}.}
+\item{status}{Asset status: \code{active}, \code{paused}, \code{delisted}, \code{expired}, or
+\code{removed}.}
 
 \item{asset_class}{Asset class label, such as \code{crypto_perp}, \code{stock},
 \code{bond}, \code{etf}, \code{commodity_future}, \code{fx}, or \code{other}.}

@@ -94,6 +94,22 @@ test_that("calendar specifications generate holidays, early closes, and expected
   expect_false(sim_calendar_is_open(as.POSIXct("2026-11-27 18:30:00", tz = "UTC"), "XNYS")) # 13:30 ET
 })
 
+test_that("FX settlement lags use business dates and exchange exceptions", {
+  friday <- as.POSIXct("2025-10-03 12:00:00", tz = "UTC")
+  expect_equal(sim_calendar_settlement_timestamp("FX_24_5", friday, 2L),
+    as.POSIXct("2025-10-07 12:00:00", tz = "UTC"))
+  exchange <- sim_exchange_new(list(cash = 1000))
+  sim_asset_add(exchange, "EURUSD", asset_id = 101L, instrument_profile = "fx_spot",
+    quote_ccy = "USD", settlement_lag_days = 2L)
+  sim_exchange_calendar_exception(exchange, session_date = as.Date("2025-10-06"),
+    action = "closed", calendar_id = "FX_24_5", message = "Test bank holiday")
+  tradesimr:::.profile_record_settlement(exchange, friday, "alice", "USD", 10,
+    101L, "EURUSD", "ORDTEST", 2L, "FX sale proceeds awaiting settlement.")
+  expect_equal(as.numeric(exchange$settlement_ledger$due_timestamp),
+    as.numeric(as.POSIXct("2025-10-08 12:00:00", tz = "UTC")))
+  expect_equal(sim_calendar_settlement_timestamp("CRYPTO_24_7", friday, 0L), friday)
+})
+
 test_that("durable exchange exceptions override calendar sessions", {
   exchange <- sim_exchange_new(list(calendar_mode = "calendarize"))
   sim_asset_add(exchange, "SPY", asset_id = 1L, instrument_profile = "equity")

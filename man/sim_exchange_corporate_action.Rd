@@ -7,7 +7,8 @@
 sim_exchange_corporate_action(
   exchange,
   symbol,
-  action_type = c("dividend", "split", "coupon", "bond_accrual", "redemption"),
+  action_type = c("dividend", "split", "coupon", "bond_accrual", "redemption",
+    "delisting", "future_expiry", "future_roll"),
   amount,
   effective_timestamp,
   currency = NULL
@@ -18,11 +19,12 @@ sim_exchange_corporate_action(
 
 \item{symbol}{Registered symbol.}
 
-\item{action_type}{One of \code{dividend}, \code{split}, \code{coupon}, \code{bond_accrual}, or
-\code{redemption}.}
+\item{action_type}{One of \code{dividend}, \code{split}, \code{coupon}, \code{bond_accrual},
+\code{redemption}, \code{delisting}, \code{future_expiry}, or \code{future_roll}.}
 
 \item{amount}{Cash per inventory unit for dividend/coupon/accrual/redemption,
-or split ratio for \code{split}.}
+split ratio for \code{split}, or the per-unit cash settlement price for
+\code{delisting}.}
 
 \item{effective_timestamp}{Action timestamp.}
 

@@ -95,6 +95,48 @@ sim_calendar_expected_bars <- function(calendar_id, start, end, cadence_seconds,
   data.table::data.table(timestamp = stamps[open], calendar_id = spec$calendar_id)
 }
 
+#' Calculate a calendar-aware settlement timestamp
+#'
+#' Settlement lags count tradable calendar dates, not raw 24-hour periods.
+#' This gives FX spot its conventional weekday progression while preserving
+#' same-day settlement for 24/7 instruments. Exchange-specific closed-date
+#' exceptions are respected.
+#'
+#' @param calendar_id Built-in settlement calendar identifier.
+#' @param timestamp Trade timestamp.
+#' @param settlement_lag_days Non-negative whole settlement days.
+#' @param exceptions Optional calendar-exception rows.
+#' @return A UTC `POSIXct` settlement timestamp.
+#' @export
+sim_calendar_settlement_timestamp <- function(calendar_id, timestamp,
+                                               settlement_lag_days = 0L,
+                                               exceptions = NULL) {
+  lag_days <- as.integer(settlement_lag_days)
+  if (length(lag_days) != 1L || is.na(lag_days) || lag_days < 0L) {
+    stop("`settlement_lag_days` must be one non-negative integer.", call. = FALSE)
+  }
+  spec <- sim_calendar_spec(calendar_id)
+  timestamp <- as.POSIXct(timestamp, tz = "UTC")
+  if (is.na(timestamp)) stop("`timestamp` must be a valid timestamp.", call. = FALSE)
+  if (lag_days == 0L) return(timestamp)
+  local <- as.POSIXlt(timestamp, tz = spec$timezone)
+  date <- as.Date(local)
+  clock <- sprintf("%02d:%02d:%02d", local$hour, local$min, local$sec)
+  is_settlement_day <- function(candidate) {
+    # Inspect noon local time so session-open clock boundaries do not turn an
+    # otherwise valid business date into a settlement holiday.
+    noon <- as.POSIXct(paste(candidate, "12:00:00"), tz = spec$timezone)
+    sim_calendar_is_open(noon, spec$calendar_id, exceptions = exceptions)
+  }
+  counted <- 0L
+  while (counted < lag_days) {
+    date <- date + 1L
+    if (is_settlement_day(date)) counted <- counted + 1L
+  }
+  local_due <- as.POSIXct(paste(date, clock), tz = spec$timezone)
+  as.POSIXct(as.numeric(local_due), origin = "1970-01-01", tz = "UTC")
+}
+
 #' Add an exchange-specific calendar exception
 #'
 #' @param exchange A `tradesimr_exchange`.
