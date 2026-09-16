@@ -17,6 +17,7 @@
 #'   supplied by the selected instrument profile.
 #' @param settlement_lag_days Optional settlement lag override.
 #' @param margin_model Optional margin-model override.
+#' @param bar_cadence_seconds Optional expected completed-bar cadence in seconds.
 #' @param metadata Optional named list of durable profile metadata.
 #' @return Invisibly returns the registered asset row.
 #' @export
@@ -35,6 +36,7 @@ sim_asset_add <- function(exchange,
                           timezone = NULL,
                           settlement_lag_days = NULL,
                           margin_model = NULL,
+                          bar_cadence_seconds = NA_real_,
                           metadata = list()) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   if (is.null(symbol) || !nzchar(as.character(symbol))) {
@@ -47,6 +49,9 @@ sim_asset_add <- function(exchange,
   if (!is.finite(contract_size) || contract_size <= 0 || !is.finite(qty_step) || qty_step <= 0 ||
       (!is.na(tick_size) && (!is.finite(tick_size) || tick_size <= 0))) {
     stop("`contract_size` and `qty_step` must be positive; `tick_size` must be positive or NA.", call. = FALSE)
+  }
+  if (!is.na(bar_cadence_seconds) && (!is.finite(bar_cadence_seconds) || bar_cadence_seconds <= 0)) {
+    stop("`bar_cadence_seconds` must be positive or NA.", call. = FALSE)
   }
   existing <- which(exchange$assets$asset_id == asset_id | exchange$assets$symbol == symbol)
   row <- data.table::data.table(
@@ -65,6 +70,7 @@ sim_asset_add <- function(exchange,
     settlement_lag_days = as.integer(settlement_lag_days %||% profile$settlement_lag_days),
     margin_model = as.character(margin_model %||% profile$margin_model),
     accounting_model = as.character(profile$accounting_model),
+    bar_cadence_seconds = as.numeric(bar_cadence_seconds),
     metadata = .instrument_metadata_encode(metadata),
     created_at = Sys.time()
   )

@@ -54,6 +54,7 @@ sim_schemas <- function() {
       settlement_lag_days = integer(),
       margin_model = character(),
       accounting_model = character(),
+      bar_cadence_seconds = numeric(),
       metadata = character(),
       created_at = as.POSIXct(character())
     ),

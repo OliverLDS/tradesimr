@@ -20,6 +20,7 @@ sim_asset_add(
   timezone = NULL,
   settlement_lag_days = NULL,
   margin_model = NULL,
+  bar_cadence_seconds = NA_real_,
   metadata = list()
 )
 }
@@ -53,6 +54,8 @@ supplied by the selected instrument profile.}
 \item{settlement_lag_days}{Optional settlement lag override.}
 
 \item{margin_model}{Optional margin-model override.}
+
+\item{bar_cadence_seconds}{Optional expected completed-bar cadence in seconds.}
 
 \item{metadata}{Optional named list of durable profile metadata.}
 }

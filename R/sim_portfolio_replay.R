@@ -158,7 +158,10 @@ sim_portfolio_target_submit <- function(exchange,
   .portfolio_require_accepted_boundary(exchange, decision_bars)
   .portfolio_apply_execution_config(exchange, execution)
   allowed_assets <- .portfolio_resolve_allowed_assets(exchange, agent_id, allowed_symbols, allowed_asset_ids)
-  if (!is.null(target_weights)) .portfolio_require_decision_policy(
+  # Preserve the public rejected-outcome contract for a target outside the
+  # persisted universe. The planner records that rejection; only valid targets
+  # are subject to market-observation policy checks here.
+  if (!is.null(target_weights) && .portfolio_targets_within_allowed(target_weights, allowed_assets)) .portfolio_require_decision_policy(
     exchange, decision_bars, target_weights, allowed_assets, decision_policy
   )
   first_asset <- .bar_asset_key(decision_bars[1L])
@@ -220,7 +223,7 @@ sim_portfolio_target_submit_batch <- function(exchange,
     allowed_assets <- .portfolio_resolve_allowed_assets(
       exchange, agent_id, decision$allowed_symbols %||% NULL, decision$allowed_asset_ids %||% NULL
     )
-    if (!is.null(decision$target_weights)) .portfolio_require_decision_policy(
+    if (!is.null(decision$target_weights) && .portfolio_targets_within_allowed(decision$target_weights, allowed_assets)) .portfolio_require_decision_policy(
       exchange, decision_bars, decision$target_weights, allowed_assets, decision_policy
     )
     first_asset <- .bar_asset_key(decision_bars[1L])
@@ -291,7 +294,7 @@ sim_portfolio_target_submit_batch <- function(exchange,
     allowed_assets <- decision$.allowed_assets %||% .portfolio_resolve_allowed_assets(
       exchange, agent_id, decision$allowed_symbols %||% NULL, decision$allowed_asset_ids %||% NULL
     )
-    if (!is.null(decision$target_weights)) .portfolio_require_decision_policy(
+    if (!is.null(decision$target_weights) && .portfolio_targets_within_allowed(decision$target_weights, allowed_assets)) .portfolio_require_decision_policy(
       exchange, decision_bars, decision$target_weights, allowed_assets, decision_policy
     )
     first_asset <- .bar_asset_key(decision_bars[1L])
@@ -724,6 +727,11 @@ sim_portfolio_export <- function(exchange,
 #' @keywords internal
 .portfolio_fresh_decision_bars <- function(bars) {
   bars[is_completed %in% TRUE & is_tradable %in% TRUE]
+}
+
+#' @keywords internal
+.portfolio_targets_within_allowed <- function(target_weights, allowed_assets) {
+  !is.null(names(target_weights)) && all(names(target_weights) %in% allowed_assets$symbol)
 }
 
 #' @keywords internal

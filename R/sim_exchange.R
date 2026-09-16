@@ -298,6 +298,16 @@ sim_exchange_step <- function(exchange, bars) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   new_bars <- as_market_bars(bars)
   new_bars <- .validate_market_bar_assets(exchange, new_bars)
+  # A bar can carry a fresh valuation without representing an executable
+  # observation. Session closures, incomplete bars, and carried marks update
+  # prices only; they must not trigger an order, funding, margin, or strategy
+  # transition. Callers can derive `is_tradable` with
+  # `sim_exchange_calendarize_bars()`.
+  valuation_only <- new_bars[!(is_completed %in% TRUE & is_tradable %in% TRUE)]
+  executable <- new_bars[is_completed %in% TRUE & is_tradable %in% TRUE]
+  if (nrow(valuation_only)) .sim_exchange_step_valuation_only(exchange, valuation_only)
+  if (!nrow(executable)) return(exchange$result)
+  new_bars <- executable
   # v2 futures/perpetual accounts always use the typed derivative boundary,
   # even when the caller has not enabled cross-asset portfolio margin. This
   # keeps C++ variation-margin settlement authoritative for every v2 margin
@@ -425,6 +435,73 @@ sim_exchange_step <- function(exchange, bars) {
   exchange$last_events <- exchange$step_events
   exchange$last_bar_count <- nrow(exchange$market_events)
   exchange$result
+}
+
+#' @keywords internal
+.sim_exchange_step_valuation_only <- function(exchange, bars) {
+  bars <- data.table::as.data.table(bars)
+  exchange$market_events <- data.table::rbindlist(list(exchange$market_events, bars), fill = TRUE)
+  agents <- character()
+  for (i in seq_len(nrow(bars))) {
+    asset_id <- as.integer(bars$asset_id[i])
+    close <- as.numeric(bars$close[i])
+    timestamp <- bars$timestamp[i]
+    for (key in names(exchange$agent_states %||% list())) {
+      parsed <- .parse_agent_state_key(key)
+      if (!identical(parsed$asset_id, asset_id)) next
+      state <- exchange$agent_states[[key]]
+      state$last_px <- close
+      signed_units <- as.numeric(state$pos_dir %||% 0) * as.numeric(state$ctr_unit %||% 0)
+      ctr_size <- as.numeric(state$ctr_size %||% 1)
+      state$notional <- signed_units * close * ctr_size
+      state$unrealized_pnl <- signed_units * (close - as.numeric(state$avg_price %||% close)) * ctr_size
+      state$equity <- as.numeric(state$cash %||% 0) + as.numeric(state$unrealized_pnl %||% 0)
+      exchange$agent_states[[key]] <- state
+      agents <- c(agents, parsed$agent_id)
+    }
+    for (key in names(exchange$spot_states %||% list())) {
+      parsed <- .parse_agent_state_key(key)
+      if (!identical(parsed$asset_id, asset_id)) next
+      state <- exchange$spot_states[[key]]
+      state$last_price <- close
+      state$market_value <- as.numeric(state$units %||% 0) * close
+      exchange$spot_states[[key]] <- state
+      agents <- c(agents, parsed$agent_id)
+    }
+    for (table_name in c("inventory_positions", "typed_margin_positions", "margin_positions")) {
+      table <- exchange[[table_name]] %||% data.table::data.table()
+      if (!nrow(table) || !all(c("asset_id", "last_price") %in% names(table))) next
+      rows <- which(as.integer(table$asset_id) == asset_id)
+      if (length(rows)) {
+        data.table::set(table, i = rows, j = "last_price", value = close)
+        if ("timestamp" %in% names(table)) data.table::set(table, i = rows, j = "timestamp", value = timestamp)
+        exchange[[table_name]] <- table
+        if ("agent_id" %in% names(table)) agents <- c(agents, as.character(table$agent_id[rows]))
+      }
+    }
+  }
+  agents <- unique(agents[nzchar(agents)])
+  snapshots <- data.table::rbindlist(lapply(agents, function(agent_id) {
+    .agent_position_snapshots(exchange, agent_id, max(bars$timestamp))
+  }), fill = TRUE)
+  exchange$new_events <- data.table::data.table()
+  accumulator <- exchange$.bulk_accumulator %||% NULL
+  if (is.environment(accumulator)) {
+    accumulator$step_snapshots[[length(accumulator$step_snapshots) + 1L]] <- snapshots
+    accumulator$step_events[[length(accumulator$step_events) + 1L]] <- exchange$new_events
+    exchange$step_snapshots <- snapshots
+    exchange$step_events <- exchange$new_events
+  } else {
+    exchange$step_snapshots <- data.table::rbindlist(list(exchange$step_snapshots, snapshots), fill = TRUE)
+    exchange$step_events <- data.table::rbindlist(list(exchange$step_events, exchange$new_events), fill = TRUE)
+  }
+  exchange$result <- exchange$step_snapshots
+  data.table::setattr(exchange$result, "market_events", exchange$market_events)
+  data.table::setattr(exchange$result, "events", exchange$step_events)
+  data.table::setattr(exchange$result, "orders", sim_orders(exchange$step_events))
+  exchange$last_events <- exchange$step_events
+  exchange$last_bar_count <- nrow(exchange$market_events)
+  invisible(exchange$result)
 }
 
 #' @keywords internal

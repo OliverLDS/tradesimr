@@ -7,6 +7,18 @@ current git history; `v0.9.0` follows `v0.7.0`.
 
 ### Heterogeneous Portfolio Execution
 
+- Added deterministic built-in calendars for XNYS, CME, FX 24/5, and crypto
+  24/7 sessions, including observed fixed XNYS holidays. Registered assets may
+  now declare `bar_cadence_seconds`; `sim_exchange_calendarize_bars()` derives
+  tradability from the asset calendar and `sim_exchange_validate_cadence()`
+  verifies timestamp alignment without treating holiday/session gaps as missing
+  data.
+- Bars marked incomplete or non-tradable are now valuation-only in
+  `sim_exchange_step()`: they update durable market marks and snapshots but
+  cannot execute orders or trigger funding, variation margin, liquidation, or
+  strategy transitions. This makes stale/closed-market prices safe for account
+  valuation while preserving executable-bar semantics.
+
 - Added `sim_portfolio_decision_policy()` for calendar-aware target decisions.
   `complete_universe` remains the default; `as_of_valuation` permits bounded
   carried marks, and `per_asset_decision` permits only targets with a fresh,
