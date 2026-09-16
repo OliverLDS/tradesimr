@@ -101,6 +101,9 @@ sim_schemas <- function() {
       action_type = character(),
       amount = numeric(),
       currency = character(),
+      successor_asset_id = integer(),
+      successor_symbol = character(),
+      successor_price = numeric(),
       status = character(),
       message = character()
     ),

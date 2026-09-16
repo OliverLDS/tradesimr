@@ -69,6 +69,46 @@ test_that("delisting settles inventory, cancels pending orders, and survives sav
   expect_equal(restored$account_events[event_type == "delisting", amount], 240)
 })
 
+test_that("futures expiry cash-settles and rolls durable typed margin state", {
+  exchange <- sim_exchange_new(list(cash = 0, base_currency = "USD", portfolio_margin = TRUE,
+    execution_engine = "heterogeneous_v2"))
+  sim_asset_add(exchange, "ESU25", asset_id = 81L, instrument_profile = "future",
+    quote_ccy = "USD", contract_size = 1)
+  sim_asset_add(exchange, "ESZ25", asset_id = 82L, instrument_profile = "future",
+    quote_ccy = "USD", contract_size = 1)
+  timestamp <- as.POSIXct("2025-09-19", tz = "UTC")
+  sim_exchange_cash_adjust(exchange, "alice", 1000, "USD", timestamp)
+  exchange$typed_margin_positions <- data.table::data.table(
+    agent_id = "alice", asset_id = 81L, symbol = "ESU25", currency = "USD",
+    signed_units = 2, settlement_price = 100, last_price = 100, contract_size = 1,
+    maintenance_rate = .02, timestamp = timestamp - 86400
+  )
+  pending <- sim_exchange_place_order(exchange, "alice", timestamp - 3600,
+    symbol = "ESU25", side = "buy", qty = 1)
+  action_id <- sim_exchange_future_roll(exchange, "ESU25", timestamp,
+    settlement_price = 110, successor_symbol = "ESZ25", roll_price = 115)
+  bars <- data.frame(timestamp = c(timestamp, timestamp), symbol = c("ESU25", "ESZ25"),
+    asset_id = c(81L, 82L), open = c(110, 115), high = c(110, 115),
+    low = c(110, 115), close = c(110, 115))
+  sim_exchange_step(exchange, bars)
+
+  expect_identical(sim_assets(exchange)[symbol == "ESU25", status], "expired")
+  expect_equal(exchange$typed_margin_positions[agent_id == "alice" & asset_id == 81L, signed_units], 0)
+  expect_equal(exchange$typed_margin_positions[agent_id == "alice" & asset_id == 82L, signed_units], 2)
+  expect_equal(sim_exchange_cash_balances(exchange, "alice")[currency == "USD", amount], 1020)
+  expect_identical(exchange$agent_orders[order_id == pending, reason_code], "contract_expired")
+  expect_true(all(c("future_expiry", "future_roll") %in% exchange$account_events$event_type))
+  expect_identical(exchange$corporate_actions[action_id == action_id, status], "applied")
+
+  path <- tempfile("tradesimr-future-roll-")
+  sim_exchange_save(exchange, path)
+  restored <- sim_exchange_load(path)
+  restored_action <- restored$corporate_actions[action_id == action_id]
+  expect_equal(restored_action$successor_asset_id, 82L)
+  expect_equal(restored_action$successor_price, 115)
+  expect_equal(restored$typed_margin_positions[agent_id == "alice" & asset_id == 82L, signed_units], 2)
+})
+
 test_that("typed cash balances retain settled and unsettled cash through settlement and load", {
   exchange <- sim_exchange_new(list(cash = 1000, base_currency = "USD"))
   sim_asset_add(exchange, "SAP", asset_id = 1L, instrument_profile = "equity",

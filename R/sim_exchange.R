@@ -154,8 +154,9 @@ sim_exchange_place_order <- function(exchange,
                                      client_order_id = NA_character_) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   asset <- .asset_require_registered(exchange, symbol = symbol, asset_id = asset_id, context = "order asset")
-  if (identical(exchange$assets[asset_id == asset$asset_id, status][1L], "delisted")) {
-    stop("The requested order asset is delisted and cannot accept new orders.", call. = FALSE)
+  asset_status <- exchange$assets[asset_id == asset$asset_id, status][1L]
+  if (asset_status %in% c("delisted", "expired")) {
+    stop("The requested order asset is ", asset_status, " and cannot accept new orders.", call. = FALSE)
   }
   if (.asset_uses_spot_inventory(exchange, asset$asset_id)) {
     .ensure_spot_account(exchange, agent_id, asset_id = asset$asset_id, symbol = asset$symbol, agent_type = "human")
@@ -316,6 +317,16 @@ sim_exchange_step <- function(exchange, bars) {
   if (nrow(valuation_only)) .sim_exchange_step_valuation_only(exchange, valuation_only)
   if (!nrow(executable)) return(exchange$result)
   new_bars <- executable
+  # Lifecycle actions settle before an execution boundary is routed. This is
+  # required for an expiring futures contract even when no target-derived order
+  # would otherwise cause the typed derivative adapter to visit that account.
+  lifecycle_timestamps <- unique(as.POSIXct(new_bars$timestamp, tz = "UTC"))
+  for (lifecycle_timestamp in lifecycle_timestamps) {
+    lifecycle_assets <- unique(as.integer(new_bars[timestamp == lifecycle_timestamp, asset_id]))
+    for (lifecycle_asset_id in lifecycle_assets) {
+      .profile_apply_future_lifecycle(exchange, lifecycle_timestamp, lifecycle_asset_id)
+    }
+  }
   # v2 futures/perpetual accounts always use the typed derivative boundary,
   # even when the caller has not enabled cross-asset portfolio margin. This
   # keeps C++ variation-margin settlement authoritative for every v2 margin
@@ -939,10 +950,14 @@ sim_exchange_load <- function(path) {
         # `fread()` converts an all-empty CSV field to NA. Restore the durable
         # account-only snapshot projection emitted by the v2 exchange route.
         if ("symbol" %in% names(exchange$step_snapshots)) {
-          data.table::set(exchange$step_snapshots, i = which(account_only), j = "symbol", value = "")
+          values <- as.character(exchange$step_snapshots$symbol)
+          values[account_only] <- ""
+          data.table::set(exchange$step_snapshots, j = "symbol", value = values)
         }
         if ("accounting_model" %in% names(exchange$step_snapshots)) {
-          data.table::set(exchange$step_snapshots, i = which(account_only), j = "accounting_model", value = "account_only")
+          values <- as.character(exchange$step_snapshots$accounting_model)
+          values[account_only] <- "account_only"
+          data.table::set(exchange$step_snapshots, j = "accounting_model", value = values)
         }
         for (column in c("pos_dir", "ctr_unit", "avg_price", "last_px")) {
           if (column %in% names(exchange$step_snapshots)) {

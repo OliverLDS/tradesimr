@@ -872,6 +872,7 @@
     boundary_timestamp <- as.POSIXct(timestamp_value, origin = "1970-01-01", tz = "UTC")
     boundary_bars <- bars[timestamp == boundary_timestamp]
     .profile_settle_due(exchange, boundary_timestamp)
+    for (i in seq_len(nrow(boundary_bars))) .profile_apply_future_lifecycle(exchange, boundary_timestamp, boundary_bars$asset_id[i])
     # Dividends and splits retain the legacy inventory mutation until their
     # own typed C++ schedule exists. Bond cash lifecycle rows are passed to
     # the heterogeneous kernel below, once per account.

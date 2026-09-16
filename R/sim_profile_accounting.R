@@ -243,7 +243,7 @@ sim_exchange_account_state <- function(exchange, agent_id = NULL) {
 #' @param exchange A `tradesimr_exchange`.
 #' @param symbol Registered symbol.
 #' @param action_type One of `dividend`, `split`, `coupon`, `bond_accrual`,
-#'   `redemption`, or `delisting`.
+#'   `redemption`, `delisting`, `future_expiry`, or `future_roll`.
 #' @param amount Cash per inventory unit for dividend/coupon/accrual/redemption,
 #'   split ratio for `split`, or the per-unit cash settlement price for
 #'   `delisting`.
@@ -252,7 +252,7 @@ sim_exchange_account_state <- function(exchange, agent_id = NULL) {
 #' @return Invisibly returns the action id.
 #' @export
 sim_exchange_corporate_action <- function(exchange, symbol,
-                                          action_type = c("dividend", "split", "coupon", "bond_accrual", "redemption", "delisting"),
+                                          action_type = c("dividend", "split", "coupon", "bond_accrual", "redemption", "delisting", "future_expiry", "future_roll"),
                                           amount, effective_timestamp,
                                           currency = NULL) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
@@ -270,6 +270,55 @@ sim_exchange_corporate_action <- function(exchange, symbol,
     status = "pending", message = "Awaiting the next eligible market step.")
   exchange$corporate_actions <- data.table::rbindlist(list(exchange$corporate_actions, row), fill = TRUE)
   invisible(id)
+}
+
+#' Register a futures expiry or contract roll
+#'
+#' Expiry settles the old contract's marked P&L into settled quote-currency
+#' cash and terminates its open margin position. A roll additionally opens the
+#' same signed quantity in a registered successor contract at `roll_price`.
+#' The successor must not already have an open margin position for an affected
+#' account; callers should make any independent successor adjustment first.
+#'
+#' @param exchange A `tradesimr_exchange`.
+#' @param symbol Expiring registered futures symbol.
+#' @param effective_timestamp Lifecycle boundary.
+#' @param settlement_price Cash-settlement price for the expiring contract.
+#' @param successor_symbol Optional registered successor futures symbol.
+#' @param roll_price Required successor reference price when rolling.
+#' @return Invisibly returns the corporate action id.
+#' @export
+sim_exchange_future_roll <- function(exchange, symbol, effective_timestamp,
+                                     settlement_price, successor_symbol = NULL,
+                                     roll_price = NULL) {
+  stopifnot(inherits(exchange, "tradesimr_exchange"))
+  asset <- .asset_require_registered(exchange, symbol = symbol, context = "futures lifecycle asset")
+  spec <- exchange$assets[asset_id == asset$asset_id]
+  if (!identical(spec$instrument_profile[1L], "future")) {
+    stop("Futures expiry/roll requires an asset with `instrument_profile = 'future'`.", call. = FALSE)
+  }
+  if (!is.finite(settlement_price) || settlement_price <= 0) {
+    stop("`settlement_price` must be positive and finite.", call. = FALSE)
+  }
+  successor <- NULL
+  if (!is.null(successor_symbol)) {
+    successor <- .asset_require_registered(exchange, symbol = successor_symbol, context = "futures roll successor")
+    successor_spec <- exchange$assets[asset_id == successor$asset_id]
+    if (!identical(successor_spec$instrument_profile[1L], "future") || !is.finite(roll_price) || roll_price <= 0) {
+      stop("A futures successor and positive finite `roll_price` are required for a roll.", call. = FALSE)
+    }
+  }
+  action_id <- sim_exchange_corporate_action(exchange, symbol,
+    action_type = if (is.null(successor)) "future_expiry" else "future_roll",
+    amount = settlement_price, effective_timestamp = effective_timestamp,
+    currency = spec$quote_ccy[1L])
+  index <- match(action_id, exchange$corporate_actions$action_id)
+  exchange$corporate_actions[index, `:=`(
+    successor_asset_id = if (is.null(successor)) NA_integer_ else successor$asset_id,
+    successor_symbol = if (is.null(successor)) NA_character_ else successor$symbol,
+    successor_price = if (is.null(successor)) NA_real_ else as.numeric(roll_price)
+  )]
+  invisible(action_id)
 }
 
 #' Settle due profile-aware cash movements
@@ -556,6 +605,79 @@ sim_spot_target_submit <- function(exchange, agent_id, bars, target_weights, fee
     idx <- match(action$action_id, exchange$corporate_actions$action_id)
     data.table::set(exchange$corporate_actions, i = idx, j = "status", value = "applied")
     data.table::set(exchange$corporate_actions, i = idx, j = "message", value = "Applied to eligible inventory accounts.")
+  }
+  invisible(NULL)
+}
+
+#' @keywords internal
+.profile_apply_future_lifecycle <- function(exchange, timestamp, asset_id) {
+  timestamp <- .profile_utc_timestamp(timestamp)
+  action_rows <- exchange$corporate_actions[
+    status == "pending" & asset_id == as.integer(asset_id) &
+      action_type %in% c("future_expiry", "future_roll") & effective_timestamp <= timestamp
+  ]
+  if (!nrow(action_rows)) return(invisible(NULL))
+  for (i in seq_len(nrow(action_rows))) {
+    action <- action_rows[i]
+    positions <- exchange$typed_margin_positions[asset_id == action$asset_id & abs(signed_units) > 1e-12]
+    for (j in seq_len(nrow(positions))) {
+      position <- positions[j]
+      pnl <- (as.numeric(action$amount) - position$settlement_price) * position$signed_units * position$contract_size
+      balance <- .profile_cash_balance(exchange, position$agent_id, position$currency) + pnl
+      .profile_set_cash_balance(exchange, position$agent_id, position$currency, balance)
+      .profile_record_cash(exchange, timestamp, position$agent_id, position$currency, pnl, balance,
+        "future_expiry", action$asset_id, action$symbol,
+        message = "Futures expiry marked P&L settled into cash.")
+      old_index <- which(exchange$typed_margin_positions$agent_id == position$agent_id &
+        exchange$typed_margin_positions$asset_id == action$asset_id)
+      data.table::set(exchange$typed_margin_positions, i = old_index, j = "signed_units", value = 0)
+      data.table::set(exchange$typed_margin_positions, i = old_index, j = "settlement_price", value = as.numeric(action$amount))
+      data.table::set(exchange$typed_margin_positions, i = old_index, j = "last_price", value = as.numeric(action$amount))
+      data.table::set(exchange$typed_margin_positions, i = old_index, j = "timestamp", value = as.POSIXct(timestamp, tz = "UTC"))
+      legacy_index <- which(exchange$margin_positions$agent_id == position$agent_id &
+        exchange$margin_positions$asset_id == action$asset_id)
+      if (length(legacy_index)) data.table::set(exchange$margin_positions, i = legacy_index, j = "signed_units", value = 0)
+      event <- data.table::data.table(
+        account_event_id = paste0("AE", sprintf("%06d", exchange$next_account_event_id)),
+        timestamp = as.POSIXct(timestamp, tz = "UTC"), agent_id = position$agent_id,
+        event_type = "future_expiry", asset_id = as.integer(action$asset_id), symbol = action$symbol,
+        currency = position$currency, amount = pnl, order_id = NA_character_, fill_id = NA_character_,
+        atomic_group_id = NA_character_, message = "Futures expiry marked P&L settled into cash."
+      )
+      exchange$next_account_event_id <- exchange$next_account_event_id + 1L
+      exchange$account_events <- data.table::rbindlist(list(exchange$account_events, event), fill = TRUE)
+      successor_id <- as.integer(action$successor_asset_id %||% NA_integer_)
+      if (!is.na(successor_id)) {
+        successor <- exchange$assets[asset_id == successor_id]
+        successor_position <- exchange$typed_margin_positions[
+          agent_id == position$agent_id & asset_id == successor_id & abs(signed_units) > 1e-12
+        ]
+        if (nrow(successor_position)) stop("Cannot roll into a contract with an existing open margin position.", call. = FALSE)
+        row <- data.table::data.table(
+          agent_id = position$agent_id, asset_id = successor_id, symbol = successor$symbol[1L],
+          currency = .profile_currency(exchange, successor$quote_ccy[1L]), signed_units = position$signed_units,
+          settlement_price = as.numeric(action$successor_price), last_price = as.numeric(action$successor_price),
+          contract_size = successor$contract_size[1L], maintenance_rate = position$maintenance_rate,
+          timestamp = as.POSIXct(timestamp, tz = "UTC")
+        )
+        exchange$typed_margin_positions <- data.table::rbindlist(list(exchange$typed_margin_positions, row), fill = TRUE)
+        roll_event <- data.table::copy(event)
+        roll_event[, `:=`(account_event_id = paste0("AE", sprintf("%06d", exchange$next_account_event_id)),
+          event_type = "future_roll", asset_id = successor_id, symbol = successor$symbol[1L], amount = 0,
+          message = "Futures position rolled into the registered successor contract.")]
+        exchange$next_account_event_id <- exchange$next_account_event_id + 1L
+        exchange$account_events <- data.table::rbindlist(list(exchange$account_events, roll_event), fill = TRUE)
+      }
+    }
+    order_ids <- exchange$agent_orders[status == "accepted" & asset_id == action$asset_id, order_id]
+    for (order_id in order_ids) .spot_mark_order_terminal(exchange, order_id, "cancelled", "contract_expired",
+      "Order cancelled because the futures contract expired.", timestamp)
+    asset_index <- which(exchange$assets$asset_id == action$asset_id)
+    if (length(asset_index)) data.table::set(exchange$assets, i = asset_index, j = "status", value = "expired")
+    action_index <- match(action$action_id, exchange$corporate_actions$action_id)
+    data.table::set(exchange$corporate_actions, i = action_index, j = "status", value = "applied")
+    data.table::set(exchange$corporate_actions, i = action_index, j = "message",
+      value = if (is.na(action$successor_asset_id %||% NA_integer_)) "Futures contract expired and was cash settled." else "Futures contract expired, was cash settled, and rolled.")
   }
   invisible(NULL)
 }

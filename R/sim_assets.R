@@ -4,7 +4,8 @@
 #' @param symbol Asset symbol, for example `"BTC-USDT-SWAP"`.
 #' @param asset_id Optional integer asset id. Defaults to a stable id derived
 #'   from `symbol`.
-#' @param status Asset status: `active`, `paused`, `delisted`, or `removed`.
+#' @param status Asset status: `active`, `paused`, `delisted`, `expired`, or
+#'   `removed`.
 #' @param asset_class Asset class label, such as `crypto_perp`, `stock`,
 #'   `bond`, `etf`, `commodity_future`, `fx`, or `other`.
 #' @param instrument_profile Canonical accounting/calendar profile. Defaults to
@@ -24,7 +25,7 @@
 sim_asset_add <- function(exchange,
                           symbol,
                           asset_id = NULL,
-                          status = c("active", "paused", "delisted", "removed"),
+                          status = c("active", "paused", "delisted", "expired", "removed"),
                           asset_class = "other",
                           instrument_profile = NULL,
                           contract_size = 1,
