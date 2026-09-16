@@ -284,7 +284,7 @@ sim_portfolio_step <- function(states,
   if (!nrow(out)) return(data.table::data.table())
   out[, timestamp := as.POSIXct(as.numeric(timestamp), origin = "1970-01-01", tz = "UTC")]
   out[, `:=`(
-    event_type_label = "trade",
+    event_type_label = c(`1` = "trade", `2` = "funding", `3` = "liquidation")[as.character(event_type)],
     bar_stage_label = c(`1` = "open", `2` = "intra", `3` = "close")[as.character(bar_stage)],
     status_label = c(`1` = "filled", `-1` = "failed", `0` = "pending")[as.character(status)],
     action_label = c(`1` = "open", `2` = "increase", `-1` = "close", `-2` = "reduce", `0` = "none")[as.character(action)],

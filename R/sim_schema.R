@@ -1,7 +1,7 @@
 #' tradesimr durable schema version
 #'
 #' @export
-TRADESIMR_SCHEMA_VERSION <- "0.17.0"
+TRADESIMR_SCHEMA_VERSION <- "0.18.0"
 
 #' Heterogeneous account schema version
 #'
@@ -422,9 +422,11 @@ sim_schema_version <- function() {
 #' silently discarding consumer-defined extension columns.
 #'
 #' @param tables A named list of durable data tables.
+#' @param from_version Optional source schema version retained in the returned
+#'   metadata for audit. Missing fields are migrated deterministically.
 #' @return A named list upgraded to [sim_schema_version()].
 #' @export
-sim_schema_migrate <- function(tables) {
+sim_schema_migrate <- function(tables, from_version = NULL) {
   if (!is.list(tables) || is.null(names(tables))) stop("`tables` must be a named list.", call. = FALSE)
   schemas <- sim_schemas()
   out <- lapply(names(tables), function(name) {
@@ -437,11 +439,34 @@ sim_schema_migrate <- function(tables) {
     for (column in intersect(names(schema), names(table))) {
       data.table::set(table, j = column, value = .schema_cast_column(table[[column]], schema[[column]]))
     }
+    if (identical(name, "assets") && nrow(table)) table <- .schema_migrate_assets(table)
     table
   })
   names(out) <- names(tables)
   attr(out, "schema_version") <- TRADESIMR_SCHEMA_VERSION
+  attr(out, "source_schema_version") <- as.character(from_version %||% NA_character_)
   out
+}
+
+#' @keywords internal
+.schema_migrate_assets <- function(table) {
+  if (!"asset_class" %in% names(table)) table[, asset_class := "other"]
+  if (!"status" %in% names(table)) table[, status := "active"]
+  table[is.na(status) | !nzchar(status), status := "active"]
+  for (i in seq_len(nrow(table))) {
+    requested <- table$instrument_profile[i]
+    if (is.na(requested) || !nzchar(requested)) requested <- table$asset_class[i]
+    profile <- tryCatch(.instrument_profile_resolve(requested), error = function(...) .instrument_profile_resolve("other"))
+    defaults <- c("instrument_profile", "asset_class", "calendar_id", "timezone",
+      "settlement_lag_days", "margin_model", "accounting_model")
+    for (column in defaults) {
+      value <- table[[column]][i]
+      if (is.na(value) || (is.character(value) && !nzchar(value))) {
+        data.table::set(table, i = i, j = column, value = profile[[column]][1L])
+      }
+    }
+  }
+  table
 }
 
 #' @keywords internal

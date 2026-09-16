@@ -178,6 +178,10 @@
     # Persist its position/cash projection even though it retains the legacy
     # event projection for downstream portfolio-ledger compatibility.
     typed_proposed <- proposed
+    # Account events are projected once by
+    # `.heterogeneous_portfolio_variation_events()`, which also produces the
+    # matching public step event and cash-ledger row.
+    typed_proposed$account_events <- sim_schemas()$account_events[0]
     typed_proposed$events <- data.table::data.table()
     .heterogeneous_v2_record_state(exchange, agent_id, typed_proposed, timestamp)
   }
@@ -729,7 +733,16 @@
     data.table::setcolorder(margin, names(sim_schemas()$margin_positions))
     replace_rows("typed_margin_positions", margin, c("agent_id", "asset_id"))
   }
-  events <- data.table::as.data.table(proposed$account_events %||% proposed$events)
+  event_source <- proposed$account_events
+  if (is.null(event_source) || !nrow(data.table::as.data.table(event_source))) event_source <- proposed$events
+  events <- data.table::as.data.table(event_source)
+  if ("event_type" %in% names(events)) {
+    events <- events[as.character(event_type) %in% c("funding", "variation_margin", "bond_coupon", "bond_accrual", "redemption")]
+  }
+  if (nrow(events) && (!"currency" %in% names(events) || all(is.na(events$currency)))) {
+    currency_map <- stats::setNames(as.character(exchange$assets$quote_ccy), as.character(exchange$assets$asset_id))
+    events[, currency := unname(currency_map[as.character(asset_id)])]
+  }
   if (nrow(events)) {
     rows <- events[, .(
       account_event_id = paste0("AE", sprintf("%06d", exchange$next_account_event_id + seq_len(.N) - 1L)),
@@ -798,22 +811,55 @@
   # Derivatives-only v2 calls expose typed account events separately from the
   # legacy execution-event projection. Mixed account calls already use
   # `events`; both are C++-authoritative cash settlements.
-  variations <- data.table::as.data.table(proposed$account_events %||% proposed$events)
+  event_source <- proposed$account_events
+  if (is.null(event_source) || !nrow(data.table::as.data.table(event_source))) event_source <- proposed$events
+  variations <- data.table::as.data.table(event_source)
+  if ("event_type" %in% names(variations)) {
+    variations <- variations[as.character(event_type) %in% c("funding", "variation_margin", "bond_coupon", "bond_accrual", "redemption")]
+  }
+  # The derivatives compatibility kernel records funding in the exact C++
+  # recorder's `funding_fee` column. Project it as a typed cash event instead
+  # of re-estimating it from R state.
+  legacy_events <- data.table::as.data.table(proposed$events %||% data.table::data.table())
+  if (!nrow(variations) && "funding_fee" %in% names(legacy_events)) {
+    funding <- legacy_events[is.finite(funding_fee) & abs(funding_fee) > 1e-12]
+    if (nrow(funding)) {
+      funding[, `:=`(
+        event_type = "funding", amount = -as.numeric(funding_fee),
+        currency = vapply(asset_id, function(id) {
+          asset <- exchange$assets[asset_id == as.integer(id)]
+          .profile_currency(exchange, asset$quote_ccy[1L])
+        }, character(1L)),
+        settlement_price = as.numeric(price), cash_effect = TRUE
+      )]
+      variations <- data.table::rbindlist(list(variations, funding[, .(
+        event_type, asset_id, currency, amount, settlement_price, cash_effect
+      )]), fill = TRUE)
+    }
+  }
+  if (nrow(variations) && (!"currency" %in% names(variations) || all(is.na(variations$currency)))) {
+    currency_map <- stats::setNames(as.character(exchange$assets$quote_ccy), as.character(exchange$assets$asset_id))
+    variations[, currency := unname(currency_map[as.character(asset_id)])]
+  }
   balances <- data.table::as.data.table(proposed$cash_balances)
   if ("cash_effect" %in% names(variations)) variations <- variations[cash_effect == TRUE]
   if (!nrow(variations)) return(data.table::data.table())
   first_event_id <- .next_spot_event_id(exchange)
   rows <- lapply(seq_len(nrow(variations)), function(i) {
     row <- variations[i]
-    asset <- exchange$assets[asset_id == as.integer(row$asset_id)]
+    event_asset_id <- as.integer(row[["asset_id"]][1L])
+    event_currency <- as.character(row[["currency"]][1L])
+    event_amount <- as.numeric(row[["amount"]][1L])
+    event_type <- as.character(row[["event_type"]][1L])
+    event_price <- if ("settlement_price" %in% names(row)) as.numeric(row[["settlement_price"]][1L]) else NA_real_
+    asset <- exchange$assets[asset_id == event_asset_id]
     if (nrow(asset) != 1L) return(NULL)
     balance <- balances[
-      currency == as.character(row$currency), settled
+      currency == event_currency, settled
     ]
-    event_type <- as.character(row$event_type %||% "variation_margin")
-    .profile_record_cash(exchange, timestamp, agent_id, row$currency, row$amount,
-      if (length(balance)) balance[1L] else .profile_cash_balance(exchange, agent_id, row$currency),
-      event_type, row$asset_id, asset$symbol[1L],
+    .profile_record_cash(exchange, timestamp, agent_id, event_currency, event_amount,
+      if (length(balance)) balance[1L] else .profile_cash_balance(exchange, agent_id, event_currency),
+      event_type, event_asset_id, asset$symbol[1L],
       message = switch(event_type,
         funding = "Funding settled through heterogeneous execution.",
         variation_margin = "Futures variation margin settled through heterogeneous execution.",
@@ -822,15 +868,22 @@
         redemption = "Bond redemption booked through heterogeneous execution.",
         "Typed account event booked through heterogeneous execution."
       ))
+    .profile_record_account_event(exchange, timestamp, agent_id, event_type,
+      event_asset_id, asset$symbol[1L], event_currency, event_amount,
+      switch(event_type,
+        funding = "Funding settled through heterogeneous execution.",
+        variation_margin = "Futures variation margin settled through heterogeneous execution.",
+        "Typed account event booked through heterogeneous execution."
+      ))
     data.table::data.table(
       timestamp = timestamp, event_id = first_event_id + i - 1L,
       event_type = if (identical(event_type, "funding")) 5L else if (identical(event_type, "variation_margin")) 4L else 6L,
       event_type_label = event_type, action_id = 0L, status_label = "filled",
       action_label = event_type, dir_label = "flat", ctr_qty = 0,
-      price = as.numeric(row$settlement_price), cash = .profile_cash_balance(exchange, agent_id, row$currency),
+      price = event_price, cash = .profile_cash_balance(exchange, agent_id, event_currency),
       equity = .profile_agent_equity(exchange, agent_id), fee = 0,
-      realized_pnl = as.numeric(row$amount), agent_id = as.character(agent_id),
-      symbol = asset$symbol[1L], asset_id = as.integer(row$asset_id), order_id = NA_character_
+      realized_pnl = event_amount, agent_id = as.character(agent_id),
+      symbol = asset$symbol[1L], asset_id = event_asset_id, order_id = NA_character_
     )
   })
   data.table::rbindlist(rows, fill = TRUE)
@@ -937,7 +990,19 @@
       proposed$fills <- data.table::as.data.table(proposed$fills)
       proposed$events <- data.table::as.data.table(proposed$events)
       .heterogeneous_portfolio_commit_state(exchange, agent_id, proposed)
-      .heterogeneous_v2_record_state(exchange, agent_id, proposed, boundary_timestamp)
+      # Fill account events are projected here. Lifecycle cash events are
+      # projected once below with their matching public step event and
+      # profile-cash-ledger entry. Non-cash typed events, such as bond
+      # accrual, remain durable account events here.
+      typed_proposed <- proposed
+      typed_proposed$account_events <- sim_schemas()$account_events[0]
+      typed_proposed$events <- proposed$events
+      if ("cash_effect" %in% names(typed_proposed$events)) {
+        typed_proposed$events <- typed_proposed$events[is.na(cash_effect) | cash_effect != TRUE]
+      } else {
+        typed_proposed$events <- sim_schemas()$account_events[0]
+      }
+      .heterogeneous_v2_record_state(exchange, agent_id, typed_proposed, boundary_timestamp)
       outcome_events <- .heterogeneous_portfolio_apply_outcomes(
         exchange, accepted, proposed, boundary_timestamp,
         margin_asset_ids = target_margin_ids

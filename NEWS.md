@@ -3,6 +3,37 @@
 This changelog follows the repository tags. There is no `v0.8.0` tag in the
 current git history; `v0.9.0` follows `v0.7.0`.
 
+## tradesimr 0.18.0
+
+### Stable Profile Contract
+
+- `sim_instrument_profiles()` now documents profile-level settlement, carry,
+  lifecycle hooks, and explicit limitations for equity, ETF, futures, FX spot,
+  crypto spot, crypto perpetuals, bonds, and generic `other` assets.
+- Durable imports now retain their source schema version and migrate legacy
+  asset rows to typed instrument defaults without discarding extension
+  columns. Legacy `stock` and `etf` assets gain their profile, calendar,
+  settlement, margin, and accounting defaults on import or exchange load.
+- The durable schema version is now `0.18.0`. Generic `other` assets reject
+  unsupported corporate-action and lifecycle operations rather than implying
+  accounting support that does not exist.
+
+### Profile Reconciliation
+
+- The typed derivatives kernel now emits an authoritative funding event when
+  a crypto-perpetual funding settlement changes cash without a trade. The v2
+  adapter writes one matching `funding` row to the public step event stream,
+  account-event ledger, and profile cash ledger.
+- Mixed-profile and derivatives-only v2 routes now avoid duplicate lifecycle
+  booking: C++ lifecycle cash events are projected once, alongside their
+  matching public event, while ordinary trade fills retain their existing
+  durable order/fill linkage.
+- Added reconciliation regressions for legacy schema migration, generic asset
+  limitations, and crypto-perpetual funding through save/load. Existing
+  deterministic lifecycle coverage remains in place for equity/ETF corporate
+  actions and delisting, future expiry and rolling, FX settlement, carry,
+  bond coupon/accrual/redemption, and typed account exports.
+
 ## tradesimr 0.17.0
 
 ### Heterogeneous Portfolio Execution

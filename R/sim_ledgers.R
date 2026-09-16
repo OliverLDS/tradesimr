@@ -438,6 +438,16 @@ sim_import <- function(path) {
   for (table in manifest$table) {
     out[[table]] <- sim_read_table(path, table)
   }
+  source_version <- if ("schema_version" %in% names(manifest) && nrow(manifest)) {
+    unique(as.character(manifest$schema_version))[1L]
+  } else {
+    NA_character_
+  }
+  table_names <- setdiff(names(out), "manifest")
+  if (length(table_names)) {
+    migrated <- sim_schema_migrate(out[table_names], from_version = source_version)
+    out[table_names] <- migrated
+  }
   if (!is.null(out$simulation)) {
     sim <- data.table::as.data.table(out$simulation)
     if (!is.null(out$events)) data.table::setattr(sim, "events", sim_events(out$events))

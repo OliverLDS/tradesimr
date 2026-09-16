@@ -14,7 +14,20 @@ sim_instrument_profiles <- function() {
     timezone = c("America/New_York", "America/New_York", "America/Chicago", "UTC", "UTC", "UTC", "America/New_York", "UTC"),
     settlement_lag_days = c(1L, 1L, 0L, 2L, 0L, 0L, 1L, 0L),
     margin_model = c("cash", "cash", "futures", "fx", "cash", "perpetual", "cash", "generic"),
-    accounting_model = c("equity", "equity", "futures", "fx", "spot", "perpetual", "bond", "generic")
+    accounting_model = c("equity", "equity", "futures", "fx", "spot", "perpetual", "bond", "generic"),
+    settlement_model = c("T+1 cash", "T+1 cash", "daily variation margin", "T+2 calendar settlement", "immediate", "collateral plus funding", "T+1 cash", "immediate"),
+    funding_or_carry = c("borrow and cash interest", "borrow and cash interest", "cash interest", "FX carry", "none", "funding calendar and collateral", "accrual and coupon", "none"),
+    corporate_action_hooks = c("dividend, split, delisting", "dividend, split, delisting", "expiry, roll", "none", "none", "none", "coupon, accrual, redemption", "none"),
+    limitations = c(
+      "No tax-lot accounting or jurisdictional withholding.",
+      "No tax-lot accounting or jurisdictional withholding.",
+      "Roll requires an explicit registered successor and settlement price.",
+      "Settlement is calendar-aware; value-date conventions beyond T+2 require a custom calendar.",
+      "Fully paid inventory only; no chain-specific custody model.",
+      "Single collateral currency per position; no venue-specific insurance fund model.",
+      "Fixed-income schedules are deterministic; no yield-curve pricing model.",
+      "Generic marked instrument only; lifecycle, settlement, and corporate actions are unsupported."
+    )
   )
 }
 

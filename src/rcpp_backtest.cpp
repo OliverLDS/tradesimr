@@ -800,6 +800,32 @@ static Rcpp::List typed_derivative_step_kernel(const Rcpp::DataFrame& margin_pos
     s.mmr = 0.0;
     ExchangeMessage_on_funding fund_msg = exchange_vec[static_cast<std::size_t>(i)].update_on_funding(s);
     shared_cash = fund_msg.cash;
+    // Funding changes shared cash even when no trade is submitted at this
+    // boundary. Keep a typed event so the durable R ledgers reconcile to the
+    // authoritative C++ cash balance.
+    if (rec && (std::abs(fund_msg.funding_fee) > 1e-12 || fund_msg.liquidate)) {
+      event_timestamp.push_back(fund_msg.timestamp);
+      event_id.push_back(++next_event_id);
+      event_type.push_back(2);
+      event_bar_stage.push_back(static_cast<int>(fund_msg.bar_stage));
+      event_action_id.push_back(0);
+      event_strat_id.push_back(static_cast<int>(s.strat));
+      event_asset_id.push_back(s.asset);
+      event_tx_id.push_back(next_tx_id);
+      event_status.push_back(static_cast<int>(fund_msg.liquidate ? TRADESIMR::ActionStatus::FAILED : TRADESIMR::ActionStatus::FILLED));
+      event_liquidation.push_back(fund_msg.liquidate ? 1 : 0);
+      event_action.push_back(static_cast<int>(TRADESIMR::ActionCode::NONE));
+      event_dir.push_back(static_cast<int>(s.pos_dir));
+      event_ctr_qty.push_back(0.0);
+      event_price.push_back(s.last_px);
+      event_equity.push_back(fund_msg.cash + s.unrealized_pnl());
+      event_cash.push_back(fund_msg.cash);
+      event_realized_pnl.push_back(0.0);
+      event_fee.push_back(0.0);
+      event_funding_fee.push_back(fund_msg.funding_fee);
+      event_maintenance_margin.push_back(s.mm());
+      event_target_clipped.push_back(0);
+    }
     ExchangeMessage_on_mark mark_msg = exchange_vec[static_cast<std::size_t>(i)].update_on_mark(s);
     s.last_px = mark_msg.last_px;
     state_vec[static_cast<std::size_t>(i)] = s;
@@ -1198,6 +1224,18 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
     Rcpp::NumericVector event_price = legacy_events.containsElementNamed("price") ? Rcpp::as<Rcpp::NumericVector>(legacy_events["price"]) : Rcpp::NumericVector();
     Rcpp::NumericVector event_fee = legacy_events.containsElementNamed("fee") ? Rcpp::as<Rcpp::NumericVector>(legacy_events["fee"]) : Rcpp::NumericVector();
     Rcpp::NumericVector event_realized = legacy_events.containsElementNamed("realized_pnl") ? Rcpp::as<Rcpp::NumericVector>(legacy_events["realized_pnl"]) : Rcpp::NumericVector();
+    Rcpp::NumericVector event_funding = legacy_events.containsElementNamed("funding_fee") ? Rcpp::as<Rcpp::NumericVector>(legacy_events["funding_fee"]) : Rcpp::NumericVector();
+    // The legacy recorder carries funding as a separate numeric vector. Project
+    // it into the typed account-event contract so v2 cash and durable ledgers
+    // reconcile without interpreting legacy event codes in R.
+    for (R_xlen_t ei = 0; ei < event_funding.size(); ++ei) {
+      if (!std::isfinite(event_funding[ei]) || std::abs(event_funding[ei]) <= 1e-12) continue;
+      account_event_type.push_back("funding");
+      account_event_currency.push_back(base_currency);
+      account_event_asset.push_back(ei < event_asset_id.size() ? event_asset_id[ei] : 0);
+      account_event_amount.push_back(-event_funding[ei]);
+      account_event_price.push_back(ei < event_price.size() ? event_price[ei] : NA_REAL);
+    }
     Rcpp::CharacterVector group_id = orders.containsElementNamed("atomic_group_id") ? Rcpp::as<Rcpp::CharacterVector>(orders["atomic_group_id"]) : order_id;
     std::vector<std::string> fill_id, fill_order_id, fill_group_id, fill_status, fill_reason;
     std::vector<int> fill_asset;

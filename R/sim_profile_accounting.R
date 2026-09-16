@@ -300,12 +300,16 @@ sim_exchange_corporate_action <- function(exchange, symbol,
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   asset <- .asset_require_registered(exchange, symbol = symbol, context = "corporate action asset")
   action_type <- match.arg(action_type)
+  asset_spec <- exchange$assets[asset_id == asset$asset_id]
+  if (identical(asset_spec$instrument_profile[1L], "other")) {
+    stop("The `other` profile does not support corporate actions or lifecycle settlement.", call. = FALSE)
+  }
   if (!is.finite(amount) || (action_type == "split" && amount <= 0)) {
     stop("Corporate action amount must be finite; split ratios must be positive.", call. = FALSE)
   }
   id <- paste0("CA", sprintf("%06d", exchange$next_corporate_action_id))
   exchange$next_corporate_action_id <- exchange$next_corporate_action_id + 1L
-  spec <- exchange$assets[asset_id == asset$asset_id]
+  spec <- asset_spec
   row <- data.table::data.table(action_id = id, effective_timestamp = as.POSIXct(effective_timestamp, tz = "UTC"),
     asset_id = asset$asset_id, symbol = asset$symbol, action_type = action_type,
     amount = as.numeric(amount), currency = .profile_currency(exchange, currency %||% spec$quote_ccy[1L]),

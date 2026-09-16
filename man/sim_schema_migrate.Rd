@@ -4,10 +4,13 @@
 \alias{sim_schema_migrate}
 \title{Migrate durable tables to the current schema}
 \usage{
-sim_schema_migrate(tables)
+sim_schema_migrate(tables, from_version = NULL)
 }
 \arguments{
 \item{tables}{A named list of durable data tables.}
+
+\item{from_version}{Optional source schema version retained in the returned
+metadata for audit. Missing fields are migrated deterministically.}
 }
 \value{
 A named list upgraded to \code{\link[=sim_schema_version]{sim_schema_version()}}.

@@ -691,10 +691,24 @@ sim_exchange_step <- function(exchange, bars) {
         state_started <- .sim_profile_start(exchange)
       }
       if (nrow(variation_events)) {
+        public_variation_events <- variation_events
+        # The typed derivatives kernel now emits its own funding execution
+        # event. Its account/cash ledger projection above remains necessary,
+        # but avoid appending a second public event for the same settlement.
+        if (nrow(step$events) && "event_type_label" %in% names(step$events)) {
+          funding_assets <- as.integer(step$events[event_type_label == "funding", asset_id])
+          if (length(funding_assets)) {
+            public_variation_events <- public_variation_events[
+              !(event_type_label == "funding" & asset_id %in% funding_assets)
+            ]
+          }
+        }
         # Variation-margin events are generated outside the legacy step event
         # sequence. Allocate durable ids after the batch's execution events.
-        variation_events[, event_id := max(c(0L, exchange$step_events$event_id, step$events$event_id), na.rm = TRUE) + seq_len(.N)]
-        new_event_list[[length(new_event_list) + 1L]] <- variation_events
+        if (nrow(public_variation_events)) {
+          public_variation_events[, event_id := max(c(0L, exchange$step_events$event_id, step$events$event_id), na.rm = TRUE) + seq_len(.N)]
+          new_event_list[[length(new_event_list) + 1L]] <- public_variation_events
+        }
       }
       # The native derivatives kernel already values the complete derivative
       # account and applies covariance margin/liquidation. Rebuilding the same

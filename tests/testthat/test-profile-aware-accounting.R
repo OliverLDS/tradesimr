@@ -138,6 +138,40 @@ test_that("cash interest and short inventory borrow accrue once through save/loa
   expect_equal(nrow(restored$carry_accruals), 2L)
 })
 
+test_that("crypto perpetual funding reconciles C++ cash to durable typed events", {
+  exchange <- sim_exchange_new(list(
+    cash = 1000, base_currency = "USD", portfolio_margin = TRUE,
+    execution_engine = "heterogeneous_v2", fee_rt = 0,
+    fund_rt = .001, funding_interval_hours = 8, lev = 1
+  ))
+  sim_asset_add(exchange, "BTC-PERP", asset_id = 95L,
+    instrument_profile = "crypto_perp", quote_ccy = "USD", qty_step = 1)
+  start <- as.POSIXct("2025-01-01 00:00:00", tz = "UTC")
+  bar <- function(timestamp) data.frame(
+    timestamp = timestamp, symbol = "BTC-PERP", asset_id = 95L,
+    open = 100, high = 101, low = 99, close = 100
+  )
+  sim_portfolio_market_step(exchange, bar(start))
+  sim_portfolio_target_submit(exchange, "alice", bar(start), c("BTC-PERP" = .5))
+  sim_portfolio_market_step(exchange, bar(start + 8 * 3600))
+  sim_portfolio_market_step(exchange, bar(start + 16 * 3600))
+
+  funding_cash <- exchange$profile_cash_ledger[event_type == "funding"]
+  funding_events <- exchange$account_events[event_type == "funding"]
+  expect_equal(nrow(funding_cash), 1L)
+  expect_equal(nrow(funding_events), 1L)
+  expect_equal(funding_cash$amount, -.5)
+  expect_equal(funding_events$amount, funding_cash$amount)
+  expect_equal(sim_exchange_cash_balances(exchange, "alice")$amount, 999.5)
+  expect_equal(nrow(exchange$step_events[event_type_label == "funding"]), 1L)
+
+  path <- tempfile("tradesimr-perp-funding-")
+  sim_exchange_save(exchange, path)
+  restored <- sim_exchange_load(path)
+  expect_equal(restored$profile_cash_ledger[event_type == "funding", amount], -.5)
+  expect_equal(restored$account_events[event_type == "funding", amount], -.5)
+})
+
 test_that("typed cash balances retain settled and unsettled cash through settlement and load", {
   exchange <- sim_exchange_new(list(cash = 1000, base_currency = "USD"))
   sim_asset_add(exchange, "SAP", asset_id = 1L, instrument_profile = "equity",
@@ -247,7 +281,7 @@ test_that("heterogeneous v2 persists bond coupon events from the C++ account ker
   original_event <- durable(exchange$account_events[event_type == "bond_coupon"])
   expect_equal(restored_event[, .(timestamp, agent_id, event_type, asset_id, symbol, currency, amount)],
     original_event[, .(timestamp, agent_id, event_type, asset_id, symbol, currency, amount)])
-  expect_true(is.na(restored_event$order_id))
+  expect_true(all(is.na(restored_event$order_id)))
 })
 
 test_that("bond schedules survive load and settle coupon then redemption through v2", {
