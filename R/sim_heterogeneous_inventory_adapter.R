@@ -140,6 +140,14 @@
     )
   }
   exchange$agent_accounts[[as.character(agent_id)]]$liquidated <- isTRUE(proposed$liquidated)
+  if (.exchange_uses_heterogeneous_v2(exchange)) {
+    # Derivatives-only portfolio replay uses the typed C++ kernel directly.
+    # Persist its position/cash projection even though it retains the legacy
+    # event projection for downstream portfolio-ledger compatibility.
+    typed_proposed <- proposed
+    typed_proposed$events <- data.table::data.table()
+    .heterogeneous_v2_record_state(exchange, agent_id, typed_proposed, timestamp)
+  }
   invisible(NULL)
 }
 

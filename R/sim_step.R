@@ -130,7 +130,9 @@ sim_step <- function(state,
 #' @param portfolio_margin_floor Floor margin rate applied to gross exposure.
 #' @inheritParams sim_step
 #' @return A list with `states`, `cash`, `equity`, `maintenance_margin`,
-#'   `liquidated`, and `events`.
+#'   `liquidated`, and `events`. The state-list input is a compatibility
+#'   projection; exchange and replay callers should use the typed
+#'   heterogeneous account route.
 #' @export
 sim_portfolio_step <- function(states,
                                bars,

@@ -69,7 +69,9 @@ direction.}
 }
 \value{
 A list with \code{states}, \code{cash}, \code{equity}, \code{maintenance_margin},
-\code{liquidated}, and \code{events}.
+\code{liquidated}, and \code{events}. The state-list input is a compatibility
+projection; exchange and replay callers should use the typed
+heterogeneous account route.
 }
 \description{
 Processes one timestamp batch of bars and explicit orders for one agent under

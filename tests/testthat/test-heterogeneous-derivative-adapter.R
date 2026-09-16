@@ -93,10 +93,11 @@ test_that("complete native derivative boundaries do not need a duplicate R margi
   expect_equal(after, before)
 })
 
-test_that("heterogeneous v2 routes derivative-only target replay through typed state", {
+test_that("default exchange routes derivative-only target replay through typed state", {
   exchange <- sim_exchange_new(list(
-    cash = 10000, portfolio_margin = TRUE, execution_engine = "heterogeneous_v2", lev = 1
+    cash = 10000, portfolio_margin = TRUE, lev = 1
   ))
+  expect_identical(exchange$config$execution_engine, "heterogeneous_v2")
   sim_asset_add(exchange, "ES", asset_id = 1L, instrument_profile = "future")
   execution <- sim_portfolio_execution(lev = 1)
   first <- data.frame(

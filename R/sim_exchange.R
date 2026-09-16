@@ -2,8 +2,9 @@
 #'
 #' @param config Named simulation parameters. Set `execution_engine` to
 #'   `"heterogeneous_v2"` to route portfolio boundaries through the typed
-#'   multi-profile C++ account kernel; `"legacy_v1"` remains the default
-#'   compatibility route during downstream migration.
+#'   multi-profile C++ account kernel; it is the default. `"legacy_v1"` is a
+#'   deprecated compatibility route for downstream consumers that still
+#'   require the legacy snapshot/event projection.
 #' @return A mutable environment containing market, intent, order, and result
 #'   tables.
 #' @export
@@ -12,7 +13,7 @@ sim_exchange_new <- function(config = list()) {
   state$config <- config
   state$config$schema_version <- TRADESIMR_SCHEMA_VERSION
   state$config$account_schema_version <- TRADESIMR_ACCOUNT_SCHEMA_VERSION
-  state$config$execution_engine <- as.character(state$config$execution_engine %||% "legacy_v1")
+  state$config$execution_engine <- as.character(state$config$execution_engine %||% "heterogeneous_v2")
   if (!state$config$execution_engine %in% c("legacy_v1", "heterogeneous_v2")) {
     stop("`execution_engine` must be `legacy_v1` or `heterogeneous_v2`.", call. = FALSE)
   }
@@ -420,6 +421,19 @@ sim_exchange_step <- function(exchange, bars) {
 
 #' @keywords internal
 .sim_exchange_step_mixed_profiled_portfolio <- function(exchange, new_bars) {
+  inventory_profiles <- vapply(new_bars$asset_id, function(id) {
+    .asset_uses_spot_inventory(exchange, id)
+  }, logical(1L))
+  asset_profiles <- exchange$assets$instrument_profile[
+    match(as.integer(new_bars$asset_id), exchange$assets$asset_id)
+  ]
+  # The derivatives-only adapter now enters the typed-margin kernel directly
+  # and preserves the established portfolio target/order ledger contract.
+  # Reserve the mixed adapter for boundaries that actually combine inventory
+  # and margin positions in one atomic account transition.
+  if (!any(inventory_profiles) || (all(inventory_profiles) && !any(asset_profiles == "bond", na.rm = TRUE))) {
+    return(.sim_exchange_step_portfolio(exchange, new_bars))
+  }
   # A portfolio boundary containing an inventory asset cannot be split into a
   # spot step and a derivatives step: target rebalance legs share one durable
   # atomic group. Route the complete account through the heterogeneous kernel.

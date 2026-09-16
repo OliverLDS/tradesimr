@@ -9,8 +9,9 @@ sim_exchange_new(config = list())
 \arguments{
 \item{config}{Named simulation parameters. Set \code{execution_engine} to
 \code{"heterogeneous_v2"} to route portfolio boundaries through the typed
-multi-profile C++ account kernel; \code{"legacy_v1"} remains the default
-compatibility route during downstream migration.}
+multi-profile C++ account kernel; it is the default. \code{"legacy_v1"} is a
+deprecated compatibility route for downstream consumers that still
+require the legacy snapshot/event projection.}
 }
 \value{
 A mutable environment containing market, intent, order, and result

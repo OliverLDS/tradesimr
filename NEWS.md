@@ -7,6 +7,14 @@ current git history; `v0.9.0` follows `v0.7.0`.
 
 ### Heterogeneous Portfolio Execution
 
+- The typed margin-position derivative kernel is now the shared C++ execution
+  path. `portfolio_step_rcpp()` remains an internal deprecated compatibility
+  endpoint which adapts legacy state lists into typed margin rows; the
+  heterogeneous kernel no longer rebuilds or consumes legacy state lists.
+- `sim_exchange_new()` now defaults to `execution_engine = "heterogeneous_v2"`.
+  Derivatives-only portfolio boundaries retain the established target/order
+  ledger through the typed derivative adapter; mixed inventory-plus-margin
+  boundaries continue through the atomic heterogeneous account adapter.
 - Added a typed heterogeneous account path for inventory and margin products.
   Mixed spot, equity/ETF, FX spot, futures, and perpetual target-rebalance
   groups now cross one atomic C++ admission boundary with shared cash.
