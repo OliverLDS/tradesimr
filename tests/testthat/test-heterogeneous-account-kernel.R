@@ -169,7 +169,7 @@ test_that("heterogeneous mixed account liquidates on unified inventory plus marg
   expect_equal(out$events$event_type, "variation_margin")
 })
 
-test_that("incremental future exchange books durable variation margin without changing the legacy portfolio kernel", {
+test_that("v2 futures settle C++ variation margin into durable typed cash", {
   exchange <- sim_exchange_new(list(cash = 1000, lev = 10, mmr = .02))
   sim_asset_add(exchange, "ES", asset_id = 1L, instrument_profile = "future", quote_ccy = "USD", contract_size = 10)
   day1 <- as.POSIXct("2025-01-01", tz = "UTC")
@@ -181,6 +181,8 @@ test_that("incremental future exchange books durable variation margin without ch
   expect_equal(state$avg_price, 110)
   expect_true(any(exchange$step_events$event_type_label == "variation_margin"))
   expect_true(any(exchange$profile_cash_ledger$event_type == "variation_margin"))
+  expect_true(any(exchange$account_events$event_type == "variation_margin"))
+  expect_equal(exchange$cash_balances[agent_id == "trader" & currency == "USD", settled], 1100)
 })
 
 test_that("incremental futures settle variation margin in native currency", {

@@ -7,6 +7,17 @@ current git history; `v0.9.0` follows `v0.7.0`.
 
 ### Heterogeneous Portfolio Execution
 
+- `heterogeneous_v2` now settles derivative variation margin inside the C++
+  typed account step. The exchange adapter persists the returned typed cash
+  event; it no longer recomputes variation margin in R for that route.
+- Homogeneous v2 inventory portfolio boundaries now use the same atomic typed
+  heterogeneous adapter as mixed-profile groups. Typed cash, inventory, and
+  margin tables are the v2 execution inputs; legacy state lists are derived
+  compatibility projections only.
+- Explicit `execution_engine = "legacy_v1"` selection now raises a deprecation
+  warning. The internal `portfolio_step_rcpp()` state-list endpoint remains a
+  deprecated compatibility adapter while downstream callers migrate.
+
 - The typed margin-position derivative kernel is now the shared C++ execution
   path. `portfolio_step_rcpp()` remains an internal deprecated compatibility
   endpoint which adapts legacy state lists into typed margin rows; the

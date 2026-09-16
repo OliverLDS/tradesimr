@@ -17,6 +17,9 @@ sim_exchange_new <- function(config = list()) {
   if (!state$config$execution_engine %in% c("legacy_v1", "heterogeneous_v2")) {
     stop("`execution_engine` must be `legacy_v1` or `heterogeneous_v2`.", call. = FALSE)
   }
+  if (identical(state$config$execution_engine, "legacy_v1")) {
+    warning("`execution_engine = 'legacy_v1'` is deprecated; use `heterogeneous_v2`.", call. = FALSE)
+  }
   state$market_events <- sim_schemas()$market_events[0]
   state$intents <- sim_schemas()$intents[0]
   state$agent_orders <- sim_schemas()$agent_orders[0]
@@ -295,6 +298,16 @@ sim_exchange_step <- function(exchange, bars) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   new_bars <- as_market_bars(bars)
   new_bars <- .validate_market_bar_assets(exchange, new_bars)
+  # v2 futures/perpetual accounts always use the typed derivative boundary,
+  # even when the caller has not enabled cross-asset portfolio margin. This
+  # keeps C++ variation-margin settlement authoritative for every v2 margin
+  # route instead of falling through to the legacy single-state loop.
+  has_margin_profile <- any(!vapply(new_bars$asset_id, function(id) {
+    .asset_uses_spot_inventory(exchange, id)
+  }, logical(1L)))
+  if (.exchange_uses_heterogeneous_v2(exchange) && has_margin_profile) {
+    return(.sim_exchange_step_mixed_profiled_portfolio(exchange, new_bars))
+  }
   if (isTRUE(exchange$config$portfolio_margin %||% FALSE)) {
     # Heterogeneous v2 owns the complete account boundary, including a
     # derivatives-only boundary. Legacy v1 remains available while external
@@ -427,11 +440,19 @@ sim_exchange_step <- function(exchange, bars) {
   asset_profiles <- exchange$assets$instrument_profile[
     match(as.integer(new_bars$asset_id), exchange$assets$asset_id)
   ]
-  # The derivatives-only adapter now enters the typed-margin kernel directly
-  # and preserves the established portfolio target/order ledger contract.
-  # Reserve the mixed adapter for boundaries that actually combine inventory
-  # and margin positions in one atomic account transition.
-  if (!any(inventory_profiles) || (all(inventory_profiles) && !any(asset_profiles == "bond", na.rm = TRUE))) {
+  specs <- exchange$assets[match(as.integer(new_bars$asset_id), exchange$assets$asset_id)]
+  base_currency <- .profile_base_currency(exchange)
+  # The compact typed derivative adapter currently has a single base-currency
+  # cash row. Non-base settlement currencies therefore use the general typed
+  # account adapter, which carries one CashBalance per settlement currency.
+  base_currency_margin <- all(vapply(seq_len(nrow(specs)), function(i) {
+    .asset_uses_spot_inventory(exchange, specs$asset_id[i]) ||
+      identical(.profile_currency(exchange, specs$quote_ccy[i]), base_currency)
+  }, logical(1L)))
+  # Derivatives-only, base-currency boundaries retain their typed derivative
+  # adapter for legacy target/action parity. Every v2 inventory boundary,
+  # including a homogeneous one, uses the atomic heterogeneous account adapter.
+  if (!any(inventory_profiles) && base_currency_margin) {
     return(.sim_exchange_step_portfolio(exchange, new_bars))
   }
   # A portfolio boundary containing an inventory asset cannot be split into a
@@ -440,8 +461,18 @@ sim_exchange_step <- function(exchange, bars) {
   exchange$market_events <- data.table::rbindlist(list(exchange$market_events, new_bars), fill = TRUE)
   stepped <- .sim_exchange_step_heterogeneous_portfolio(exchange, new_bars)
   exchange$new_events <- stepped$events
-  exchange$step_snapshots <- data.table::rbindlist(list(exchange$step_snapshots, stepped$snapshots), fill = TRUE)
-  exchange$step_events <- data.table::rbindlist(list(exchange$step_events, stepped$events), fill = TRUE)
+  accumulator <- exchange$.bulk_accumulator %||% NULL
+  if (is.environment(accumulator)) {
+    accumulator$step_snapshots[[length(accumulator$step_snapshots) + 1L]] <- stepped$snapshots
+    accumulator$step_events[[length(accumulator$step_events) + 1L]] <- stepped$events
+    # Target planning needs only the latest boundary projection during compact
+    # replay; the full durable history is bound once at the end.
+    exchange$step_snapshots <- stepped$snapshots
+    exchange$step_events <- stepped$events
+  } else {
+    exchange$step_snapshots <- data.table::rbindlist(list(exchange$step_snapshots, stepped$snapshots), fill = TRUE)
+    exchange$step_events <- data.table::rbindlist(list(exchange$step_events, stepped$events), fill = TRUE)
+  }
   exchange$result <- exchange$step_snapshots
   data.table::setattr(exchange$result, "market_events", exchange$market_events)
   data.table::setattr(exchange$result, "events", exchange$step_events)
@@ -525,24 +556,9 @@ sim_exchange_step <- function(exchange, bars) {
       ledger_started <- proc.time()[["elapsed"]]
       state_started <- .sim_profile_start(exchange)
       .heterogeneous_derivative_commit_state(exchange, agent_id, step, agent_batch$timestamp[1L])
-      variation_events <- list()
-      for (requested_asset_id in as.integer(step$margin_positions$asset_id)) {
-        state_key <- .agent_state_key(agent_id, requested_asset_id)
-        asset_bar <- agent_batch[agent_batch$asset_id == requested_asset_id][1L]
-        asset <- .bar_asset_key(asset_bar)
-        variation <- .sim_exchange_apply_future_variation_margin(
-          exchange, exchange$agent_states[[state_key]], asset_bar, asset, agent_id
-        )
-        if (nrow(variation$events) > 0L) variation_events[[length(variation_events) + 1L]] <- variation$events
-        exchange$agent_states[[state_key]] <- variation$state
-        exchange$agent_states[[state_key]]$cash <- .shared_cash(exchange, agent_id)
-        position_row <- which(exchange$margin_positions$agent_id == as.character(agent_id) &
-          exchange$margin_positions$asset_id == requested_asset_id)
-        if (length(position_row) == 1L) {
-          data.table::set(exchange$margin_positions, i = position_row, j = "settlement_price", value = variation$state$settlement_price %||% variation$state$avg_price)
-          data.table::set(exchange$margin_positions, i = position_row, j = "last_price", value = variation$state$last_px)
-        }
-      }
+      variation_events <- .heterogeneous_portfolio_variation_events(
+        exchange, agent_id, step, agent_batch$timestamp[1L]
+      )
       if (nrow(step$events) > 0L) {
         data.table::set(step$events, j = "agent_id", value = agent_id)
         if ("asset_id" %in% names(step$events)) {
@@ -559,8 +575,7 @@ sim_exchange_step <- function(exchange, bars) {
         .sim_profile_add(exchange, "order_fill_event_ledger_writes", append_started)
         state_started <- .sim_profile_start(exchange)
       }
-      if (length(variation_events)) {
-        variation_events <- data.table::rbindlist(variation_events, fill = TRUE)
+      if (nrow(variation_events)) {
         # Variation-margin events are generated outside the legacy step event
         # sequence. Allocate durable ids after the batch's execution events.
         variation_events[, event_id := max(c(0L, exchange$step_events$event_id, step$events$event_id), na.rm = TRUE) + seq_len(.N)]

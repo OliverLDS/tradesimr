@@ -52,7 +52,8 @@
     portfolio_margin_sigma = as.numeric(exchange$config$portfolio_margin_sigma %||% 3),
     portfolio_margin_floor = as.numeric(exchange$config$portfolio_margin_floor %||% exchange$config$mmr %||% 0.02),
     old_timestamp = old_timestamp, slippage = as.numeric(exchange$config$slippage %||% 0),
-    spread = as.numeric(exchange$config$spread %||% 0), rec = TRUE
+    spread = as.numeric(exchange$config$spread %||% 0), rec = TRUE,
+    settle_variation_margin = TRUE
   )
   heterogeneous_account_step_rcpp(
     .profile_base_currency(exchange),
@@ -70,7 +71,18 @@
 .heterogeneous_derivative_account_input <- function(exchange, agent_id, bars) {
   asset_ids <- as.integer(bars$asset_id)
   requested_agent_id <- as.character(agent_id)
-  existing <- exchange$margin_positions[agent_id == requested_agent_id & asset_id %in% asset_ids]
+  # v2 typed margin rows are authoritative. `margin_positions` remains a
+  # compatibility projection for callers that still consume sim_state.
+  authoritative <- exchange$typed_margin_positions %||% data.table::data.table()
+  existing <- authoritative[agent_id == requested_agent_id & asset_id %in% asset_ids]
+  if (!nrow(existing) && !.exchange_uses_heterogeneous_v2(exchange)) {
+    existing <- exchange$margin_positions[agent_id == requested_agent_id & asset_id %in% asset_ids]
+  }
+  if (!"old_timestamp" %in% names(existing)) {
+    # Typed rows carry their last committed boundary as `timestamp`; that is
+    # the authoritative funding interval cursor in v2.
+    existing[, old_timestamp := if ("timestamp" %in% names(existing)) as.numeric(timestamp) else NA_real_]
+  }
   missing_asset_ids <- setdiff(asset_ids, as.integer(existing$asset_id))
   if (!length(missing_asset_ids)) {
     return(data.table::copy(existing[, .(asset_id, currency, signed_units, settlement_price, last_price, contract_size, maintenance_rate, old_timestamp)]))
@@ -299,11 +311,17 @@
     as.numeric(state$pos_dir %||% 0) * as.numeric(state$ctr_unit %||% 0)
   }
   currency <- if (is_inventory) state$currency else asset$quote_ccy[1L]
+  planned_action <- as.character(order$intended_action[1L] %||% NA_character_)
+  action_label <- if (!is.na(planned_action) && nzchar(planned_action)) planned_action else as.character(order$side[1L])
   event_id <- .next_spot_event_id(exchange)
   data.table::data.table(
     timestamp = timestamp, event_id = event_id, event_type = 1L,
     event_type_label = "fill", action_id = event_id, status_label = "filled",
-    action_label = as.character(order$side[1L]),
+    # Target-derived fills retain their action-plan lifecycle (`open`,
+    # `increase`, `close`, `reduce`) rather than collapsing it to buy/sell.
+    # Execution-quality replay uses this durable field to reconstruct the
+    # post-fill signed target quantity.
+    action_label = action_label,
     dir_label = if (signed_quantity > 0) "long" else if (signed_quantity < 0) "short" else "flat",
     ctr_qty = as.numeric(fill$qty[1L]), price = as.numeric(fill$price[1L]),
     cash = .profile_cash_balance(exchange, order$agent_id[1L], currency),
@@ -479,11 +497,11 @@
     asset_id = integer(), currency = character(), units = numeric(), average_cost = numeric(),
     last_price = numeric(), contract_size = numeric(), accrued_interest = numeric()
   )
-  # The typed table is the durable source after save/load. Keep any zero-value
-  # compatibility rows, but replace active assets with their typed balances.
+  # The typed table is the durable source after save/load. Keep compatibility
+  # rows only for assets not yet represented by typed state.
   if (.exchange_uses_heterogeneous_v2(exchange) && nrow(exchange$inventory_positions %||% data.table::data.table())) {
     typed_inventory <- data.table::copy(exchange$inventory_positions[
-      agent_id == as.character(agent_id) & asset_id %in% as.integer(bars$asset_id),
+      agent_id == as.character(agent_id),
       .(asset_id, currency, units, average_cost, last_price, contract_size, accrued_interest)
     ])
     if (nrow(typed_inventory)) {
@@ -513,8 +531,15 @@
   )
   balances <- sim_exchange_cash_balances(exchange, agent_id)
   currencies <- unique(c(.profile_base_currency(exchange), balances$currency, inventory$currency, margin$currency))
+  cash_input <- data.table::as.data.table(.profile_cash_kernel_input(exchange, agent_id))
+  missing_currencies <- setdiff(currencies, cash_input$currency)
+  if (length(missing_currencies)) {
+    cash_input <- data.table::rbindlist(list(cash_input, data.table::data.table(
+      currency = missing_currencies, settled = 0, unsettled = 0
+    )), fill = TRUE)
+  }
   list(
-    cash_balances = .profile_cash_kernel_input(exchange, agent_id),
+    cash_balances = data.frame(cash_input),
     inventory_positions = data.frame(inventory), margin_positions = data.frame(margin),
     fx_rates = data.frame(currency = currencies, rate_to_base = vapply(currencies, function(currency) {
       .profile_fx_rate(exchange, currency, .profile_base_currency(exchange))
@@ -644,7 +669,7 @@
     data.table::setcolorder(margin, names(sim_schemas()$margin_positions))
     replace_rows("typed_margin_positions", margin, c("agent_id", "asset_id"))
   }
-  events <- data.table::as.data.table(proposed$events)
+  events <- data.table::as.data.table(proposed$account_events %||% proposed$events)
   if (nrow(events)) {
     rows <- events[, .(
       account_event_id = paste0("AE", sprintf("%06d", exchange$next_account_event_id + seq_len(.N) - 1L)),
@@ -699,7 +724,11 @@
 }
 
 .heterogeneous_portfolio_variation_events <- function(exchange, agent_id, proposed, timestamp) {
-  variations <- data.table::as.data.table(proposed$events)
+  # Derivatives-only v2 calls expose typed account events separately from the
+  # legacy execution-event projection. Mixed account calls already use
+  # `events`; both are C++-authoritative cash settlements.
+  variations <- data.table::as.data.table(proposed$account_events %||% proposed$events)
+  balances <- data.table::as.data.table(proposed$cash_balances)
   if ("cash_effect" %in% names(variations)) variations <- variations[cash_effect == TRUE]
   if (!nrow(variations)) return(data.table::data.table())
   first_event_id <- .next_spot_event_id(exchange)
@@ -707,7 +736,7 @@
     row <- variations[i]
     asset <- exchange$assets[asset_id == as.integer(row$asset_id)]
     if (nrow(asset) != 1L) return(NULL)
-    balance <- proposed$cash_balances[
+    balance <- balances[
       currency == as.character(row$currency), settled
     ]
     event_type <- as.character(row$event_type %||% "variation_margin")
@@ -830,7 +859,21 @@
       if (nrow(outcome_events)) events[[length(events) + 1L]] <- outcome_events
       if (nrow(variation_events)) events[[length(events) + 1L]] <- variation_events
       .enforce_cross_margin(exchange, agent_id, boundary_timestamp)
-      snapshots[[length(snapshots) + 1L]] <- .agent_position_snapshots(exchange, agent_id, boundary_timestamp)
+      snapshot <- .agent_position_snapshots(exchange, agent_id, boundary_timestamp)
+      # Typed cash is authoritative in a heterogeneous account. In particular,
+      # a non-base futures settlement balance must contribute to every legacy
+      # per-position snapshot rather than being lost in its base-cash field.
+      typed_account <- sim_exchange_account_state(exchange, agent_id)$account
+      has_non_base_cash <- nrow(exchange$cash_balances[
+        agent_id == as.character(agent_id) & currency != .profile_base_currency(exchange) &
+          (abs(settled) > 1e-12 | abs(unsettled) > 1e-12)
+      ]) > 0L
+      if (nrow(snapshot) && nrow(typed_account) && has_non_base_cash) {
+        data.table::set(snapshot, j = "equity", value = as.numeric(typed_account$equity[1L]))
+        data.table::set(snapshot, j = "cash", value = as.numeric(typed_account$cash_settled[1L]))
+        data.table::set(snapshot, j = "maintenance_margin", value = as.numeric(typed_account$maintenance_margin[1L]))
+      }
+      snapshots[[length(snapshots) + 1L]] <- snapshot
     }
     .heterogeneous_portfolio_mark_bond_actions_applied(exchange, bond_actions)
     .bond_schedule_advance(exchange, bond_schedules, boundary_timestamp)

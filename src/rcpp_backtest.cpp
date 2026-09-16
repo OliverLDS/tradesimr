@@ -1151,9 +1151,33 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
       output_last[i] = Rcpp::as<double>(state["last_px"]);
       output_size[i] = bar_size[i];
     }
+    // In the v2 exchange route variation margin is an account-kernel
+    // settlement, not an R-side adjustment.  Keep the compatibility endpoint
+    // unchanged unless the exchange explicitly requests this settlement.
+    std::vector<std::string> account_event_type, account_event_currency;
+    std::vector<int> account_event_asset;
+    std::vector<double> account_event_amount, account_event_price;
+    double settled_cash = Rcpp::as<double>(result["cash"]);
+    if (setting_bool("settle_variation_margin", false)) {
+      for (R_xlen_t i = 0; i < output_asset.size(); ++i) {
+        if (!std::isfinite(output_units[i]) || std::abs(output_units[i]) <= 1e-12 ||
+            !std::isfinite(output_settlement[i]) || !std::isfinite(output_last[i])) continue;
+        const double variation = output_units[i] * (output_last[i] - output_settlement[i]) * output_size[i];
+        settled_cash += variation;
+        output_settlement[i] = output_last[i];
+        if (std::abs(variation) > 1e-12) {
+          account_event_type.push_back("variation_margin");
+          account_event_currency.push_back(base_currency);
+          account_event_asset.push_back(output_asset[i]);
+          account_event_amount.push_back(variation);
+          account_event_price.push_back(output_last[i]);
+        }
+      }
+      result["cash"] = settled_cash;
+    }
     result["cash_balances"] = Rcpp::DataFrame::create(
       Rcpp::Named("currency") = Rcpp::CharacterVector::create(base_currency),
-      Rcpp::Named("settled") = Rcpp::NumericVector::create(Rcpp::as<double>(result["cash"])),
+      Rcpp::Named("settled") = Rcpp::NumericVector::create(settled_cash),
       Rcpp::Named("unsettled") = Rcpp::NumericVector::create(0.0)
     );
     result["margin_positions"] = Rcpp::DataFrame::create(
@@ -1233,6 +1257,15 @@ Rcpp::List heterogeneous_account_step_rcpp(const std::string& base_currency,
       Rcpp::Named("event_timestamp") = Rcpp::wrap(group_timestamp), Rcpp::Named("equity") = Rcpp::NumericVector(group_ids.size(), Rcpp::as<double>(result["equity"])),
       Rcpp::Named("maintenance_margin") = Rcpp::NumericVector(group_ids.size(), Rcpp::as<double>(result["maintenance_margin"])),
       Rcpp::Named("liquidated") = Rcpp::LogicalVector(group_ids.size(), Rcpp::as<bool>(result["liquidated"]))
+    );
+    result["account_events"] = Rcpp::DataFrame::create(
+      Rcpp::Named("timestamp") = Rcpp::NumericVector(account_event_amount.size(), timestamp),
+      Rcpp::Named("event_type") = Rcpp::wrap(account_event_type),
+      Rcpp::Named("asset_id") = Rcpp::wrap(account_event_asset),
+      Rcpp::Named("currency") = Rcpp::wrap(account_event_currency),
+      Rcpp::Named("amount") = Rcpp::wrap(account_event_amount),
+      Rcpp::Named("settlement_price") = Rcpp::wrap(account_event_price),
+      Rcpp::Named("cash_effect") = Rcpp::LogicalVector(account_event_amount.size(), true)
     );
     return result;
   }
