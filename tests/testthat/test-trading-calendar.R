@@ -80,3 +80,28 @@ test_that("calendar modes validate cadence against the prior accepted bar", {
   misaligned$timestamp <- misaligned$timestamp + 7 * 60
   expect_error(sim_exchange_step(exchange, misaligned), "bar cadence")
 })
+
+test_that("calendar specifications generate holidays, early closes, and expected bars", {
+  holidays <- sim_calendar_holidays("XNYS", as.Date("2026-11-25"), as.Date("2026-11-28"))
+  expect_true(any(holidays$label == "Thanksgiving"))
+  expect_true(any(holidays$label == "Black Friday" & holidays$close_time == "13:00"))
+  expected <- sim_calendar_expected_bars(
+    "XNYS", as.POSIXct("2026-11-27 14:00:00", tz = "UTC"),
+    as.POSIXct("2026-11-27 20:00:00", tz = "UTC"), 3600
+  )
+  expect_true(nrow(expected) > 0L)
+  expect_true(all(sim_calendar_is_open(expected$timestamp - 1, "XNYS")))
+  expect_false(sim_calendar_is_open(as.POSIXct("2026-11-27 18:30:00", tz = "UTC"), "XNYS")) # 13:30 ET
+})
+
+test_that("durable exchange exceptions override calendar sessions", {
+  exchange <- sim_exchange_new(list(calendar_mode = "calendarize"))
+  sim_asset_add(exchange, "SPY", asset_id = 1L, instrument_profile = "equity")
+  sim_exchange_calendar_exception(exchange, "2026-01-05", "closed", symbol = "SPY", message = "Test closure")
+  bar <- data.frame(timestamp = as.POSIXct("2026-01-05 15:00:00", tz = "UTC"), symbol = "SPY", asset_id = 1L,
+    open = 100, high = 100, low = 100, close = 100)
+  expect_false(sim_exchange_calendarize_bars(exchange, bar)$is_tradable)
+  path <- tempfile("calendar-exception-")
+  sim_exchange_save(exchange, path)
+  expect_equal(sim_exchange_load(path)$calendar_exceptions[, !"created_at"], exchange$calendar_exceptions[, !"created_at"])
+})

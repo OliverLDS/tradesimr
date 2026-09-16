@@ -111,6 +111,11 @@ sim_schemas <- function() {
       maturity_timestamp = as.POSIXct(character()), last_accrual_timestamp = as.POSIXct(character()),
       next_coupon_timestamp = as.POSIXct(character()), status = character()
     ),
+    calendar_exceptions = data.table::data.table(
+      exception_id = character(), calendar_id = character(), asset_id = integer(),
+      symbol = character(), session_date = as.Date(character()), action = character(),
+      close_time = character(), message = character(), created_at = as.POSIXct(character())
+    ),
     market_events = data.table::data.table(
       timestamp = as.POSIXct(character()),
       observation_timestamp = as.POSIXct(character()),
@@ -435,6 +440,7 @@ sim_schema_migrate <- function(tables) {
 #' @keywords internal
 .schema_typed_na <- function(prototype, n) {
   if (inherits(prototype, "POSIXt")) return(as.POSIXct(rep(NA_real_, n), origin = "1970-01-01", tz = "UTC"))
+  if (inherits(prototype, "Date")) return(as.Date(rep(NA_real_, n), origin = "1970-01-01"))
   if (is.integer(prototype)) return(rep.int(NA_integer_, n))
   if (is.logical(prototype)) return(rep.int(NA, n))
   if (is.numeric(prototype)) return(rep.int(NA_real_, n))
@@ -444,6 +450,7 @@ sim_schema_migrate <- function(tables) {
 #' @keywords internal
 .schema_cast_column <- function(value, prototype) {
   if (inherits(prototype, "POSIXt")) return(as.POSIXct(value, tz = "UTC"))
+  if (inherits(prototype, "Date")) return(as.Date(value))
   if (is.integer(prototype)) return(as.integer(value))
   if (is.logical(prototype)) return(as.logical(value))
   if (is.numeric(prototype)) return(as.numeric(value))

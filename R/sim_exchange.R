@@ -50,6 +50,7 @@ sim_exchange_new <- function(config = list()) {
   state$settlement_ledger <- sim_schemas()$settlement_ledger[0]
   state$corporate_actions <- sim_schemas()$corporate_actions[0]
   state$bond_schedules <- sim_schemas()$bond_schedules[0]
+  state$calendar_exceptions <- sim_schemas()$calendar_exceptions[0]
   state$agent_states <- list()
   # Authoritative derivatives state for heterogeneous portfolio execution.
   # `agent_states` remains a compatibility projection for older APIs.
@@ -836,6 +837,7 @@ sim_exchange_save <- function(exchange, path, format = c("csv", "fst")) {
     settlement_ledger = exchange$settlement_ledger,
     corporate_actions = exchange$corporate_actions,
     bond_schedules = exchange$bond_schedules,
+    calendar_exceptions = exchange$calendar_exceptions,
     currency_cash_state = sim_exchange_cash_balances(exchange),
     margin_position_state = exchange$margin_positions,
     agent_decisions = exchange$agent_decisions,
@@ -1047,6 +1049,11 @@ sim_exchange_load <- function(path) {
     for (column in intersect(c("issue_timestamp", "maturity_timestamp", "last_accrual_timestamp", "next_coupon_timestamp"), names(exchange$bond_schedules))) {
       data.table::set(exchange$bond_schedules, j = column, value = as.POSIXct(exchange$bond_schedules[[column]], tz = "UTC"))
     }
+  }
+  if (file.exists(file.path(path, "calendar_exceptions.csv"))) {
+    exchange$calendar_exceptions <- data.table::fread(file.path(path, "calendar_exceptions.csv"))
+    data.table::set(exchange$calendar_exceptions, j = "session_date", value = as.Date(exchange$calendar_exceptions$session_date))
+    data.table::set(exchange$calendar_exceptions, j = "created_at", value = as.POSIXct(exchange$calendar_exceptions$created_at, tz = "UTC"))
   }
   if (file.exists(file.path(path, "currency_cash_state.csv"))) {
     balances <- data.table::fread(file.path(path, "currency_cash_state.csv"))

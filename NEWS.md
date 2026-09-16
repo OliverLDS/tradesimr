@@ -18,6 +18,11 @@ current git history; `v0.9.0` follows `v0.7.0`.
   closed-session or cadence-misaligned observations into valuation-only bars,
   and `"strict"` rejects them. Portfolio market-boundary records are written
   only for fresh, completed, tradable bars.
+- Added durable exchange calendar exceptions, a complete deterministic XNYS
+  regular-holiday and Black Friday early-close schedule, and
+  `sim_calendar_expected_bars()` for expected completed-bar endpoints.
+  `sim_portfolio_target_replay(production_calendar = TRUE)` now rejects raw
+  admission and requires calendarized or strict market-bar handling.
 - Bars marked incomplete or non-tradable are now valuation-only in
   `sim_exchange_step()`: they update durable market marks and snapshots but
   cannot execute orders or trigger funding, variation margin, liquidation, or

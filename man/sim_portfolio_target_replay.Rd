@@ -13,7 +13,8 @@ sim_portfolio_target_replay(
   decision_policy = sim_portfolio_decision_policy(),
   rebalance_policy = NULL,
   export_path = NULL,
-  profile = FALSE
+  profile = FALSE,
+  production_calendar = FALSE
 )
 }
 \arguments{
@@ -50,6 +51,10 @@ order record.}
 \item{export_path}{Optional directory for public-safe per-agent exports.}
 
 \item{profile}{Whether to return wall-time categories.}
+
+\item{production_calendar}{When \code{TRUE}, require an explicit exchange
+\code{calendar_mode} of \code{"calendarize"} or \code{"strict"}; production replay may
+not silently use legacy raw-bar admission.}
 }
 \value{
 A list with the exchange, durable orders/fills/positions/accounts,

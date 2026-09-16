@@ -4,7 +4,7 @@
 \alias{sim_calendar_is_open}
 \title{Test whether timestamps fall in a built-in tradable session}
 \usage{
-sim_calendar_is_open(timestamp, calendar_id = "ALWAYS_OPEN")
+sim_calendar_is_open(timestamp, calendar_id = "ALWAYS_OPEN", exceptions = NULL)
 }
 \arguments{
 \item{timestamp}{POSIXct timestamps.}

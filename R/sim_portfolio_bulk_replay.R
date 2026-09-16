@@ -31,6 +31,9 @@
 #'   order record.
 #' @param export_path Optional directory for public-safe per-agent exports.
 #' @param profile Whether to return wall-time categories.
+#' @param production_calendar When `TRUE`, require an explicit exchange
+#'   `calendar_mode` of `"calendarize"` or `"strict"`; production replay may
+#'   not silently use legacy raw-bar admission.
 #' @return A list with the exchange, durable orders/fills/positions/accounts,
 #'   targets/rebalances, execution quality, optional export paths, and timings.
 #' @export
@@ -42,9 +45,13 @@ sim_portfolio_target_replay <- function(exchange,
                                         decision_policy = sim_portfolio_decision_policy(),
                                         rebalance_policy = NULL,
                                         export_path = NULL,
-                                        profile = FALSE) {
+                                        profile = FALSE,
+                                        production_calendar = FALSE) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   execution <- .portfolio_validate_execution(execution)
+  if (isTRUE(production_calendar) && identical(exchange$config$calendar_mode %||% "raw", "raw")) {
+    stop("Production portfolio replay requires `calendar_mode = 'calendarize'` or 'strict' on the exchange.", call. = FALSE)
+  }
   decision_policy <- .portfolio_validate_decision_policy(decision_policy)
   bars <- .portfolio_validate_decision_bars(exchange, bars)
   panel <- data.table::as.data.table(target_weights)
