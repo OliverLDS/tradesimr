@@ -8,7 +8,8 @@ sim_portfolio_target_submit_batch(
   exchange,
   bars,
   decisions,
-  execution = sim_portfolio_execution()
+  execution = sim_portfolio_execution(),
+  decision_policy = sim_portfolio_decision_policy()
 )
 }
 \arguments{
@@ -19,6 +20,8 @@ sim_portfolio_target_submit_batch(
 \item{decisions}{A named list keyed by \code{agent_id}.}
 
 \item{execution}{Execution assumptions from \code{sim_portfolio_execution()}.}
+
+\item{decision_policy}{Market-observation policy applied to every decision.}
 }
 \value{
 A list with the common boundary \code{timestamp}, public account and

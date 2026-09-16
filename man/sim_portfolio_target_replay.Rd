@@ -10,6 +10,7 @@ sim_portfolio_target_replay(
   target_weights,
   allowed_symbols = NULL,
   execution = sim_portfolio_execution(),
+  decision_policy = sim_portfolio_decision_policy(),
   rebalance_policy = NULL,
   export_path = NULL,
   profile = FALSE
@@ -31,6 +32,10 @@ containing one completed bar for every allowed symbol; incomplete groups
 are treated as absent decisions.}
 
 \item{execution}{Execution assumptions from \code{\link[=sim_portfolio_execution]{sim_portfolio_execution()}}.}
+
+\item{decision_policy}{Market-observation policy from
+\code{\link[=sim_portfolio_decision_policy]{sim_portfolio_decision_policy()}}. Applied independently to each agent
+decision after the market boundary has been accepted.}
 
 \item{rebalance_policy}{Optional policy for sparse deterministic target
 panels. \code{NULL} (the default) preserves historical behavior and submits

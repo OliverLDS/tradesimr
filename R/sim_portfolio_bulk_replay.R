@@ -17,6 +17,9 @@
 #'   containing one completed bar for every allowed symbol; incomplete groups
 #'   are treated as absent decisions.
 #' @param execution Execution assumptions from [sim_portfolio_execution()].
+#' @param decision_policy Market-observation policy from
+#'   [sim_portfolio_decision_policy()]. Applied independently to each agent
+#'   decision after the market boundary has been accepted.
 #' @param rebalance_policy Optional policy for sparse deterministic target
 #'   panels. `NULL` (the default) preserves historical behavior and submits
 #'   every agent/timestamp target group. When supplied, it must be a list with
@@ -36,11 +39,13 @@ sim_portfolio_target_replay <- function(exchange,
                                         target_weights,
                                         allowed_symbols = NULL,
                                         execution = sim_portfolio_execution(),
+                                        decision_policy = sim_portfolio_decision_policy(),
                                         rebalance_policy = NULL,
                                         export_path = NULL,
                                         profile = FALSE) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   execution <- .portfolio_validate_execution(execution)
+  decision_policy <- .portfolio_validate_decision_policy(decision_policy)
   bars <- .portfolio_validate_decision_bars(exchange, bars)
   panel <- data.table::as.data.table(target_weights)
   required <- c("timestamp", "agent_id", "symbol", "target_weight")
@@ -149,11 +154,17 @@ sim_portfolio_target_replay <- function(exchange,
       })
       # Historical feeds can have partial market calendars. Do not create a
       # multi-asset decision from an incomplete information boundary.
-      complete <- vapply(names(decisions), function(current_agent_id) {
+      eligible <- vapply(names(decisions), function(current_agent_id) {
         allowed_assets <- allowed_assets_by_agent[[current_agent_id]]
-        .portfolio_has_complete_universe_boundary(boundary_bars, allowed_assets)
+        tryCatch({
+          .portfolio_require_decision_policy(
+            exchange, boundary_bars, decisions[[current_agent_id]]$target_weights,
+            allowed_assets, decision_policy
+          )
+          TRUE
+        }, error = function(...) FALSE)
       }, logical(1L))
-      decisions <- decisions[complete]
+      decisions <- decisions[eligible]
       if (!is.null(rebalance_policy)) {
         keep <- vapply(names(decisions), function(current_agent_id) {
           rows <- decision_rows[decision_rows$agent_id == current_agent_id]
@@ -170,7 +181,7 @@ sim_portfolio_target_replay <- function(exchange,
       }
       .sim_profile_add(exchange, "boundary_normalization", normalization_started)
       if (length(decisions)) {
-        .portfolio_target_submit_batch_compact(exchange, boundary_bars, decisions, execution)
+        .portfolio_target_submit_batch_compact(exchange, boundary_bars, decisions, execution, decision_policy)
       }
     } else {
       .sim_profile_add(exchange, "boundary_normalization", normalization_started)

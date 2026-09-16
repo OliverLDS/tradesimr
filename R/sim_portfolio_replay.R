@@ -135,6 +135,8 @@ sim_portfolio_market_step <- function(exchange,
 #' @param allowed_asset_ids Optional registered asset ids this agent may target,
 #'   hold, or trade. When supplied with `allowed_symbols`, both must identify
 #'   the same allowed universe.
+#' @param decision_policy Market-observation policy from
+#'   [sim_portfolio_decision_policy()].
 #' @return A list containing `orders`, `fills`, `positions`, `account`,
 #'   `targets`, `realized_weights`, and `outcomes`.
 #' @export
@@ -145,7 +147,8 @@ sim_portfolio_target_submit <- function(exchange,
                                         execution = sim_portfolio_execution(),
                                         decision_label = "target_weight",
                                         allowed_symbols = NULL,
-                                        allowed_asset_ids = NULL) {
+                                        allowed_asset_ids = NULL,
+                                        decision_policy = sim_portfolio_decision_policy()) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   agent_id <- as.character(agent_id)
   if (!nzchar(agent_id)) stop("`agent_id` is required.", call. = FALSE)
@@ -155,7 +158,9 @@ sim_portfolio_target_submit <- function(exchange,
   .portfolio_require_accepted_boundary(exchange, decision_bars)
   .portfolio_apply_execution_config(exchange, execution)
   allowed_assets <- .portfolio_resolve_allowed_assets(exchange, agent_id, allowed_symbols, allowed_asset_ids)
-  if (!is.null(target_weights)) .portfolio_require_complete_universe_boundary(decision_bars, allowed_assets)
+  if (!is.null(target_weights)) .portfolio_require_decision_policy(
+    exchange, decision_bars, target_weights, allowed_assets, decision_policy
+  )
   first_asset <- .bar_asset_key(decision_bars[1L])
   .portfolio_ensure_agent_account(exchange, agent_id, first_asset)
   .portfolio_set_agent_universe(exchange, agent_id, allowed_assets$asset_id)
@@ -181,6 +186,7 @@ sim_portfolio_target_submit <- function(exchange,
 #' @param bars The already accepted timestamped completed-bar batch.
 #' @param decisions A named list keyed by `agent_id`.
 #' @param execution Execution assumptions from `sim_portfolio_execution()`.
+#' @param decision_policy Market-observation policy applied to every decision.
 #' @return A list with the common boundary `timestamp`, public account and
 #'   position snapshots, and a named `submissions` list containing the same
 #'   result contract as `sim_portfolio_target_submit()` for each agent.
@@ -188,7 +194,8 @@ sim_portfolio_target_submit <- function(exchange,
 sim_portfolio_target_submit_batch <- function(exchange,
                                               bars,
                                               decisions,
-                                              execution = sim_portfolio_execution()) {
+                                              execution = sim_portfolio_execution(),
+                                              decision_policy = sim_portfolio_decision_policy()) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   if (!is.list(decisions) || is.null(names(decisions)) || any(!nzchar(names(decisions))) || anyDuplicated(names(decisions))) {
     stop("`decisions` must be a named list keyed by unique agent ids.", call. = FALSE)
@@ -213,7 +220,9 @@ sim_portfolio_target_submit_batch <- function(exchange,
     allowed_assets <- .portfolio_resolve_allowed_assets(
       exchange, agent_id, decision$allowed_symbols %||% NULL, decision$allowed_asset_ids %||% NULL
     )
-    if (!is.null(decision$target_weights)) .portfolio_require_complete_universe_boundary(decision_bars, allowed_assets)
+    if (!is.null(decision$target_weights)) .portfolio_require_decision_policy(
+      exchange, decision_bars, decision$target_weights, allowed_assets, decision_policy
+    )
     first_asset <- .bar_asset_key(decision_bars[1L])
     .portfolio_ensure_agent_account(exchange, agent_id, first_asset)
     .portfolio_set_agent_universe(exchange, agent_id, allowed_assets$asset_id)
@@ -257,7 +266,8 @@ sim_portfolio_target_submit_batch <- function(exchange,
 .portfolio_target_submit_batch_compact <- function(exchange,
                                                     bars,
                                                     decisions,
-                                                    execution = sim_portfolio_execution()) {
+                                                    execution = sim_portfolio_execution(),
+                                                    decision_policy = sim_portfolio_decision_policy()) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   if (!is.list(decisions) || is.null(names(decisions)) || any(!nzchar(names(decisions))) || anyDuplicated(names(decisions))) {
     stop("`decisions` must be a named list keyed by unique agent ids.", call. = FALSE)
@@ -281,7 +291,9 @@ sim_portfolio_target_submit_batch <- function(exchange,
     allowed_assets <- decision$.allowed_assets %||% .portfolio_resolve_allowed_assets(
       exchange, agent_id, decision$allowed_symbols %||% NULL, decision$allowed_asset_ids %||% NULL
     )
-    if (!is.null(decision$target_weights)) .portfolio_require_complete_universe_boundary(decision_bars, allowed_assets)
+    if (!is.null(decision$target_weights)) .portfolio_require_decision_policy(
+      exchange, decision_bars, decision$target_weights, allowed_assets, decision_policy
+    )
     first_asset <- .bar_asset_key(decision_bars[1L])
     .portfolio_ensure_agent_account(exchange, agent_id, first_asset)
     .portfolio_set_agent_universe(exchange, agent_id, allowed_assets$asset_id)
@@ -384,6 +396,8 @@ sim_portfolio_target_submit_batch <- function(exchange,
 #'   hold, or trade.
 #' @param allowed_asset_ids Optional registered asset ids this agent may target,
 #'   hold, or trade.
+#' @param decision_policy Market-observation policy from
+#'   [sim_portfolio_decision_policy()].
 #' @return A list containing `orders`, `fills`, `positions`, `account`,
 #'   `targets`, `realized_weights`, and `outcomes`.
 #' @export
@@ -394,7 +408,8 @@ sim_portfolio_target_step <- function(exchange,
                                       execution = sim_portfolio_execution(),
                                       decision_label = "target_weight",
                                       allowed_symbols = NULL,
-                                      allowed_asset_ids = NULL) {
+                                      allowed_asset_ids = NULL,
+                                      decision_policy = sim_portfolio_decision_policy()) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   agent_id <- as.character(agent_id)
   if (!nzchar(agent_id)) stop("`agent_id` is required.", call. = FALSE)
@@ -413,7 +428,7 @@ sim_portfolio_target_step <- function(exchange,
   .portfolio_require_one_timestamp(decision_bars)
   if (nrow(new_bars) > 0L) {
     market <- sim_portfolio_market_step(exchange, new_bars, execution)
-    result <- sim_portfolio_target_submit(exchange, agent_id, decision_bars, target_weights, execution, decision_label, allowed_symbols, allowed_asset_ids)
+    result <- sim_portfolio_target_submit(exchange, agent_id, decision_bars, target_weights, execution, decision_label, allowed_symbols, allowed_asset_ids, decision_policy)
     # Preserve the combined API's historical behavior: a no-decision step
     # reports fills caused by older orders at this market boundary.
     if (is.null(target_weights)) result$fills <- .portfolio_fills_for_events(exchange, market$events, agent_id)
@@ -425,7 +440,7 @@ sim_portfolio_target_step <- function(exchange,
       status = "no_new_bar", message = "No genuinely new completed bars were supplied."
     )))
   }
-  sim_portfolio_target_submit(exchange, agent_id, decision_bars, target_weights, execution, decision_label, allowed_symbols, allowed_asset_ids)
+  sim_portfolio_target_submit(exchange, agent_id, decision_bars, target_weights, execution, decision_label, allowed_symbols, allowed_asset_ids, decision_policy)
 }
 
 #' @keywords internal
@@ -704,6 +719,70 @@ sim_portfolio_export <- function(exchange,
     paste(missing, collapse = ", "),
     call. = FALSE
   )
+}
+
+#' @keywords internal
+.portfolio_fresh_decision_bars <- function(bars) {
+  bars[is_completed %in% TRUE & is_tradable %in% TRUE]
+}
+
+#' @keywords internal
+.portfolio_carried_valuations <- function(exchange, bars, allowed_assets) {
+  timestamp <- bars$timestamp[1L]
+  current <- bars[, .(asset_id, timestamp, close)]
+  history <- exchange$market_events[asset_id %in% allowed_assets$asset_id & timestamp <= timestamp,
+    .(asset_id, timestamp, close)]
+  values <- data.table::rbindlist(list(history, current), fill = TRUE)
+  if (!nrow(values)) return(values)
+  data.table::setorderv(values, c("asset_id", "timestamp"))
+  values[, .SD[.N], by = asset_id]
+}
+
+#' @keywords internal
+.portfolio_require_decision_policy <- function(exchange,
+                                               bars,
+                                               target_weights,
+                                               allowed_assets,
+                                               decision_policy) {
+  policy <- .portfolio_validate_decision_policy(decision_policy)
+  fresh <- .portfolio_fresh_decision_bars(bars)
+  if (!nrow(fresh)) {
+    stop("A target decision requires at least one fresh, completed, tradable market bar.", call. = FALSE)
+  }
+  target_symbols <- names(target_weights)
+  if (is.null(target_symbols) || any(!nzchar(target_symbols))) {
+    stop("`target_weights` must be a named vector keyed by registered symbols.", call. = FALSE)
+  }
+  target_assets <- allowed_assets[symbol %in% as.character(target_symbols)]
+  if (nrow(target_assets) != length(unique(target_symbols))) {
+    stop("Target weights include a symbol outside the agent's allowed universe.", call. = FALSE)
+  }
+  if (identical(policy$mode, "complete_universe")) {
+    .portfolio_require_complete_universe_boundary(fresh, allowed_assets)
+    return(invisible(fresh))
+  }
+  if (identical(policy$mode, "per_asset_decision")) {
+    missing <- target_assets$symbol[!(target_assets$asset_id %in% fresh$asset_id)]
+    if (length(missing)) {
+      stop("`per_asset_decision` requires a fresh completed tradable bar for every targeted symbol; missing: ",
+        paste(missing, collapse = ", "), call. = FALSE)
+    }
+    return(invisible(fresh))
+  }
+  valuations <- .portfolio_carried_valuations(exchange, fresh, allowed_assets)
+  missing <- allowed_assets$symbol[!(allowed_assets$asset_id %in% valuations$asset_id)]
+  if (length(missing)) {
+    stop("`as_of_valuation` requires a current or carried valuation for every allowed symbol; missing: ",
+      paste(missing, collapse = ", "), call. = FALSE)
+  }
+  valuation_times <- valuations$timestamp[match(allowed_assets$asset_id, valuations$asset_id)]
+  age <- as.numeric(fresh$timestamp[1L]) - as.numeric(valuation_times)
+  stale <- allowed_assets$symbol[age > policy$max_staleness + 1e-8]
+  if (length(stale)) {
+    stop("`as_of_valuation` carried valuation exceeds `max_staleness` for: ",
+      paste(stale, collapse = ", "), call. = FALSE)
+  }
+  invisible(fresh)
 }
 
 #' @keywords internal

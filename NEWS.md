@@ -7,6 +7,12 @@ current git history; `v0.9.0` follows `v0.7.0`.
 
 ### Heterogeneous Portfolio Execution
 
+- Added `sim_portfolio_decision_policy()` for calendar-aware target decisions.
+  `complete_universe` remains the default; `as_of_valuation` permits bounded
+  carried marks, and `per_asset_decision` permits only targets with a fresh,
+  completed, tradable bar. The policy is supported by incremental, batch, and
+  bulk target replay APIs.
+
 - `heterogeneous_v2` now settles derivative variation margin inside the C++
   typed account step. The exchange adapter persists the returned typed cash
   event; it no longer recomputes variation margin in R for that route.

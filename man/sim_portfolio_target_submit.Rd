@@ -12,7 +12,8 @@ sim_portfolio_target_submit(
   execution = sim_portfolio_execution(),
   decision_label = "target_weight",
   allowed_symbols = NULL,
-  allowed_asset_ids = NULL
+  allowed_asset_ids = NULL,
+  decision_policy = sim_portfolio_decision_policy()
 )
 }
 \arguments{
@@ -35,6 +36,9 @@ hold, or trade. Persisted on the agent after a successful submission.}
 \item{allowed_asset_ids}{Optional registered asset ids this agent may target,
 hold, or trade. When supplied with \code{allowed_symbols}, both must identify
 the same allowed universe.}
+
+\item{decision_policy}{Market-observation policy from
+\code{\link[=sim_portfolio_decision_policy]{sim_portfolio_decision_policy()}}.}
 }
 \value{
 A list containing \code{orders}, \code{fills}, \code{positions}, \code{account},
