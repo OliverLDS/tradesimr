@@ -75,4 +75,3 @@ jobs:
 
       - name: Build reference manual
         run: R CMD Rd2pdf --output=tradesimr-manual.pdf man
-          }
