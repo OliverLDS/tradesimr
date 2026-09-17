@@ -58,6 +58,7 @@ jobs:
             cat("\n===== ", log, " =====\n", sep = "")
             cat(readLines(log, warn = FALSE), sep = "\n")
             cat("\n")
+          }
 
   manual:
     name: Linux manual
