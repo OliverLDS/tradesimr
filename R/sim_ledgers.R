@@ -108,10 +108,11 @@ sim_cross_asset_risk <- function(exchange, stress_sigma = 2) {
     # Explicit and target-derived orders can use different intermediate labels
     # while waiting for the next eligible bar. They are all pending risk
     # exposures until a terminal lifecycle status is recorded.
+    order_status <- tolower(trimws(as.character(orders$status)))
     pending <- orders[
-      !(as.character(status) %in% c(
+      (is.na(orders$status) | !(order_status %in% c(
         "filled", "cancelled", "canceled", "rejected", "expired", "superseded"
-      )) & asset_id %in% as.integer(exchange$assets$asset_id)
+      ))) & asset_id %in% as.integer(exchange$assets$asset_id)
     ]
     if (nrow(pending)) {
       assets <- sim_assets(exchange)
