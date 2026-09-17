@@ -114,6 +114,12 @@ sim_cross_asset_risk <- function(exchange, stress_sigma = 2) {
         "cancelled", "canceled", "rejected", "expired", "superseded"
       ))) & asset_id %in% as.integer(exchange$assets$asset_id)
     ]
+    if (nrow(pending) == 0L && nrow(exchange$order_requests) > 0L) {
+      requests <- data.table::as.data.table(exchange$order_requests)
+      pending <- requests[asset_id %in% as.integer(exchange$assets$asset_id), .(
+        timestamp, agent_id, symbol, asset_id, qty = as.numeric(qty), side
+      )]
+    }
     if (nrow(pending)) {
       assets <- sim_assets(exchange)
       accounts <- sim_exchange_account(exchange)
