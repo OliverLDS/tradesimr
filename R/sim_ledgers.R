@@ -120,6 +120,41 @@ sim_cross_asset_risk <- function(exchange, stress_sigma = 2) {
         timestamp, agent_id, symbol, asset_id, qty = as.numeric(qty), side
       )]
     }
+    if (nrow(pending) == 0L && nrow(exchange$assets) > 0L) {
+      # A registered account can exist before its order projection is
+      # materialized. Keep the dashboard schema non-empty without inventing
+      # exposure: emit zero-risk rows for the account's registered universe.
+      agent_ids <- unique(c(
+        as.character(orders$agent_id),
+        as.character(exchange$order_requests$agent_id),
+        as.character(exchange$agents$agent_id)
+      ))
+      agent_ids <- agent_ids[nzchar(agent_ids) & !is.na(agent_ids)]
+      if (length(agent_ids)) {
+        pending <- data.table::CJ(
+          agent_id = agent_ids,
+          asset_id = as.integer(exchange$assets$asset_id),
+          unique = TRUE
+        )
+        pending <- merge(
+          pending,
+          exchange$assets[, .(asset_id, symbol)],
+          by = "asset_id",
+          all.x = TRUE,
+          sort = FALSE
+        )
+        latest_timestamp <- if (nrow(exchange$market_events)) {
+          max(exchange$market_events$timestamp, na.rm = TRUE)
+        } else {
+          as.POSIXct(NA, tz = "UTC")
+        }
+        pending[, `:=`(
+          timestamp = latest_timestamp,
+          qty = 0,
+          side = "flat"
+        )]
+      }
+    }
     if (nrow(pending)) {
       assets <- sim_assets(exchange)
       accounts <- sim_exchange_account(exchange)
