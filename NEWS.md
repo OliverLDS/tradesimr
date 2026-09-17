@@ -27,6 +27,8 @@ current git history; `v0.9.0` follows `v0.7.0`.
 - Explicit contract orders remain all-or-nothing and are never silently
   resized.
 - Added Vox-shaped complete-universe and negative synthetic-BTC regressions.
+- Hardened cross-asset risk projection for pending orders across the full
+  non-terminal order lifecycle (`accepted`, `submitted`, and `pending`).
 
 ## tradesimr 0.18.3
 

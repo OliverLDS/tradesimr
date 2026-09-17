@@ -104,8 +104,14 @@ sim_cross_asset_risk <- function(exchange, stress_sigma = 2) {
     # Pending accepted orders are still relevant to an operator risk view.
     # Project them as zero-realized-exposure rows rather than returning an
     # unusable empty dashboard when a boundary has not produced a fill yet.
-    pending <- data.table::as.data.table(exchange$agent_orders)[
-      status == "accepted" & asset_id %in% as.integer(exchange$assets$asset_id)
+    orders <- data.table::as.data.table(exchange$agent_orders)
+    # Explicit and target-derived orders can use different intermediate labels
+    # while waiting for the next eligible bar. They are all pending risk
+    # exposures until a terminal lifecycle status is recorded.
+    pending <- orders[
+      !(as.character(status) %in% c(
+        "filled", "cancelled", "canceled", "rejected", "expired", "superseded"
+      )) & asset_id %in% as.integer(exchange$assets$asset_id)
     ]
     if (nrow(pending)) {
       assets <- sim_assets(exchange)
