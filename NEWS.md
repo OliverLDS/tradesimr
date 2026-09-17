@@ -3,6 +3,24 @@
 This changelog follows the repository tags. There is no `v0.8.0` tag in the
 current git history; `v0.9.0` follows `v0.7.0`.
 
+## tradesimr 0.18.1
+
+### Durable State Portability
+
+- Replaced the CSV-unsafe serialized-field representation used for exchange
+  configuration, feed configuration, feed simulation state, and market-model
+  state with a portable hexadecimal encoding. New CSV exports contain one
+  quote-safe field per serialized value and round-trip consistently across R
+  and `data.table` versions.
+- `sim_exchange_load()` continues to accept intact legacy serialized fields,
+  preserving read compatibility for state written before this release.
+- Added durable serialization regressions covering punctuation, quotes,
+  newlines, nested configuration, and full exchange save/load.
+- Excluded repository-only GitHub Actions and root orchestration scripts from
+  source-package builds while retaining installed `inst/scripts` entrypoints.
+  Declared the remaining data.table NSE bindings used by typed variation-event
+  projections, removing the associated `R CMD check` notes.
+
 ## tradesimr 0.18.0
 
 ### Stable Profile Contract

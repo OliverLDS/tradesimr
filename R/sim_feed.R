@@ -280,13 +280,35 @@ sim_market_model_status <- function(exchange) {
 #' @keywords internal
 .serialize_field <- function(x) {
   if (is.null(x)) return(NA_character_)
-  rawToChar(serialize(x, NULL, ascii = TRUE))
+  # CSV is a durable interchange format.  The legacy ASCII serialization can
+  # contain newlines and quotes, which `fread()` does not round-trip reliably
+  # across data.table versions.  Hex keeps each serialized object in one
+  # portable CSV field without adding a runtime dependency.
+  raw <- serialize(x, NULL, ascii = FALSE, version = 2L)
+  paste0("hex:", paste(sprintf("%02x", as.integer(raw)), collapse = ""))
 }
 
 #' @keywords internal
 .unserialize_field <- function(x) {
   if (is.null(x) || length(x) == 0L || is.na(x) || !nzchar(x)) return(NULL)
-  unserialize(charToRaw(as.character(x)))
+  value <- as.character(x[[1L]])
+  if (!startsWith(value, "hex:")) {
+    # Read state written by versions before the portable CSV encoding.
+    return(unserialize(charToRaw(value)))
+  }
+
+  payload <- substr(value, 5L, nchar(value))
+  if (!nzchar(payload) || nchar(payload) %% 2L != 0L ||
+      !grepl("^[0-9A-Fa-f]+$", payload)) {
+    stop("Invalid serialized exchange-state field.", call. = FALSE)
+  }
+  starts <- seq.int(1L, nchar(payload), by = 2L)
+  bytes <- as.raw(vapply(
+    starts,
+    function(start) strtoi(substr(payload, start, start + 1L), base = 16L),
+    integer(1L)
+  ))
+  unserialize(bytes)
 }
 
 #' @keywords internal
