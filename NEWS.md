@@ -3,6 +3,17 @@
 This changelog follows the repository tags. There is no `v0.8.0` tag in the
 current git history; `v0.9.0` follows `v0.7.0`.
 
+## tradesimr 0.18.3
+
+### CRAN Release Verification
+
+- Added a CRAN submission record and excluded it from the source tarball.
+- The cross-platform CI matrix now runs `R CMD check --as-cran` without
+  `--no-manual` and installs TinyTeX to build the reference manual. Warnings
+  remain release failures.
+- Removed redundant `Author` and `Maintainer` DESCRIPTION fields so
+  `Authors@R` is the single canonical source of package authorship metadata.
+
 ## tradesimr 0.18.2
 
 ### CRAN-Core Contract
