@@ -100,7 +100,10 @@ sim_risk <- function(sim) {
 sim_cross_asset_risk <- function(exchange, stress_sigma = 2) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   positions <- sim_exchange_positions(exchange)
-  if (nrow(positions) == 0L) {
+  has_agent_positions <- nrow(positions) > 0L &&
+    all(c("agent_id", "asset_id", "symbol") %in% names(positions)) &&
+    any(!is.na(positions$agent_id) & nzchar(as.character(positions$agent_id)))
+  if (!has_agent_positions) {
     # Pending accepted orders are still relevant to an operator risk view.
     # Project them as zero-realized-exposure rows rather than returning an
     # unusable empty dashboard when a boundary has not produced a fill yet.
