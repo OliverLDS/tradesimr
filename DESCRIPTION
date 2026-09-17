@@ -1,6 +1,6 @@
 Package: tradesimr
 Title: Execution and Simulation Engine for Trading Strategies
-Version: 0.18.3
+Version: 0.18.4
 Authors@R: 
     person(given = "Oliver",
            family = "Zhou",
@@ -40,10 +40,13 @@ Suggests:
     ggplot2,
     jsonlite,
     lubridate,
+    plumber,
     strategyr,
     zoo
+URL: https://github.com/OliverLDS/tradesimr
+BugReports: https://github.com/OliverLDS/tradesimr/issues
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
-Config/roxygen2/version: 8.0.0
+Config/roxygen2/version: 7.2.3
 RoxygenNote: 7.2.3

@@ -1,5 +1,7 @@
 ## CRAN submission comments
 
+This is the first CRAN submission of version `0.18.4`.
+
 ### Test environments
 
 * macOS (GitHub Actions, R release)

@@ -17,6 +17,14 @@ multi-asset C++ step kernel,
 local live-service APIs, separate replay, live-state, and agent dashboards,
 and local orchestration entrypoints.
 }
+\seealso{
+Useful links:
+\itemize{
+  \item \url{https://github.com/OliverLDS/tradesimr}
+  \item Report bugs at \url{https://github.com/OliverLDS/tradesimr/issues}
+}
+
+}
 \author{
 \strong{Maintainer}: Oliver Zhou \email{oliver.yxzhou@gmail.com}
 

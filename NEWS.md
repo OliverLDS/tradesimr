@@ -3,6 +3,31 @@
 This changelog follows the repository tags. There is no `v0.8.0` tag in the
 current git history; `v0.9.0` follows `v0.7.0`.
 
+## tradesimr 0.18.4
+
+### CRAN Release Preparation
+
+- Added the canonical GitHub `URL` and issue tracker `BugReports` fields to
+  `DESCRIPTION`.
+- Declared `plumber` as an optional `Suggests` dependency. The core package
+  remains usable without the local HTTP live-service tooling.
+- Aligned the roxygen configuration and generated documentation metadata.
+- Removed accidental macOS `.DS_Store` files from the source tree.
+
+### Synthetic Price-Return Profile
+
+- Added the stable `synthetic_price_return` instrument profile for signed
+  marked price exposure in educational price-return simulations.
+- Documented that this profile makes no custody, borrow availability or cost,
+  dividend, funding, carry, settlement, or corporate-action claims.
+- Target-derived inventory groups now apply deterministic fee-aware scaling at
+  the atomic group boundary, preserving target ratios subject to
+  contract-step rounding.
+- `fee_scaled` fills retain durable partial execution-quality outcomes.
+- Explicit contract orders remain all-or-nothing and are never silently
+  resized.
+- Added Vox-shaped complete-universe and negative synthetic-BTC regressions.
+
 ## tradesimr 0.18.3
 
 ### CRAN Release Verification

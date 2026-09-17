@@ -40,6 +40,14 @@ users and downstream packages.
 The schema constants `TRADESIMR_SCHEMA_VERSION` and
 `TRADESIMR_ACCOUNT_SCHEMA_VERSION` are part of this core contract.
 
+The `synthetic_price_return` instrument profile is also part of the stable
+profile contract. It models signed marked price exposure only. It makes no
+custody, borrow availability or cost, dividend, funding, carry, settlement,
+or corporate-action claims. Target-derived inventory fee scaling preserves
+target ratios subject to contract-step rounding and records `fee_scaled` fills
+as durable partial execution-quality outcomes. Explicit contract orders remain
+all-or-nothing.
+
 ## Compatibility and Experimental Surface
 
 The following remain exported in `0.18.x` for compatibility or local tooling,
@@ -80,7 +88,10 @@ the migration in `NEWS.md`.
   their asset. Stale or closed-session bars may value accounts but cannot fill
   orders or trigger strategy decisions.
 - Target-derived orders may be clipped to contract-step and margin capacity;
-  explicit contract orders are not silently resized.
+  inventory target groups use deterministic fee-aware group scaling, preserving
+  target ratios subject to contract-step rounding. `fee_scaled` fills are
+  durable partial execution-quality outcomes. Explicit contract orders are not
+  silently resized and remain all-or-nothing.
 - Orders, fills, rebalances, events, and snapshots retain agent, asset, symbol,
   timestamp, and durable execution identity where applicable.
 
