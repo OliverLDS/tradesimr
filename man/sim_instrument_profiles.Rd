@@ -13,4 +13,11 @@ A data.table of supported profiles and their defaults.
 Instrument profiles define accounting and calendar defaults. They are
 intentionally declarative: the current C++ execution kernel still uses the
 registered contract multiplier and quantity step as its numeric inputs.
+The \code{synthetic_price_return} profile models signed marked price exposure
+only. It makes no custody, borrow availability or cost, dividend, funding,
+carry, settlement, or corporate-action claims, and is therefore suitable
+for stated price-return simulations rather than brokerage execution.
+Target-derived fee scaling preserves target ratios subject to contract-step
+rounding and records \code{fee_scaled} fills as durable partial
+execution-quality outcomes. Explicit contract orders remain all-or-nothing.
 }

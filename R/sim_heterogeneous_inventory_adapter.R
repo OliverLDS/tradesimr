@@ -431,7 +431,13 @@
     order$symbol[1L], order_id, message = "Inventory order filled through heterogeneous execution.")
   event <- .heterogeneous_inventory_event(exchange, order, fill, timestamp,
     force_margin = force_margin)
-  .spot_mark_order_terminal(exchange, order_id, "filled", "filled", "Inventory order filled.", timestamp,
+  inventory_reason <- as.character(order$reason_code[1L] %||% "filled")
+  inventory_message <- if (identical(inventory_reason, "fee_scaled")) {
+    "Target-derived group was scaled to reserve execution fees."
+  } else {
+    "Inventory order filled."
+  }
+  .spot_mark_order_terminal(exchange, order_id, "filled", inventory_reason, inventory_message, timestamp,
     price = fill$price[1L], fee = fill$fee[1L], realized_pnl = fill$realized_pnl[1L])
   .append_portfolio_fill(exchange, order, event)
   event
@@ -709,6 +715,11 @@
     target_derived = !is.na(rebalance_id),
     atomic_group_id = as.character(atomic_group_id %||% order_id)
   )]
+  # A synthetic price-return profile deliberately uses the typed margin
+  # account, not spot inventory.  The C++ kernel's future branch is the
+  # signed-exposure implementation; the registered profile remains durable
+  # metadata and is never changed in the asset registry.
+  out[instrument_profile == "synthetic_price_return", instrument_profile := "future"]
   # The registered instrument profile remains the source of calendar and
   # metadata rules.  This execution-only profile identifies target-derived
   # portfolio-margin legs to the typed C++ margin-position branch.
@@ -728,6 +739,52 @@
     unit_cost <- out$execution_price[i] * out$contract_size[i] * (1 + out$fee_rt[i])
     max_qty <- floor((available / unit_cost) / out$qty_step[i] + 1e-10) * out$qty_step[i]
     if (is.finite(max_qty) && max_qty < out$qty[i]) out$qty[i] <- max(0, max_qty)
+  }
+  # Scale target-derived inventory buys at the atomic-group boundary rather
+  # than independently per leg. This reserves one deterministic fee-aware
+  # cash budget, preserves target ratios up to quantity-step rounding, and
+  # lets a complete-universe target group commit as a documented partial
+  # execution instead of rolling back because fees consume the last cents.
+  out[, reason_code := as.character(reason_code)]
+  target_groups <- unique(out[target_derived %in% TRUE, atomic_group_id])
+  for (group_id in target_groups) {
+    group_rows <- which(out$atomic_group_id == group_id & out$target_derived %in% TRUE)
+    if (!length(group_rows)) next
+    inventory_rows <- group_rows[
+      out$instrument_profile[group_rows] %in% c("equity", "etf", "crypto_spot", "fx_spot", "bond")
+    ]
+    buy_rows <- inventory_rows[out$side[inventory_rows] == "buy" & out$qty[inventory_rows] > 0]
+    if (!length(buy_rows)) next
+    currencies <- unique(out$quote_ccy[buy_rows])
+    for (currency in currencies) {
+      currency_buys <- buy_rows[out$quote_ccy[buy_rows] == currency]
+      if (!length(currency_buys)) next
+      currency_sells <- inventory_rows[
+        out$quote_ccy[inventory_rows] == currency &
+          out$side[inventory_rows] == "sell" & out$qty[inventory_rows] > 0
+      ]
+      available <- .profile_cash_balance(exchange, out$agent_id[currency_buys[1L]], currency)
+      if (length(currency_sells)) {
+        available <- available + sum(
+          out$qty[currency_sells] * out$execution_price[currency_sells] *
+            out$contract_size[currency_sells] * (1 - out$fee_rt[currency_sells]),
+          na.rm = TRUE
+        )
+      }
+      requested <- sum(
+        out$qty[currency_buys] * out$execution_price[currency_buys] *
+          out$contract_size[currency_buys] * (1 + out$fee_rt[currency_buys]),
+        na.rm = TRUE
+      )
+      if (!is.finite(available) || !is.finite(requested) || requested <= available + 1e-10) next
+      scale <- max(0, available / requested)
+      for (i in currency_buys) {
+        step <- abs(out$qty_step[i])
+        scaled <- out$qty[i] * scale
+        out$qty[i] <- if (is.finite(step) && step > 0) floor(scaled / step + 1e-10) * step else scaled
+        out$reason_code[i] <- "fee_scaled"
+      }
+    }
   }
   out[, `:=`(
     action_code = .encode_step_action(data.table::fifelse(
@@ -1097,6 +1154,20 @@
         exchange, accepted, boundary_bars, margin_asset_ids = target_margin_ids,
         specs = order_specs, bar_prices = order_prices
       )
+      # Carry deterministic pre-admission fee scaling into the durable order
+      # projection and the outcome projector. The original planned quantity
+      # remains in portfolio_targets for execution-quality comparison.
+      if ("reason_code" %in% names(normalized) && any(normalized$reason_code == "fee_scaled", na.rm = TRUE)) {
+        if (!"reason_code" %in% names(accepted)) accepted[, reason_code := NA_character_]
+        for (current_order_id in normalized$order_id[normalized$reason_code == "fee_scaled"]) {
+          accepted[order_id == current_order_id, reason_code := "fee_scaled"]
+          index <- match(current_order_id, exchange$agent_orders$order_id)
+          if (!is.na(index)) {
+            data.table::set(exchange$agent_orders, i = index, j = "reason_code", value = "fee_scaled")
+            data.table::set(exchange$agent_orders, i = index, j = "message", value = "Target-derived group was scaled to reserve execution fees.")
+          }
+        }
+      }
       .sim_profile_add(exchange, "heterogeneous_r_normalization", normalization_started)
       kernel_started <- .sim_profile_start(exchange)
       proposed <- heterogeneous_account_step_rcpp(

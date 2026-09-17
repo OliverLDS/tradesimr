@@ -26,7 +26,7 @@ utils::globalVariables(c(
   "maturity_timestamp", "next_coupon_timestamp", "notional", "notional_deviation",
   "old_timestamp", "order_id", "order_type", "outcome_message", "outcome_status",
   "peak", "portfolio_vol", "pos_dir", "price", "qty", "qty_step", "qty_type",
-  "quantity_deviation", "quote_ccy", "ranking_equity", "realized_notional",
+  "quantity_deviation", "quote_ccy", "ranking_equity", "realized_notional", "reason_code",
   "realized_signed_quantity", "realized_weight", "realized_weight_before",
   "rebalance_id", "ret", "risk_contribution", "schedule_type", "session_date",
   "session_open", "settled", "settled_base", "settlement_price",

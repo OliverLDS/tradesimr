@@ -18,7 +18,7 @@ sim_heterogeneous_order_batch_schema <- function() {
     target_derived = logical(), time_in_force = character(),
     action_code = integer(), dir_code = integer(), order_type_code = integer(),
     strat_id = integer(), action_id = integer(), ctr_step = numeric(),
-    fund_rt = numeric(), funding_interval_hours = numeric()
+    fund_rt = numeric(), funding_interval_hours = numeric(), reason_code = character()
   )
 }
 
@@ -33,7 +33,7 @@ sim_heterogeneous_order_batch_schema <- function() {
   optional <- list(
     action_code = 0L, dir_code = 0L, order_type_code = 0L,
     strat_id = 0L, action_id = 0L, ctr_step = 1,
-    fund_rt = 0, funding_interval_hours = 8
+    fund_rt = 0, funding_interval_hours = 8, reason_code = NA_character_
   )
   for (name in names(optional)) if (!name %in% names(orders)) orders[, (name) := optional[[name]]]
   orders[, eligible_after := as.POSIXct(eligible_after, tz = "UTC")]
@@ -56,7 +56,7 @@ sim_heterogeneous_order_batch_schema <- function() {
     "order_id", "asset_id", "instrument_profile", "side", "qty", "order_type",
     "limit_price", "execution_price", "fee_rt", "eligible_after", "atomic_group_id",
     "target_derived", "time_in_force", "action_code", "dir_code", "order_type_code",
-    "strat_id", "action_id", "ctr_step", "fund_rt", "funding_interval_hours"
+    "strat_id", "action_id", "ctr_step", "fund_rt", "funding_interval_hours", "reason_code"
   )
   orders[, schema_columns, with = FALSE]
 }

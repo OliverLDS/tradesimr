@@ -53,6 +53,11 @@ durable no-decision outcome and preserves current positions.
 Target-derived opening and increasing orders are clipped down to the largest
 executable contract-step quantity when fees or shared portfolio margin make
 the exact target infeasible. Explicit contract orders remain all-or-nothing.
+For inventory-profile target groups, fee-aware scaling is applied once to
+the atomic group, preserving target ratios subject to contract-step
+rounding. Such fills retain the durable \code{fee_scaled} reason code and are
+reported as partial execution-quality outcomes when the requested target is
+not fully reached.
 A later accepted target decision supersedes still-unfilled target-derived
 orders for the same agent and overlapping allowed assets; explicit contract
 orders are never superseded.

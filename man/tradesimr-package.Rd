@@ -18,12 +18,7 @@ local live-service APIs, separate replay, live-state, and agent dashboards,
 and local orchestration entrypoints.
 }
 \author{
-\strong{Maintainer}: Oliver Lee \email{olee7149@gmail.com}
-
-Authors:
-\itemize{
-  \item Oliver Lee \email{olee7149@gmail.com}
-}
+\strong{Maintainer}: Oliver Zhou \email{oliver.yxzhou@gmail.com}
 
 }
 \keyword{internal}
