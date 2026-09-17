@@ -3,6 +3,19 @@
 This changelog follows the repository tags. There is no `v0.8.0` tag in the
 current git history; `v0.9.0` follows `v0.7.0`.
 
+## tradesimr 0.18.2
+
+### CRAN-Core Contract
+
+- Added the installed `CRAN-CORE.md` scope document. It identifies the stable
+  CRAN-facing execution, portfolio, asset/calendar, durable-data, risk, and
+  typed-accounting APIs; distinguishes compatibility and local-tooling exports;
+  and documents the `0.18.x` execution and schema compatibility policy.
+- Added contract regressions that freeze the complete current export inventory
+  and the signatures of core durable schemas for the `0.18.x` release line.
+  Any future API or schema change must now be deliberate, documented, and
+  accompanied by a release-version and migration decision.
+
 ## tradesimr 0.18.1
 
 ### Durable State Portability

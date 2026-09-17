@@ -34,6 +34,13 @@ adapters:
 - Static replay, live-state, and live-agent dashboards.
 - Local orchestration scripts for examples and dashboard/service launchers.
 
+## CRAN-Core Contract
+
+The package's supported CRAN-facing boundary, durable-schema policy, execution
+semantics, and `0.18.x` compatibility freeze are documented in
+[`inst/CRAN-CORE.md`](inst/CRAN-CORE.md). Local dashboards, services, and
+orchestration remain optional tooling rather than mandatory runtime components.
+
 ## Installation
 
 From the local repository:
