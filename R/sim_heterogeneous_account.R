@@ -48,7 +48,16 @@ sim_heterogeneous_order_batch_schema <- function() {
   if (anyDuplicated(rle(groups)$values) > 0L) {
     stop("Rows belonging to an atomic group must be contiguous in the normalized batch.", call. = FALSE)
   }
-  schema_columns <- names(sim_heterogeneous_order_batch_schema())
+  # Keep the column contract inline in the hot path. Constructing a complete
+  # empty data.table schema for every account boundary needlessly allocates and
+  # indexes all columns; the public schema helper remains the source-level
+  # documentation and empty-batch constructor.
+  schema_columns <- c(
+    "order_id", "asset_id", "instrument_profile", "side", "qty", "order_type",
+    "limit_price", "execution_price", "fee_rt", "eligible_after", "atomic_group_id",
+    "target_derived", "time_in_force", "action_code", "dir_code", "order_type_code",
+    "strat_id", "action_id", "ctr_step", "fund_rt", "funding_interval_hours"
+  )
   orders[, schema_columns, with = FALSE]
 }
 

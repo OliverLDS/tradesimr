@@ -336,7 +336,11 @@ sim_exchange_step <- function(exchange, bars) {
   has_margin_profile <- any(!vapply(new_bars$asset_id, function(id) {
     .asset_uses_spot_inventory(exchange, id)
   }, logical(1L)))
-  if (.exchange_uses_heterogeneous_v2(exchange) && has_margin_profile) {
+  has_target_derived_order <- nrow(exchange$agent_orders[
+    status == "accepted" & target_derived %in% TRUE &
+      asset_id %in% as.integer(new_bars$asset_id)
+  ]) > 0L
+  if (.exchange_uses_heterogeneous_v2(exchange) && (has_margin_profile || has_target_derived_order)) {
     return(.sim_exchange_step_mixed_profiled_portfolio(exchange, new_bars))
   }
   if (isTRUE(exchange$config$portfolio_margin %||% FALSE)) {
@@ -582,7 +586,8 @@ sim_exchange_step <- function(exchange, bars) {
 
 #' @keywords internal
 .sim_exchange_step_portfolio <- function(exchange, new_bars) {
-  profile_timings <- exchange$.profile_timings %||% NULL
+  profile_timings <- exchange$.profile_timings
+  if (!is.environment(profile_timings)) profile_timings <- NULL
   append_started <- .sim_profile_start(exchange)
   exchange$market_events <- data.table::rbindlist(list(exchange$market_events, new_bars), fill = TRUE)
   data.table::setorderv(new_bars, intersect(c("timestamp", "asset_id"), names(new_bars)))
@@ -2181,6 +2186,9 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
 #' @keywords internal
 .agent_position_snapshots <- function(exchange, agent_id, timestamp) {
   agent_id <- as.character(agent_id)
+  if (.exchange_uses_heterogeneous_v2(exchange)) {
+    return(.heterogeneous_v2_position_snapshots(exchange, agent_id, timestamp))
+  }
   state_prefix <- paste0(agent_id, "\r")
   keys <- as.character(names(exchange$agent_states) %||% character())
   keys <- keys[startsWith(keys, state_prefix)]
@@ -2221,6 +2229,79 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
     .spot_state_snapshot(exchange, state, timestamp, parsed$agent_id, symbol, parsed$asset_id)
   })
   data.table::rbindlist(c(rows, spot_rows), fill = TRUE)
+}
+
+#' @keywords internal
+.heterogeneous_v2_position_snapshots <- function(exchange, agent_id, timestamp) {
+  # The v2 tables are authoritative.  Do not rebuild their compatibility list
+  # projections here: the market step calls this once per active account.
+  requested_agent_id <- as.character(agent_id)
+  inventory <- data.table::as.data.table(exchange$inventory_positions)[agent_id == requested_agent_id]
+  margin <- data.table::as.data.table(exchange$typed_margin_positions)[agent_id == requested_agent_id]
+  cash <- data.table::as.data.table(exchange$cash_balances)[agent_id == requested_agent_id]
+  if (!nrow(inventory) && !nrow(margin)) return(data.table::data.table())
+
+  cash_base <- if (nrow(cash)) {
+    sum(vapply(seq_len(nrow(cash)), function(i) {
+      .profile_to_base(exchange, cash$settled[i] + cash$unsettled[i], cash$currency[i])
+    }, numeric(1L)), na.rm = TRUE)
+  } else {
+    .shared_cash(exchange, requested_agent_id)
+  }
+  settled_cash_base <- if (nrow(cash)) {
+    sum(vapply(seq_len(nrow(cash)), function(i) {
+      .profile_to_base(exchange, cash$settled[i], cash$currency[i])
+    }, numeric(1L)), na.rm = TRUE)
+  } else {
+    cash_base
+  }
+  symbol_for <- function(asset_id) {
+    exchange$asset_symbols[[as.character(asset_id)]] %||% paste0("asset-", asset_id)
+  }
+  inventory_rows <- if (nrow(inventory)) {
+    currency_value <- vapply(seq_len(nrow(inventory)), function(i) .profile_to_base(
+      exchange, inventory$units[i] * inventory$last_price[i] * inventory$contract_size[i] + inventory$accrued_interest[i], inventory$currency[i]
+    ), numeric(1L))
+    unrealized_value <- vapply(seq_len(nrow(inventory)), function(i) .profile_to_base(
+      exchange, (inventory$last_price[i] - inventory$average_cost[i]) * inventory$units[i] * inventory$contract_size[i], inventory$currency[i]
+    ), numeric(1L))
+    data.table::data.table(
+      timestamp = timestamp, agent_id = requested_agent_id, symbol = vapply(inventory$asset_id, symbol_for, character(1L)),
+      asset_id = as.integer(inventory$asset_id), accounting_model = "spot_inventory",
+      equity = cash_base + currency_value, cash = settled_cash_base,
+      pos_dir = ifelse(inventory$units > 0, 1L, ifelse(inventory$units < 0, -1L, 0L)),
+      ctr_unit = as.numeric(inventory$units), avg_price = as.numeric(inventory$average_cost),
+      last_px = as.numeric(inventory$last_price), notional = currency_value,
+      abs_notional = abs(currency_value), unrealized_pnl = unrealized_value, maintenance_margin = 0
+    )
+  } else NULL
+  margin_rows <- if (nrow(margin)) {
+    notional_value <- vapply(seq_len(nrow(margin)), function(i) .profile_to_base(
+      exchange, margin$signed_units[i] * margin$last_price[i] * margin$contract_size[i], margin$currency[i]
+    ), numeric(1L))
+    unrealized_value <- vapply(seq_len(nrow(margin)), function(i) {
+      if (!is.finite(margin$signed_units[i]) || abs(margin$signed_units[i]) <= 1e-12 ||
+          !is.finite(margin$last_price[i]) || !is.finite(margin$settlement_price[i])) return(0)
+      .profile_to_base(exchange,
+        (margin$last_price[i] - margin$settlement_price[i]) * margin$signed_units[i] * margin$contract_size[i],
+        margin$currency[i]
+      )
+    }, numeric(1L))
+    maintenance_value <- vapply(seq_len(nrow(margin)), function(i) .profile_to_base(
+      exchange, abs(margin$signed_units[i] * margin$last_price[i] * margin$contract_size[i]) * margin$maintenance_rate[i], margin$currency[i]
+    ), numeric(1L))
+    data.table::data.table(
+      timestamp = timestamp, agent_id = requested_agent_id, symbol = vapply(margin$asset_id, symbol_for, character(1L)),
+      asset_id = as.integer(margin$asset_id), accounting_model = "derivatives_margin",
+      equity = cash_base + unrealized_value, cash = cash_base,
+      pos_dir = ifelse(margin$signed_units > 0, 1L, ifelse(margin$signed_units < 0, -1L, 0L)),
+      ctr_unit = abs(as.numeric(margin$signed_units)), avg_price = as.numeric(margin$settlement_price),
+      last_px = as.numeric(margin$last_price), notional = notional_value,
+      abs_notional = abs(notional_value), unrealized_pnl = unrealized_value,
+      maintenance_margin = maintenance_value
+    )
+  } else NULL
+  data.table::rbindlist(list(inventory_rows, margin_rows), fill = TRUE)
 }
 
 #' @keywords internal
@@ -2307,6 +2388,18 @@ sim_exchange_export_events <- function(exchange, path, format = c("csv", "fst"))
 #' @keywords internal
 .heterogeneous_agent_account <- function(exchange, agent_id, timestamp) {
   agent_id <- as.character(agent_id)
+  if (.exchange_uses_heterogeneous_v2(exchange)) {
+    typed <- sim_exchange_account_state(exchange, agent_id)
+    account <- typed$account
+    if (nrow(account)) {
+      return(list(
+        equity = as.numeric(account$equity[1L]),
+        maintenance_margin = as.numeric(account$maintenance_margin[1L]),
+        cash_balances = typed$cash_balances,
+        liquidated = isTRUE(account$liquidated[1L])
+      ))
+    }
+  }
   state_prefix <- paste0(agent_id, "\r")
   base_currency <- .profile_base_currency(exchange)
   balances <- sim_exchange_cash_balances(exchange, agent_id)

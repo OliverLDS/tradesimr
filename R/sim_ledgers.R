@@ -101,6 +101,29 @@ sim_cross_asset_risk <- function(exchange, stress_sigma = 2) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   positions <- sim_exchange_positions(exchange)
   if (nrow(positions) == 0L) {
+    # Pending accepted orders are still relevant to an operator risk view.
+    # Project them as zero-realized-exposure rows rather than returning an
+    # unusable empty dashboard when a boundary has not produced a fill yet.
+    pending <- data.table::as.data.table(exchange$agent_orders)[
+      status == "accepted" & asset_id %in% as.integer(exchange$assets$asset_id)
+    ]
+    if (nrow(pending)) {
+      assets <- sim_assets(exchange)
+      accounts <- sim_exchange_account(exchange)
+      out <- pending[, .(
+        timestamp = as.POSIXct(timestamp, origin = "1970-01-01", tz = "UTC"),
+        agent_id, symbol, asset_id = as.integer(asset_id), quantity = as.numeric(qty),
+        direction = data.table::fifelse(side == "buy", "long", data.table::fifelse(side == "sell", "short", "flat")),
+        notional = 0, abs_notional = 0, allocation = 0,
+        asset_class_allocation = 0, unrealized_pnl = 0,
+        equity = as.numeric(accounts$equity[match(agent_id, accounts$agent_id)]),
+        leverage = 0, concentration_hhi = 0, factor_exposure = 0,
+        max_drawdown = 0, risk_contribution = 0, portfolio_vol = 0, stress_loss = 0
+      )]
+      out <- merge(out, assets[, .(asset_id, asset_class)], by = "asset_id", all.x = TRUE, sort = FALSE)
+      data.table::setcolorder(out, c("timestamp", "agent_id", "symbol", "asset_id", "asset_class", "quantity", "direction", "notional", "abs_notional", "allocation", "asset_class_allocation", "unrealized_pnl", "equity", "leverage", "concentration_hhi", "factor_exposure", "max_drawdown", "risk_contribution", "portfolio_vol", "stress_loss"))
+      return(out[])
+    }
     return(data.table::data.table(
       timestamp = as.POSIXct(character()),
       agent_id = character(),

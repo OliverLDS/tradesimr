@@ -72,6 +72,9 @@ sim_portfolio_target_replay <- function(exchange,
     stop("`target_weights` must contain at most one row per timestamp, agent, and symbol.", call. = FALSE)
   }
   data.table::setorderv(bars, c("timestamp", "asset_id"))
+  # Use a stable lexical agent order so durable IDs do not depend on panel row
+  # order. Incremental callers should submit batch decisions in this order
+  # when comparing durable identities.
   data.table::setorderv(panel, c("timestamp", "agent_id", "symbol"))
   if (!all(panel$timestamp %in% bars$timestamp)) {
     stop("Every target timestamp must have a completed market boundary in `bars`.", call. = FALSE)
@@ -150,15 +153,16 @@ sim_portfolio_target_replay <- function(exchange,
         agent_ids = unique(decision_rows$agent_id),
         allowed_assets_by_agent = allowed_assets_by_agent
       )
-      decisions <- lapply(split(decision_rows, decision_rows$agent_id), function(rows) {
-        agent_id <- as.character(rows$agent_id[1L])
+      decision_agents <- sort(unique(as.character(decision_rows$agent_id)))
+      decisions <- stats::setNames(lapply(decision_agents, function(current_agent_id) {
+        rows <- decision_rows[agent_id == current_agent_id]
         list(
           target_weights = stats::setNames(rows$target_weight, rows$symbol),
-          allowed_symbols = as.character(allowed_symbols[[agent_id]]),
-          .allowed_assets = allowed_assets_by_agent[[agent_id]],
+          allowed_symbols = as.character(allowed_symbols[[current_agent_id]]),
+          .allowed_assets = allowed_assets_by_agent[[current_agent_id]],
           decision_label = if ("decision_label" %in% names(rows)) as.character(rows$decision_label[1L]) else "target_weight"
         )
-      })
+      }), decision_agents)
       # Historical feeds can have partial market calendars. Do not create a
       # multi-asset decision from an incomplete information boundary.
       eligible <- vapply(names(decisions), function(current_agent_id) {
@@ -226,6 +230,15 @@ sim_portfolio_target_replay <- function(exchange,
     # The outer boundary timer includes the C++ and ledger portions; remove
     # them to report R-side batch construction/orchestration separately.
     timings$orchestration <- max(0, timings$orchestration - timings$portfolio_step_rcpp - timings$ledger)
+  }
+  # data.table may materialize secondary indexes as a side effect of the
+  # boundary queries. They are execution details, not part of the durable
+  # public replay contract, and must not affect parity comparisons or exports.
+  for (table_name in c("agent_orders", "portfolio_fills", "portfolio_targets",
+                       "portfolio_rebalances", "step_snapshots", "step_events")) {
+    if (inherits(exchange[[table_name]], "data.table")) {
+      data.table::setindexv(exchange[[table_name]], NULL)
+    }
   }
   list(
     exchange = exchange,
@@ -305,13 +318,14 @@ sim_portfolio_target_replay <- function(exchange,
 
 #' @keywords internal
 .sim_profile_start <- function(exchange) {
-  if (!is.environment(exchange$.profile_timings %||% NULL)) return(NULL)
+  timings <- exchange$.profile_timings
+  if (!is.environment(timings)) return(NULL)
   proc.time()[["elapsed"]]
 }
 
 #' @keywords internal
 .sim_profile_add <- function(exchange, category, started) {
-  timings <- exchange$.profile_timings %||% NULL
+  timings <- exchange$.profile_timings
   if (!is.environment(timings) || is.null(started)) return(invisible(NULL))
   timings[[category]] <- (timings[[category]] %||% 0) + (proc.time()[["elapsed"]] - started)
   invisible(NULL)

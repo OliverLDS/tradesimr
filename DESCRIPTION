@@ -3,9 +3,11 @@ Title: Execution and Simulation Engine for Trading Strategies
 Version: 0.18.3
 Authors@R: 
     person(given = "Oliver",
-           family = "Lee",
-           email = "olee7149@gmail.com",
+           family = "Zhou",
+           email = "oliver.yxzhou@gmail.com",
            role = c("aut", "cre"))
+Author: Oliver Zhou [aut, cre]
+Maintainer: Oliver Zhou <oliver.yxzhou@gmail.com>
 Description: 
     An R-native trading simulation package with a C++ execution core that turns
     strategy intentions and explicit orders into simulated trades, positions,

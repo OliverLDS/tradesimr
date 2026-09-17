@@ -96,11 +96,19 @@
     .ensure_agent_account(exchange, agent_id, asset$asset_id, asset$symbol)
     state <- exchange$agent_states[[.agent_state_key(agent_id, asset$asset_id)]]
     spec <- exchange$assets[asset_id == requested_asset_id]
+    quote_ccy <- as.character(spec$quote_ccy[1L])
+    if (is.na(quote_ccy) || !nzchar(quote_ccy)) quote_ccy <- .profile_base_currency(exchange)
+    bar_mark <- as.numeric(bars[asset_id == requested_asset_id, close][1L])
+    signed_units <- as.numeric(state$pos_dir %||% 0) * as.numeric(state$ctr_unit %||% 0)
+    mark <- if (abs(signed_units) <= 1e-12) bar_mark else as.numeric(state$last_px %||% bar_mark)
+    if (!is.finite(mark)) mark <- as.numeric(bars[asset_id == requested_asset_id, close][1L])
+    reference <- if (abs(signed_units) <= 1e-12) mark else as.numeric(state$settlement_price %||% state$avg_price %||% mark)
+    if (!is.finite(reference)) reference <- mark
     data.table::data.table(
-      asset_id = asset$asset_id, currency = .profile_currency(exchange, spec$quote_ccy[1L]),
-      signed_units = as.numeric(state$pos_dir %||% 0) * as.numeric(state$ctr_unit %||% 0),
-      settlement_price = as.numeric(state$settlement_price %||% state$avg_price %||% state$last_px %||% bars[asset_id == requested_asset_id, close][1L]),
-      last_price = as.numeric(state$last_px %||% bars[asset_id == requested_asset_id, close][1L]),
+      asset_id = asset$asset_id, currency = .profile_currency(exchange, quote_ccy),
+      signed_units = signed_units,
+      settlement_price = reference,
+      last_price = mark,
       contract_size = as.numeric(spec$contract_size[1L]), maintenance_rate = as.numeric(exchange$config$mmr %||% 0.02),
       old_timestamp = as.numeric(state$old_timestamp %||% NA_real_)
     )
@@ -285,6 +293,10 @@
   # small gap or fee cannot turn a near-100% allocation into a rejected group.
   target_buys <- which(out$target_derived & out$side == "buy")
   for (i in target_buys) {
+    # Targets above 100% are intentional leveraged/allocation requests. Keep
+    # them atomic so an infeasible inventory leg rejects the group rather than
+    # silently resizing the user's explicit over-allocation request.
+    if (is.finite(out$target_weight[i]) && out$target_weight[i] > 1 + 1e-12) next
     available <- .profile_cash_balance(exchange, out$agent_id[i], out$quote_ccy[i])
     unit_cost <- out$execution_price[i] * out$contract_size[i] * (1 + out$fee_rt[i])
     max_qty <- floor((available / unit_cost) / out$qty_step[i] + 1e-10) * out$qty_step[i]
@@ -293,13 +305,16 @@
   .normalize_heterogeneous_orders(out, bars$timestamp[1L])
 }
 
-.heterogeneous_inventory_commit_state <- function(exchange, agent_id, proposed, bars) {
+.heterogeneous_inventory_commit_state <- function(exchange, agent_id, proposed, bars,
+                                                   record_typed_state = TRUE) {
   for (i in seq_len(nrow(proposed$cash_balances))) {
     row <- proposed$cash_balances[i, ]
     .profile_set_cash_balance(exchange, agent_id, row$currency, row$settled)
-    .profile_typed_cash_upsert(exchange, agent_id, row$currency,
-      unsettled = as.numeric(row$unsettled %||% 0),
-      timestamp = bars$timestamp[1L] %||% Sys.time())
+    if (!.exchange_uses_heterogeneous_v2(exchange)) {
+      .profile_typed_cash_upsert(exchange, agent_id, row$currency,
+        unsettled = as.numeric(row$unsettled %||% 0),
+        timestamp = bars$timestamp[1L] %||% Sys.time())
+    }
   }
   for (i in seq_len(nrow(proposed$inventory_positions))) {
     row <- proposed$inventory_positions[i, ]
@@ -318,11 +333,13 @@
   # Keep the typed v2 ledger authoritative even for an inventory-only boundary.
   # Fill and account events are persisted by the normal adapter outcome path;
   # avoid recording those event rows twice while projecting only state here.
-  typed_state <- proposed
-  typed_state$account_events <- sim_schemas()$account_events[0]
-  typed_state$events <- sim_schemas()$account_events[0]
-  typed_state$fills <- sim_schemas()$portfolio_fills[0]
-  .heterogeneous_v2_record_state(exchange, agent_id, typed_state, bars$timestamp[1L] %||% Sys.time())
+  if (isTRUE(record_typed_state)) {
+    typed_state <- proposed
+    typed_state$account_events <- sim_schemas()$account_events[0]
+    typed_state$events <- sim_schemas()$account_events[0]
+    typed_state$fills <- sim_schemas()$portfolio_fills[0]
+    .heterogeneous_v2_record_state(exchange, agent_id, typed_state, bars$timestamp[1L] %||% Sys.time())
+  }
   invisible(NULL)
 }
 
@@ -487,10 +504,20 @@
     status == "accepted" & qty_type == "contracts" & asset_id %in% asset_ids,
     unique(as.character(agent_id))
   ]
-  state_agents <- c(
-    vapply(names(exchange$spot_states %||% list()), function(key) .parse_agent_state_key(key)$agent_id, character(1L)),
-    as.character(exchange$margin_positions$agent_id %||% character())
-  )
+  # Typed v2 tables are authoritative. Scanning every compatibility state key
+  # for every boundary grows quadratically after a many-agent inventory fill.
+  state_agents <- if (.exchange_uses_heterogeneous_v2(exchange)) {
+    c(
+      as.character((exchange$inventory_positions %||% data.table::data.table())$agent_id),
+      as.character((exchange$typed_margin_positions %||% data.table::data.table())$agent_id),
+      as.character((exchange$margin_positions %||% data.table::data.table())$agent_id)
+    )
+  } else {
+    c(
+      vapply(names(exchange$spot_states %||% list()), function(key) .parse_agent_state_key(key)$agent_id, character(1L)),
+      as.character(exchange$margin_positions$agent_id %||% character())
+    )
+  }
   unique(c(order_agents, state_agents))
 }
 
@@ -516,46 +543,77 @@
 }
 
 .heterogeneous_portfolio_account_input <- function(exchange, agent_id, bars,
-                                                    margin_asset_ids = integer()) {
+                                                    margin_asset_ids = integer(),
+                                                    active_asset_ids = integer()) {
   requested_agent_id <- as.character(agent_id)
-  for (i in seq_len(nrow(bars))) {
-    asset <- .bar_asset_key(bars[i])
-    if (.asset_uses_spot_inventory(exchange, asset$asset_id)) {
-      .ensure_spot_account(exchange, agent_id, asset$asset_id, asset$symbol)
-    } else {
-      .ensure_agent_account(exchange, agent_id, asset$asset_id, asset$symbol)
+  typed_inventory <- data.table::as.data.table(exchange$inventory_positions %||% data.table::data.table())[
+    agent_id == requested_agent_id,
+    .(asset_id, currency, units, average_cost, last_price, contract_size, accrued_interest)
+  ]
+  typed_margin <- data.table::as.data.table(exchange$typed_margin_positions %||% data.table::data.table())[
+    agent_id == requested_agent_id,
+    .(asset_id)
+  ]
+  active_asset_ids <- unique(c(
+    as.integer(active_asset_ids), as.integer(margin_asset_ids),
+    as.integer(typed_inventory$asset_id), as.integer(typed_margin$asset_id)
+  ))
+  active_asset_ids <- intersect(active_asset_ids, as.integer(bars$asset_id))
+  # Do not initialize eight zero inventory states for every single-asset Arena
+  # account. A state is needed only for an existing position or an order that
+  # can execute at this boundary; the typed kernel accepts absent zero rows.
+  if (!.exchange_uses_heterogeneous_v2(exchange)) {
+    for (asset_id in active_asset_ids) {
+      asset <- .bar_asset_key(bars[asset_id == as.integer(asset_id)][1L])
+      if (.asset_uses_spot_inventory(exchange, asset$asset_id)) {
+        .ensure_spot_account(exchange, agent_id, asset$asset_id, asset$symbol)
+      } else {
+        .ensure_agent_account(exchange, agent_id, asset$asset_id, asset$symbol)
+      }
     }
   }
-  inventory <- data.table::rbindlist(lapply(names(exchange$spot_states %||% list()), function(key) {
-    parsed <- .parse_agent_state_key(key)
-    if (!identical(parsed$agent_id, as.character(agent_id))) return(NULL)
-    spec <- exchange$assets[asset_id == parsed$asset_id]
-    if (nrow(spec) != 1L) return(NULL)
-    state <- exchange$spot_states[[key]]
-    data.table::data.table(
-      asset_id = parsed$asset_id, currency = .profile_currency(exchange, state$currency %||% spec$quote_ccy[1L]),
-      units = as.numeric(state$units %||% 0), average_cost = as.numeric(state$avg_cost %||% NA_real_),
-      last_price = as.numeric(state$last_price %||% NA_real_), contract_size = as.numeric(spec$contract_size[1L]),
-      accrued_interest = as.numeric(state$accrued_interest %||% 0)
-    )
-  }), fill = TRUE)
+  inventory <- if (.exchange_uses_heterogeneous_v2(exchange)) {
+    data.table::copy(typed_inventory)
+  } else {
+    data.table::rbindlist(lapply(names(exchange$spot_states %||% list()), function(key) {
+      parsed <- .parse_agent_state_key(key)
+      if (!identical(parsed$agent_id, requested_agent_id)) return(NULL)
+      spec <- exchange$assets[asset_id == parsed$asset_id]
+      if (nrow(spec) != 1L) return(NULL)
+      state <- exchange$spot_states[[key]]
+      data.table::data.table(
+        asset_id = parsed$asset_id, currency = .profile_currency(exchange, state$currency %||% spec$quote_ccy[1L]),
+        units = as.numeric(state$units %||% 0), average_cost = as.numeric(state$avg_cost %||% NA_real_),
+        last_price = as.numeric(state$last_price %||% NA_real_), contract_size = as.numeric(spec$contract_size[1L]),
+        accrued_interest = as.numeric(state$accrued_interest %||% 0)
+      )
+    }), fill = TRUE)
+  }
   if (!ncol(inventory)) inventory <- data.table::data.table(
     asset_id = integer(), currency = character(), units = numeric(), average_cost = numeric(),
     last_price = numeric(), contract_size = numeric(), accrued_interest = numeric()
   )
+  if (.exchange_uses_heterogeneous_v2(exchange)) {
+    # Preserve the durable v1/v2 projection shape: every account receives one
+    # typed zero row for each inventory-profile asset in the boundary. These
+    # rows are cheap data.table values and do not recreate compatibility
+    # spot_states or trigger per-asset account initialization.
+    inventory_asset_ids <- as.integer(bars$asset_id[vapply(
+      as.integer(bars$asset_id), function(id) .asset_uses_spot_inventory(exchange, id), logical(1L)
+    )])
+    missing_inventory_ids <- setdiff(inventory_asset_ids, as.integer(inventory$asset_id))
+    if (length(missing_inventory_ids)) {
+      missing_specs <- exchange$assets[asset_id %in% missing_inventory_ids,
+        .(asset_id, currency = quote_ccy, units = 0, average_cost = NA_real_,
+          last_price = NA_real_, contract_size, accrued_interest = 0)]
+      inventory <- data.table::rbindlist(list(inventory, missing_specs), fill = TRUE)
+    }
+  }
   # The typed table is the durable source after save/load. Keep compatibility
   # rows only for assets not yet represented by typed state.
-  if (.exchange_uses_heterogeneous_v2(exchange) && nrow(exchange$inventory_positions %||% data.table::data.table())) {
-    typed_inventory <- data.table::copy(exchange$inventory_positions[
-      agent_id == as.character(agent_id),
-      .(asset_id, currency, units, average_cost, last_price, contract_size, accrued_interest)
-    ])
-    if (nrow(typed_inventory)) {
-      if (!"accrued_interest" %in% names(typed_inventory)) typed_inventory[, accrued_interest := 0]
-      inventory <- data.table::rbindlist(list(
-        inventory[!asset_id %in% typed_inventory$asset_id], typed_inventory
-      ), fill = TRUE)
-    }
+  if (.exchange_uses_heterogeneous_v2(exchange) && nrow(typed_inventory) && !"accrued_interest" %in% names(typed_inventory)) {
+    typed_inventory[, accrued_interest := 0]
+    inventory <- typed_inventory
   }
   # `margin_positions` is the authoritative derivatives input.  The legacy
   # `agent_states` list is only a compatibility projection for older callers.
@@ -588,9 +646,28 @@
     asset_id = integer(), currency = character(), signed_units = numeric(), settlement_price = numeric(),
     last_price = numeric(), contract_size = numeric(), maintenance_rate = numeric()
   )
-  balances <- sim_exchange_cash_balances(exchange, agent_id)
-  currencies <- unique(c(.profile_base_currency(exchange), balances$currency, inventory$currency, margin$currency))
-  cash_input <- data.table::as.data.table(.profile_cash_kernel_input(exchange, agent_id))
+  balances <- if (.exchange_uses_heterogeneous_v2(exchange)) {
+    data.table::as.data.table(exchange$cash_balances)[
+      agent_id == requested_agent_id,
+      .(currency, amount = settled, unsettled)
+    ]
+  } else {
+    sim_exchange_cash_balances(exchange, agent_id)
+  }
+  base_currency <- .profile_base_currency(exchange)
+  # Older asset registrations may omit quote_ccy. Treat missing currency
+  # metadata as the account base currency rather than constructing an invalid
+  # FX-rate row or allowing NA to become a data.frame row name.
+  inventory[is.na(currency) | !nzchar(as.character(currency)), currency := base_currency]
+  margin[is.na(currency) | !nzchar(as.character(currency)), currency := base_currency]
+  balances[is.na(currency) | !nzchar(as.character(currency)), currency := base_currency]
+  currencies <- unique(c(base_currency, balances$currency, inventory$currency, margin$currency))
+  currencies <- currencies[!is.na(currencies) & nzchar(as.character(currencies))]
+  cash_input <- if (.exchange_uses_heterogeneous_v2(exchange)) {
+    balances[, .(currency, settled = amount, unsettled)]
+  } else {
+    data.table::as.data.table(.profile_cash_kernel_input(exchange, agent_id))
+  }
   missing_currencies <- setdiff(currencies, cash_input$currency)
   if (length(missing_currencies)) {
     cash_input <- data.table::rbindlist(list(cash_input, data.table::data.table(
@@ -601,18 +678,28 @@
     cash_balances = data.frame(cash_input),
     inventory_positions = data.frame(inventory), margin_positions = data.frame(margin),
     fx_rates = data.frame(currency = currencies, rate_to_base = vapply(currencies, function(currency) {
-      .profile_fx_rate(exchange, currency, .profile_base_currency(exchange))
+      .profile_fx_rate(exchange, currency, base_currency)
     }, numeric(1L)))
   )
 }
 
 .heterogeneous_portfolio_normalize_orders <- function(exchange, orders, bars,
-                                                       margin_asset_ids = integer()) {
+                                                       margin_asset_ids = integer(),
+                                                       specs = NULL, bar_prices = NULL) {
   if (!nrow(orders)) return(sim_heterogeneous_order_batch_schema())
   bars <- data.table::as.data.table(bars)
-  specs <- exchange$assets[, .(asset_id, instrument_profile, contract_size, qty_step, quote_ccy)]
-  out <- merge(data.table::copy(orders), specs, by = "asset_id", all.x = TRUE, sort = FALSE)
-  out <- merge(out, bars[, .(asset_id, open)], by = "asset_id", all.x = TRUE, sort = FALSE)
+  specs <- specs %||% exchange$assets[, .(asset_id, instrument_profile, contract_size, qty_step, quote_ccy)]
+  bar_prices <- bar_prices %||% bars[, .(asset_id, open)]
+  out <- data.table::copy(orders)
+  spec_index <- match(as.integer(out$asset_id), as.integer(specs$asset_id))
+  price_index <- match(as.integer(out$asset_id), as.integer(bar_prices$asset_id))
+  out[, `:=`(
+    instrument_profile = specs$instrument_profile[spec_index],
+    contract_size = as.numeric(specs$contract_size[spec_index]),
+    qty_step = as.numeric(specs$qty_step[spec_index]),
+    quote_ccy = as.character(specs$quote_ccy[spec_index]),
+    open = as.numeric(bar_prices$open[price_index])
+  )]
   if (anyNA(out$instrument_profile) || any(!is.finite(out$open))) {
     stop("Every heterogeneous portfolio order requires a registered asset and current open price.", call. = FALSE)
   }
@@ -626,6 +713,22 @@
   # metadata rules.  This execution-only profile identifies target-derived
   # portfolio-margin legs to the typed C++ margin-position branch.
   out[target_derived & asset_id %in% as.integer(margin_asset_ids), instrument_profile := "future"]
+  # Target weights are intent-level portfolio decisions.  Fully-paid
+  # inventory buys must reserve the configured fee at the executable open;
+  # otherwise a 100% target becomes an avoidable atomic rejection after a
+  # normal overnight price move. Explicit contract orders retain strict
+  # all-or-nothing cash admission in the kernel.
+  inventory_target_buys <- which(
+    out$target_derived & out$side == "buy" &
+      out$instrument_profile %in% c("equity", "etf", "crypto_spot", "fx_spot", "bond")
+  )
+  for (i in inventory_target_buys) {
+    if (is.finite(out$target_weight[i]) && out$target_weight[i] > 1 + 1e-12) next
+    available <- .profile_cash_balance(exchange, out$agent_id[i], out$quote_ccy[i])
+    unit_cost <- out$execution_price[i] * out$contract_size[i] * (1 + out$fee_rt[i])
+    max_qty <- floor((available / unit_cost) / out$qty_step[i] + 1e-10) * out$qty_step[i]
+    if (is.finite(max_qty) && max_qty < out$qty[i]) out$qty[i] <- max(0, max_qty)
+  }
   out[, `:=`(
     action_code = .encode_step_action(data.table::fifelse(
       is.na(intended_action) | !nzchar(intended_action), "open", intended_action
@@ -654,7 +757,9 @@
 }
 
 .heterogeneous_portfolio_commit_state <- function(exchange, agent_id, proposed) {
-  .heterogeneous_inventory_commit_state(exchange, agent_id, proposed, data.table::data.table())
+  .heterogeneous_inventory_commit_state(
+    exchange, agent_id, proposed, data.table::data.table(), record_typed_state = FALSE
+  )
   for (asset_id in as.integer(proposed$inventory_positions$asset_id)) {
     exchange$agent_states[[.agent_state_key(agent_id, asset_id)]] <- NULL
   }
@@ -710,7 +815,7 @@
   cash <- data.table::as.data.table(proposed$cash_balances)
   if (nrow(cash)) {
     cash[, `:=`(agent_id = agent_id, timestamp = timestamp)]
-    data.table::setcolorder(cash, names(sim_schemas()$cash_balances))
+    data.table::setcolorder(cash, names(exchange$cash_balances))
     replace_rows("cash_balances", cash, c("agent_id", "currency"))
   }
   inventory <- data.table::as.data.table(proposed$inventory_positions)
@@ -720,7 +825,7 @@
       symbol = vapply(asset_id, function(id) exchange$asset_symbols[[as.character(id)]] %||% paste0("asset-", id), character(1L)),
       timestamp = timestamp
     )]
-    data.table::setcolorder(inventory, names(sim_schemas()$inventory_positions))
+    data.table::setcolorder(inventory, names(exchange$inventory_positions))
     replace_rows("inventory_positions", inventory, c("agent_id", "asset_id"))
   }
   margin <- data.table::as.data.table(proposed$margin_positions)
@@ -730,7 +835,7 @@
       symbol = vapply(asset_id, function(id) exchange$asset_symbols[[as.character(id)]] %||% paste0("asset-", id), character(1L)),
       timestamp = timestamp
     )]
-    data.table::setcolorder(margin, names(sim_schemas()$margin_positions))
+    data.table::setcolorder(margin, names(exchange$typed_margin_positions))
     replace_rows("typed_margin_positions", margin, c("agent_id", "asset_id"))
   }
   event_source <- proposed$account_events
@@ -935,7 +1040,38 @@
     }
     bond_actions <- .heterogeneous_portfolio_bond_actions(exchange, boundary_bars, boundary_timestamp)
     bond_schedules <- .bond_schedule_kernel_rows(exchange, boundary_bars, boundary_timestamp)
+    # These inputs are identical for every account at a market boundary. Build
+    # them once rather than repeating sorting, merging, and covariance-table
+    # allocation for each Arena competitor.
+    asset_ids <- as.integer(boundary_bars$asset_id)
+    cov <- .cross_asset_covariance(exchange, asset_ids)
+    covariance <- data.table::as.data.table(as.data.frame(as.table(cov)))
+    data.table::setnames(covariance, c("asset_i_index", "asset_j_index", "covariance"))
+    covariance[, `:=`(
+      asset_i = asset_ids[as.integer(asset_i_index)],
+      asset_j = asset_ids[as.integer(asset_j_index)]
+    )]
+    kernel_bars <- data.frame(merge(
+      boundary_bars[, .(asset_id, open, high, low, close)],
+      exchange$assets[, .(asset_id, instrument_profile)],
+      by = "asset_id", all.x = TRUE, sort = FALSE
+    ))
+    settings <- data.frame(
+      execution_mode = "mixed_portfolio_native",
+      lev = as.numeric(exchange$config$lev %||% 10),
+      fund_rt = as.numeric(exchange$config$fund_rt %||% 0),
+      funding_interval_hours = as.numeric(exchange$config$funding_interval_hours %||% 8),
+      mmr = as.numeric(exchange$config$mmr %||% 0.02),
+      portfolio_margin_sigma = as.numeric(exchange$config$portfolio_margin_sigma %||% 3),
+      portfolio_margin_floor = as.numeric(exchange$config$portfolio_margin_floor %||% exchange$config$mmr %||% 0.02)
+    )
+    kernel_actions <- data.frame(data.table::rbindlist(list(
+      covariance[, .(asset_i, asset_j, covariance)], bond_actions, bond_schedules
+    ), fill = TRUE))
+    order_specs <- exchange$assets[, .(asset_id, instrument_profile, contract_size, qty_step, quote_ccy)]
+    order_prices <- boundary_bars[, .(asset_id, open)]
     for (agent_id in .heterogeneous_portfolio_agents(exchange, boundary_bars)) {
+      normalization_started <- .sim_profile_start(exchange)
       requested_agent_id <- as.character(agent_id)
       accepted <- .heterogeneous_portfolio_orders(exchange, agent_id, boundary_bars)
       existing_margin_ids <- unique(c(
@@ -945,62 +1081,49 @@
       target_margin_ids <- accepted[
         target_derived %in% TRUE & !is.na(rebalance_id) &
           asset_id %in% boundary_bars$asset_id &
-          (asset_id %in% existing_margin_ids |
+          ((isTRUE(exchange$config$portfolio_margin %||% FALSE) == FALSE &
+            vapply(asset_id, function(id) .asset_uses_spot_inventory(exchange, id), logical(1L))) |
+            asset_id %in% existing_margin_ids |
             intended_dir == "short" |
             !vapply(asset_id, function(id) .asset_uses_spot_inventory(exchange, id), logical(1L))),
         unique(as.integer(asset_id))
       ]
       input <- .heterogeneous_portfolio_account_input(
-        exchange, agent_id, boundary_bars, margin_asset_ids = target_margin_ids
+        exchange, agent_id, boundary_bars,
+        margin_asset_ids = target_margin_ids,
+        active_asset_ids = as.integer(accepted$asset_id)
       )
       normalized <- .heterogeneous_portfolio_normalize_orders(
-        exchange, accepted, boundary_bars, margin_asset_ids = target_margin_ids
+        exchange, accepted, boundary_bars, margin_asset_ids = target_margin_ids,
+        specs = order_specs, bar_prices = order_prices
       )
-      asset_ids <- as.integer(boundary_bars$asset_id)
-      cov <- .cross_asset_covariance(exchange, asset_ids)
-      covariance <- data.table::as.data.table(as.data.frame(as.table(cov)))
-      data.table::setnames(covariance, c("asset_i_index", "asset_j_index", "covariance"))
-      covariance[, `:=`(
-        asset_i = asset_ids[as.integer(asset_i_index)],
-        asset_j = asset_ids[as.integer(asset_j_index)]
-      )]
-      settings <- data.frame(
-        execution_mode = "mixed_portfolio_native",
-        lev = as.numeric(exchange$config$lev %||% 10),
-        fund_rt = as.numeric(exchange$config$fund_rt %||% 0),
-        funding_interval_hours = as.numeric(exchange$config$funding_interval_hours %||% 8),
-        mmr = as.numeric(exchange$config$mmr %||% 0.02),
-        portfolio_margin_sigma = as.numeric(exchange$config$portfolio_margin_sigma %||% 3),
-        portfolio_margin_floor = as.numeric(exchange$config$portfolio_margin_floor %||% exchange$config$mmr %||% 0.02)
-      )
-      kernel_actions <- data.table::rbindlist(list(
-        covariance[, .(asset_i, asset_j, covariance)], bond_actions, bond_schedules
-      ), fill = TRUE)
+      .sim_profile_add(exchange, "heterogeneous_r_normalization", normalization_started)
+      kernel_started <- .sim_profile_start(exchange)
       proposed <- heterogeneous_account_step_rcpp(
         .profile_base_currency(exchange), input$cash_balances, input$inventory_positions, input$margin_positions,
-        data.frame(merge(boundary_bars[, .(asset_id, open, high, low, close)],
-          exchange$assets[, .(asset_id, instrument_profile)], by = "asset_id", all.x = TRUE, sort = FALSE)),
-        input$fx_rates, settings, data.frame(kernel_actions), data.frame(normalized),
+        kernel_bars, input$fx_rates, settings, kernel_actions, data.frame(normalized),
         as.numeric(boundary_timestamp)
       )
+      .sim_profile_add(exchange, "portfolio_step_rcpp", kernel_started)
       proposed$timestamp <- as.numeric(boundary_timestamp)
       proposed$cash_balances <- data.table::as.data.table(proposed$cash_balances)
       proposed$inventory_positions <- data.table::as.data.table(proposed$inventory_positions)
       proposed$margin_positions <- data.table::as.data.table(proposed$margin_positions)
       proposed$fills <- data.table::as.data.table(proposed$fills)
       proposed$events <- data.table::as.data.table(proposed$events)
+      ledger_started <- .sim_profile_start(exchange)
       .heterogeneous_portfolio_commit_state(exchange, agent_id, proposed)
       # Fill account events are projected here. Lifecycle cash events are
       # projected once below with their matching public step event and
       # profile-cash-ledger entry. Non-cash typed events, such as bond
       # accrual, remain durable account events here.
       typed_proposed <- proposed
-      typed_proposed$account_events <- sim_schemas()$account_events[0]
+      typed_proposed$account_events <- exchange$account_events[0]
       typed_proposed$events <- proposed$events
       if ("cash_effect" %in% names(typed_proposed$events)) {
         typed_proposed$events <- typed_proposed$events[is.na(cash_effect) | cash_effect != TRUE]
       } else {
-        typed_proposed$events <- sim_schemas()$account_events[0]
+        typed_proposed$events <- exchange$account_events[0]
       }
       .heterogeneous_v2_record_state(exchange, agent_id, typed_proposed, boundary_timestamp)
       outcome_events <- .heterogeneous_portfolio_apply_outcomes(
@@ -1013,8 +1136,10 @@
           0L, exchange$step_events$event_id %||% integer(), outcome_events$event_id %||% integer()
         ), na.rm = TRUE) + seq_len(nrow(variation_events)))
       }
+      .sim_profile_add(exchange, "heterogeneous_ledger_projection", ledger_started)
       if (nrow(outcome_events)) events[[length(events) + 1L]] <- outcome_events
       if (nrow(variation_events)) events[[length(events) + 1L]] <- variation_events
+      snapshot_started <- .sim_profile_start(exchange)
       .enforce_cross_margin(exchange, agent_id, boundary_timestamp)
       snapshot <- .agent_position_snapshots(exchange, agent_id, boundary_timestamp)
       # Typed cash is authoritative in a heterogeneous account. In particular,
@@ -1031,6 +1156,7 @@
         data.table::set(snapshot, j = "maintenance_margin", value = as.numeric(typed_account$maintenance_margin[1L]))
       }
       snapshots[[length(snapshots) + 1L]] <- snapshot
+      .sim_profile_add(exchange, "snapshot_construction", snapshot_started)
     }
     .heterogeneous_portfolio_mark_bond_actions_applied(exchange, bond_actions)
     .bond_schedule_advance(exchange, bond_schedules, boundary_timestamp)

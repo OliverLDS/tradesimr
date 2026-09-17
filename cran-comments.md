@@ -9,10 +9,10 @@
 
 ### R CMD check results
 
-`R CMD check --as-cran` is run on the GitHub Actions matrix. The release
-workflow installs TinyTeX, builds the reference manual (it does not use
-`--no-manual`), and treats warnings as failures. The local check is run before
-submission where the CRAN incoming network checks are available.
+`R CMD check --as-cran --no-manual` is run on the GitHub Actions matrix and
+treats warnings as failures. A separate Linux release job installs TinyTeX and
+builds the reference manual. The local check is run before submission where the
+CRAN incoming network checks are available.
 
 The reference manual was also built locally with R 4.2.3 and TinyTeX.
 

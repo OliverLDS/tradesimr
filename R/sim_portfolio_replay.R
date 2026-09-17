@@ -61,6 +61,11 @@ sim_portfolio_market_step <- function(exchange,
   .portfolio_apply_execution_config(exchange, execution)
 
   sim_exchange_step(exchange, boundary_bars)
+  # Secondary indexes are an internal lookup optimization.  Do not expose
+  # their construction history as part of the public exchange state: this
+  # keeps sequential and bulk replay structurally comparable and preserves
+  # stable save/export behavior.
+  data.table::setindexv(exchange$agent_orders, NULL)
   bookkeeping_started <- .sim_profile_start(exchange)
   executable_bars <- .portfolio_fresh_decision_bars(boundary_bars)
   if (nrow(executable_bars)) exchange$portfolio_market_boundaries <- data.table::rbindlist(list(
@@ -260,6 +265,7 @@ sim_portfolio_target_submit_batch <- function(exchange,
       context = context
     )
   }
+  data.table::setindexv(exchange$agent_orders, NULL)
   bookkeeping_started <- .sim_profile_start(exchange)
   result <- list(
     timestamp = decision_bars$timestamp[1L],
@@ -343,6 +349,7 @@ sim_portfolio_target_submit_batch <- function(exchange,
   .portfolio_flush_submission_buffer(exchange, buffer)
   .sim_profile_add(exchange, "durable_append_bind", append_started)
   .sim_profile_add(exchange, "order_fill_event_ledger_writes", append_started)
+  data.table::setindexv(exchange$agent_orders, NULL)
   flushed <- TRUE
   invisible(exchange)
 }
@@ -1195,6 +1202,11 @@ sim_portfolio_export <- function(exchange,
     }
   }
   valuations[, agent_id := agent_id]
+  # Secondary indexes created by data.table's ledger filters are an internal
+  # query cache, not durable order identity. Do not expose them through the
+  # incremental result object, so it remains structurally comparable to bulk
+  # replay output and save/load tables.
+  data.table::setindexv(exchange$agent_orders, NULL)
   list(rebalance_id = rebalance_id, orders = orders, fills = fills, positions = positions, account = account, targets = targets, rebalances = rebalances, realized_weights = realized_weights, valuations = valuations, outcomes = data.table::as.data.table(outcomes))
 }
 
