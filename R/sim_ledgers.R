@@ -100,64 +100,13 @@ sim_risk <- function(sim) {
 sim_cross_asset_risk <- function(exchange, stress_sigma = 2) {
   stopifnot(inherits(exchange, "tradesimr_exchange"))
   positions <- sim_exchange_positions(exchange)
-  has_agent_positions <- nrow(positions) > 0L &&
-    all(c("agent_id", "asset_id", "symbol") %in% names(positions)) &&
-    any(!is.na(positions$agent_id) & nzchar(as.character(positions$agent_id)))
-  if (!has_agent_positions) {
+  if (nrow(positions) == 0L) {
     # Pending accepted orders are still relevant to an operator risk view.
     # Project them as zero-realized-exposure rows rather than returning an
     # unusable empty dashboard when a boundary has not produced a fill yet.
-    orders <- data.table::as.data.table(exchange$agent_orders)
-    # Explicit and target-derived orders can use different intermediate labels
-    # while waiting for the next eligible bar. They are all pending risk
-    # exposures until a terminal lifecycle status is recorded.
-    order_status <- tolower(trimws(as.character(orders$status)))
-    pending <- orders[
-      (is.na(orders$status) | !(order_status %in% c(
-        "cancelled", "canceled", "rejected", "expired", "superseded"
-      ))) & asset_id %in% as.integer(exchange$assets$asset_id)
+    pending <- data.table::as.data.table(exchange$agent_orders)[
+      status == "accepted" & asset_id %in% as.integer(exchange$assets$asset_id)
     ]
-    if (nrow(pending) == 0L && nrow(exchange$order_requests) > 0L) {
-      requests <- data.table::as.data.table(exchange$order_requests)
-      pending <- requests[asset_id %in% as.integer(exchange$assets$asset_id), .(
-        timestamp, agent_id, symbol, asset_id, qty = as.numeric(qty), side
-      )]
-    }
-    if (nrow(pending) == 0L && nrow(exchange$assets) > 0L) {
-      # A registered account can exist before its order projection is
-      # materialized. Keep the dashboard schema non-empty without inventing
-      # exposure: emit zero-risk rows for the account's registered universe.
-      agent_ids <- unique(c(
-        as.character(orders$agent_id),
-        as.character(exchange$order_requests$agent_id),
-        as.character(exchange$agents$agent_id)
-      ))
-      agent_ids <- agent_ids[nzchar(agent_ids) & !is.na(agent_ids)]
-      if (length(agent_ids)) {
-        pending <- data.table::CJ(
-          agent_id = agent_ids,
-          asset_id = as.integer(exchange$assets$asset_id),
-          unique = TRUE
-        )
-        pending <- merge(
-          pending,
-          exchange$assets[, .(asset_id, symbol)],
-          by = "asset_id",
-          all.x = TRUE,
-          sort = FALSE
-        )
-        latest_timestamp <- if (nrow(exchange$market_events)) {
-          max(exchange$market_events$timestamp, na.rm = TRUE)
-        } else {
-          as.POSIXct(NA, tz = "UTC")
-        }
-        pending[, `:=`(
-          timestamp = latest_timestamp,
-          qty = 0,
-          side = "flat"
-        )]
-      }
-    }
     if (nrow(pending)) {
       assets <- sim_assets(exchange)
       accounts <- sim_exchange_account(exchange)

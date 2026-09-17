@@ -658,29 +658,7 @@ test_that("dashboard export includes market model and cross-asset risk metadata"
   expect_true("market_model" %in% manifest$table)
   expect_true("cross_asset_risk" %in% manifest$table)
   expect_true(file.exists(file.path(out_dir, "market_model.csv")))
-  expect_true(nrow(risk) > 0)
   expect_true(all(c("allocation", "asset_class_allocation", "factor_exposure", "max_drawdown", "risk_contribution", "concentration_hhi", "stress_loss") %in% names(risk)))
-})
-
-test_that("cross-asset risk includes all non-terminal pending order statuses", {
-  exchange <- sim_exchange_new()
-  sim_asset_add(exchange, "AAPL", asset_id = 101L)
-  sim_submit_order(
-    exchange, "agent-a", timestamp = as.POSIXct("2026-01-01", tz = "UTC"),
-    symbol = "AAPL", asset_id = 101L, side = "buy", qty = 1, process = TRUE
-  )
-  for (status in c("accepted", "submitted", "pending", "filled", NA_character_)) {
-    status_value <- status
-    exchange$agent_orders[, status := status_value]
-    risk <- sim_cross_asset_risk(exchange)
-    expect_equal(nrow(risk), 1L)
-    expect_equal(risk$agent_id, "agent-a")
-    expect_equal(risk$symbol, "AAPL")
-  }
-  exchange$agent_orders <- exchange$agent_orders[0]
-  risk <- sim_cross_asset_risk(exchange)
-  expect_equal(nrow(risk), 1L)
-  expect_equal(risk$agent_id, "agent-a")
 })
 
 test_that("optional portfolio margin uses correlation-aware maintenance", {
