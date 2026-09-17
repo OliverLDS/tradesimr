@@ -669,12 +669,14 @@ test_that("cross-asset risk includes all non-terminal pending order statuses", {
     exchange, "agent-a", timestamp = as.POSIXct("2026-01-01", tz = "UTC"),
     symbol = "AAPL", asset_id = 101L, side = "buy", qty = 1, process = TRUE
   )
-  exchange$agent_orders[, status := "submitted"]
-
-  risk <- sim_cross_asset_risk(exchange)
-  expect_equal(nrow(risk), 1L)
-  expect_equal(risk$agent_id, "agent-a")
-  expect_equal(risk$symbol, "AAPL")
+  for (status in c("accepted", "submitted", "pending", "filled", NA_character_)) {
+    status_value <- status
+    exchange$agent_orders[, status := status_value]
+    risk <- sim_cross_asset_risk(exchange)
+    expect_equal(nrow(risk), 1L)
+    expect_equal(risk$agent_id, "agent-a")
+    expect_equal(risk$symbol, "AAPL")
+  }
 })
 
 test_that("optional portfolio margin uses correlation-aware maintenance", {

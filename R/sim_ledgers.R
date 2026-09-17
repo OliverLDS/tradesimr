@@ -111,7 +111,7 @@ sim_cross_asset_risk <- function(exchange, stress_sigma = 2) {
     order_status <- tolower(trimws(as.character(orders$status)))
     pending <- orders[
       (is.na(orders$status) | !(order_status %in% c(
-        "filled", "cancelled", "canceled", "rejected", "expired", "superseded"
+        "cancelled", "canceled", "rejected", "expired", "superseded"
       ))) & asset_id %in% as.integer(exchange$assets$asset_id)
     ]
     if (nrow(pending)) {
