@@ -1,6 +1,8 @@
 ## CRAN submission comments
 
-This is a resubmission of version `0.18.5`.
+This is a resubmission of version `0.18.6` after CRAN incoming pretests
+reported a Windows R-devel overall check-time NOTE. No functional test or
+metadata errors were reported.
 
 ### Test environments
 
@@ -29,6 +31,10 @@ adapter behavior is covered by package-local strategy contract tests.
 The Vox-scale 66-account and profiling regressions are likewise skipped on
 CRAN to keep incoming checks within the time limit. Smaller batch, replay,
 ledger, save/load, and export parity tests remain part of every CRAN run.
+The profile-aware accounting and full bulk-replay integration files are also
+retained for regular CI/local runs but skipped as a group on CRAN because the
+Windows R-devel filesystem/runtime makes those redundant integration fixtures
+exceed the incoming time budget.
 
 ### Scope
 

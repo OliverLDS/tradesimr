@@ -3,18 +3,26 @@
 This changelog follows the repository tags. There is no `v0.8.0` tag in the
 current git history; `v0.9.0` follows `v0.7.0`.
 
-## tradesimr 0.18.5
+## tradesimr 0.18.6
 
-### CRAN Resubmission
+### CRAN Incoming-Check Runtime
 
-- Reworded package metadata to avoid nonessential project and technical terms
-  that trigger CRAN DESCRIPTION spell-check notes.
 - Kept `strategyr` as an optional suggested integration and excluded only its
   external-package integration tests from CRAN runs. Core strategy-adapter
   tests continue to run on every platform.
 - Kept Vox-scale 66-account and profiling regressions as local scale checks
   while retaining smaller execution, ledger, persistence, and export parity
   coverage in CRAN runs.
+- Kept the full profile-aware accounting and bulk-replay integration files in
+  regular CI/local testing while excluding them from CRAN-only checks to stay
+  below the Windows R-devel incoming-check time budget.
+
+## tradesimr 0.18.5
+
+### CRAN Resubmission
+
+- Reworded package metadata to avoid nonessential project and technical terms
+  that trigger CRAN DESCRIPTION spell-check notes.
 - Removed redundant `Author` and `Maintainer` fields; `Authors@R` is the
   canonical author and maintainer declaration.
 

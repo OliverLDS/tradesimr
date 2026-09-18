@@ -1,3 +1,5 @@
+skip_on_cran()
+
 bulk_replay_symbols <- c("SPY", "TLT", "GLD", "EURUSD=X", "BTC-USD", "USO", "EFA", "IWM")
 
 bulk_replay_exchange <- function() {

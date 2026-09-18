@@ -1,3 +1,5 @@
+skip_on_cran()
+
 test_that("FX cash conversion and non-base spot inventory use durable balances", {
   exchange <- sim_exchange_new(list(cash = 1000, base_currency = "USD"))
   sim_exchange_fx_rate(exchange, "USD", "EUR", 0.8, as.POSIXct("2025-01-01", tz = "UTC"))
