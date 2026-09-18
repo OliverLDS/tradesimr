@@ -27,6 +27,8 @@ make_vox_batch_decisions <- function(agents) {
 }
 
 test_that("eight-asset 66-account replay matches sequential and batch submissions", {
+  # Scale regression retained for local and dedicated performance runs.
+  skip_on_cran()
   execution <- sim_portfolio_execution(fee_rt = 0.0007, lev = 1)
   sequential_setup <- make_vox_batch_exchange()
   batch_setup <- make_vox_batch_exchange()

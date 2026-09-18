@@ -1,6 +1,6 @@
 ## CRAN submission comments
 
-This is the first CRAN submission of version `0.18.4`.
+This is a resubmission of version `0.18.5`.
 
 ### Test environments
 
@@ -24,6 +24,11 @@ The reference manual was also built locally with R 4.2.3 and TinyTeX.
 are optional `Suggests`. The core package loads and runs without them. Local
 service, JSON export, dashboard, data-adapter, and legacy helper functions
 check availability at runtime and provide an explicit installation message.
+The two `strategyr` integration tests are intentionally skipped on CRAN; their
+adapter behavior is covered by package-local strategy contract tests.
+The Vox-scale 66-account and profiling regressions are likewise skipped on
+CRAN to keep incoming checks within the time limit. Smaller batch, replay,
+ledger, save/load, and export parity tests remain part of every CRAN run.
 
 ### Scope
 

@@ -1,3 +1,4 @@
 ^\.github$
 ^scripts$
 ^cran-comments\.md$
+^CRAN-SUBMISSION$

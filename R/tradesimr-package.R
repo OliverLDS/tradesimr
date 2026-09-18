@@ -1,7 +1,7 @@
 #' tradesimr
 #'
 #' Execution and simulation engine for trading strategies, with durable event
-#' exports, append-only agent commands, registered tradable assets, multi-asset
+#' exports, append-only agent commands, registered assets, multi-asset
 #' order routing, per-agent shared-cash cross-margin live accounts, AI agent
 #' competitors, strategy-backed agent diagnostics, scheduled live-feed stepping,
 #' calibrated multi-asset market simulation, durable per-feed simulation state,

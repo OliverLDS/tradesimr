@@ -1281,6 +1281,7 @@ test_that("strategy-backed agents submit explicit multi-asset order intents", {
 })
 
 test_that("strategy-backed agents consume strategyr target-position strategies when available", {
+  skip_on_cran()
   skip_if_not_installed("strategyr")
   exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 1, lev = 10))
   sim_asset_add(exchange, "BTC-USDT-SWAP", asset_id = 303L, asset_class = "crypto_perp")
@@ -1358,6 +1359,7 @@ test_that("strategy config validation rejects unknown params", {
 })
 
 test_that("strategy-backed agents consume strategyr-style multi-asset order intents", {
+  skip_on_cran()
   skip_if_not_installed("strategyr")
   exchange <- sim_exchange_new(list(cash = 10000, ctr_step = 1, lev = 10))
   sim_asset_add(exchange, "AAPL", asset_id = 101L, asset_class = "stock")

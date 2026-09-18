@@ -1,20 +1,18 @@
 Package: tradesimr
 Title: Execution and Simulation Engine for Trading Strategies
-Version: 0.18.4
+Version: 0.18.5
 Authors@R: 
     person(given = "Oliver",
            family = "Zhou",
            email = "oliver.yxzhou@gmail.com",
            role = c("aut", "cre"))
-Author: Oliver Zhou [aut, cre]
-Maintainer: Oliver Zhou <oliver.yxzhou@gmail.com>
 Description: 
     An R-native trading simulation package with a C++ execution core that turns
     strategy intentions and explicit orders into simulated trades, positions,
     cash, profit and loss, risk, and performance outputs under configurable
     execution, margin, funding, and cost assumptions. The package provides
-    historical replay, incremental exchange stepping, durable event schemas,
-    append-only agent command logs, registered tradable assets, per-agent
+    historical replay, incremental exchange stepping, durable event tables,
+    append-only agent command logs, registered assets, per-agent
     shared-cash cross-margin live accounts, AI agent competitors, scheduled
     live-feed stepping, strategy-backed AI agents with diagnostics, calibrated
     and coordinated multi-asset market simulation with static covariance,
@@ -24,8 +22,8 @@ Description:
     a multi-asset C++ step kernel, local live-service APIs, import/export
     helpers, separate replay, live-state, and agent dashboard exports, and installed local
     orchestration scripts. It is designed to consume signals, order intents, or
-    target exposure decisions from strategy packages such as strategyr and
-    market data from adapters such as okxr.
+    target exposure decisions from compatible strategy packages and market data
+    from compatible adapters.
 Depends: 
     R (>= 4.2.0)
 Imports: 

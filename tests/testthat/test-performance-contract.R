@@ -52,6 +52,7 @@ performance_required_timings <- c(
 )
 
 test_that("bulk replay profiling exposes stable, finite phase timings", {
+  skip_on_cran()
   fixture <- performance_fixture(8L)
   result <- sim_portfolio_target_replay(
     performance_exchange(), fixture$bars, fixture$targets, fixture$allowed_symbols,
@@ -79,6 +80,7 @@ test_that("optional Vox-scale benchmark reports a configurable replay budget", {
 })
 
 test_that("Vox-shaped benchmark fixture records local profiling metrics", {
+  skip_on_cran()
   script <- system.file("examples", "vox_arena_replay_benchmark.R", package = "tradesimr")
   source(script, local = TRUE)
   artifact_path <- tempfile("tradesimr-vox-benchmark-")
